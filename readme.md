@@ -18,7 +18,7 @@ Requires macOS on Apple silicon, Go, and a C compiler (the Xcode command line to
 | `--home <dir>` | host directory the guest sees as its home, `/Users/emu`; files the guest creates there are the usual way to get results out |
 | `--env KEY=VALUE` | added to the guest environment (repeatable) |
 | `--system <path>` | system-volume file, or directory ending in `/`, the guest may read (repeatable; default: feature flags and `SystemVersion.plist`) |
-| `--cache <dir>` | keep what was downloaded between runs |
+| `--cache <dir>` | where downloads are kept between runs (default: `ipswrun-<uid>` in the system temporary directory, which is cleared on reboot) |
 | `--stream-compressed` | allow downloading one compressed disk image member front to back (see below) |
 | `--report <file>` | JSON summary: version, build, shared cache UUID, exit code, transfer |
 | `--device`, `--timeout`, `--trace`, `--unicorn`, `--setup` | see `--help` |

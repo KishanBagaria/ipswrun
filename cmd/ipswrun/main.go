@@ -52,7 +52,7 @@ func run() (int, error) {
 	flag.Var(&env, "env", "KEY=VALUE added to the guest environment (repeatable)")
 	flag.Var(&system, "system", "system-volume file, or directory ending in /, the guest may read (repeatable; default: feature flags and SystemVersion.plist)")
 	device := flag.String("device", "Macmini9,1", "BuildManifest product used to pick disk images")
-	cache := flag.String("cache", "", "directory that keeps what was downloaded between runs (default: a temporary one)")
+	cache := flag.String("cache", "", "directory that keeps what was downloaded between runs (default: one in the system temporary directory, cleared on reboot)")
 	stream := flag.Bool("stream-compressed", false, "download a compressed disk image member front to back when it cannot be read by range")
 	timeout := flag.Float64("timeout", 900, "seconds allowed for the run")
 	trace := flag.Bool("trace", false, "print every emulated system call")
@@ -77,10 +77,10 @@ func run() (int, error) {
 		return 2, nil
 	}
 	if *cache == "" {
-		if *cache, err = os.MkdirTemp("", "ipswrun-blocks-"); err != nil {
+		*cache = filepath.Join(os.TempDir(), fmt.Sprintf("ipswrun-%d", os.Getuid()))
+		if err := os.MkdirAll(*cache, 0o700); err != nil {
 			return 0, err
 		}
-		defer os.RemoveAll(*cache)
 	}
 	if *home == "" {
 		if *home, err = os.MkdirTemp("", "ipswrun-home-"); err != nil {
