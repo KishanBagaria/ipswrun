@@ -1,0 +1,941 @@
+// Package emulator is a minimal user-mode Darwin "kernel" for arm64e on Unicorn.
+//
+// It starts a macOS build's own /usr/lib/dyld the way XNU would, lets it map that build's dyld
+// shared cache, and pages cache contents in on first touch. System calls and Mach traps are
+// implemented just far enough for libSystem, CoreFoundation and SQLite to run single-threaded
+// with no daemons around; anything unimplemented stops the run with a message rather than
+// guessing.
+package emulator
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime/debug"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/KishanBagaria/ipswrun/dyldcache"
+)
+
+const (
+	pageSize   = dyldcache.PageSize
+	blockSize  = 16 * pageSize
+	commPage   = 0xFFFFFC000
+	commPageRO = 0xFFFFF4000
+	pageTables = 0x0F0000000000
+	vaLimit    = 1 << 44 // the emulated core's physical address size; identity mapped
+	tbiMask    = 1<<56 - 1
+	stackTop   = 0x170000000
+	stackSize  = 8 << 20
+	exeBase    = 0x100000000
+	dyldBase   = 0x120000000
+	heapBase   = 0x20000000000 // anonymous mappings grow up from 2 TB, clear of anything the guest places itself
+	deviceID   = 0x1000004
+
+	// GuestHome is the emulated user's home directory; it is backed by Config.Home on the host.
+	GuestHome = "/Users/emu"
+	// GuestExe is the path the runner has inside the guest.
+	GuestExe    = "/emu/runner"
+	guestDyld   = "/usr/lib/dyld"
+	cryptex     = "/System/Volumes/Preboot/Cryptexes/OS"
+	cryptexLink = "/System/Cryptexes/OS"
+	exeInode    = 0x5105F2A
+	dyldInode   = 0x5105F2B
+	cacheInode  = 0x5105F30
+)
+
+var le = binary.LittleEndian
+
+func align(n, a uint64) uint64 { return (n + a - 1) &^ (a - 1) }
+
+func le32(values ...uint32) []byte {
+	out := make([]byte, 0, 4*len(values))
+	for _, v := range values {
+		out = le.AppendUint32(out, v)
+	}
+	return out
+}
+
+func le64(values ...uint64) []byte {
+	out := make([]byte, 0, 8*len(values))
+	for _, v := range values {
+		out = le.AppendUint64(out, v)
+	}
+	return out
+}
+
+// thin returns the arm64 slice with the given CPU subtype of a (possibly fat) Mach-O.
+func thin(data []byte, subtype uint32) ([]byte, error) {
+	if len(data) < 8 {
+		return nil, errors.New("not a Mach-O")
+	}
+	magic := binary.BigEndian.Uint32(data)
+	if magic != 0xCAFEBABE && magic != 0xCAFEBABF {
+		return data, nil
+	}
+	be := binary.BigEndian
+	for i, n := uint64(0), uint64(be.Uint32(data[4:])); i < n; i++ {
+		var cpu, sub uint32
+		var off, size uint64
+		if magic == 0xCAFEBABE {
+			e := 8 + i*20
+			if e+20 > uint64(len(data)) {
+				break
+			}
+			cpu, sub, off, size = be.Uint32(data[e:]), be.Uint32(data[e+4:]), uint64(be.Uint32(data[e+8:])), uint64(be.Uint32(data[e+12:]))
+		} else {
+			e := 8 + i*32
+			if e+32 > uint64(len(data)) {
+				break
+			}
+			cpu, sub, off, size = be.Uint32(data[e:]), be.Uint32(data[e+4:]), be.Uint64(data[e+8:]), be.Uint64(data[e+16:])
+		}
+		if cpu == 0x100000C && sub&0xFFFFFF == subtype && off <= uint64(len(data)) && size <= uint64(len(data))-off {
+			return data[off : off+size], nil
+		}
+	}
+	return nil, errors.New("no matching arm64 slice in fat Mach-O")
+}
+
+type regionKind uint8
+
+const (
+	zeroRegion  regionKind = iota // anonymous memory
+	fileRegion                    // a private copy of data
+	cacheRegion                   // dyld shared cache pages, rebased on first touch
+)
+
+// region is a reserved range of guest address space; its pages reach Unicorn on first touch.
+type region struct {
+	start, end uint64
+	kind       regionKind
+	data       []byte
+	off        uint64
+	name       string
+}
+
+// stop is the panic value that ends a run: the guest did something the emulator cannot carry on
+// from. fault is the panic value for a system call touching unmapped guest memory, which the
+// call reports to the guest as EFAULT.
+type (
+	stop  struct{ message string }
+	fault struct{ message string }
+)
+
+func stopf(format string, args ...any) { panic(stop{fmt.Sprintf(format, args...)}) }
+
+// StopError reports why a guest could not run to completion.
+type StopError struct {
+	Message string
+}
+
+func (e *StopError) Error() string { return e.Message }
+
+// SystemFile is what Config.System knows about a guest path.
+type SystemFile struct {
+	Data  []byte
+	Dir   bool
+	Found bool
+}
+
+// Config describes one guest process.
+type Config struct {
+	Unicorn  string           // path of the verified libunicorn (see EnsureUnicorn)
+	Cache    *dyldcache.Cache // the build's dyld shared cache
+	CacheDir string           // guest directory the cache files appear in
+	Home     string           // host directory behind GuestHome
+	Runner   string           // host path of the guest executable
+	Dyld     []byte           // the build's /usr/lib/dyld
+	// System serves read-only files from the build's system volume; a lookup failure stops the run.
+	System func(path string) (SystemFile, error)
+	OS     map[string]string // "version", "build", "release" (and "ios") reported by sysctl
+	Trace  bool              // print every system call to stderr
+}
+
+// Process is one emulated process.
+type Process struct {
+	uc         *engine
+	cache      *dyldcache.Cache
+	dyld       []byte
+	home       string
+	runner     []byte
+	runnerPath string
+	system     func(path string) (SystemFile, error)
+	os         map[string]string
+	trace      bool
+
+	regions []*region // sorted by start
+	mapped  map[uint64]struct{}
+	brk     uint64
+
+	fds      map[uint64]*fd
+	nextFD   uint64
+	nextPort uint32
+
+	exited   bool
+	exitCode int
+	fault    string
+	resume   bool
+	deadline time.Time
+
+	log     []string
+	unknown map[string]struct{}
+	tsd     uint64
+	oids    []string
+	sysctls map[string]any
+	dit     uint64
+	entropy int
+	stdout  strings.Builder
+	stderr  strings.Builder
+
+	cacheDir   string
+	cachePaths map[string]dyldcache.File
+	inodes     map[string]uint64
+	slide      uint64 // of the shared region, once dyld maps the cache into it
+	slideSet   bool
+	dyldSlide  uint64
+	dyldHeader uint64
+	texts      []cacheText
+}
+
+type cacheText struct {
+	address    uint64
+	size, path uint32
+}
+
+// guard turns the panics the emulator uses for control flow into an error.
+func guard(err *error) {
+	switch r := recover().(type) {
+	case nil:
+	case stop:
+		*err = &StopError{r.message}
+	case fault:
+		*err = &StopError{r.message}
+	default:
+		panic(r)
+	}
+}
+
+// New creates a process with a stack, the commpage and the MMU set up, ready for Start.
+func New(cfg Config) (p *Process, err error) {
+	if err := loadUnicorn(cfg.Unicorn); err != nil {
+		return nil, err
+	}
+	dyld, err := thin(cfg.Dyld, 2)
+	if err != nil {
+		return nil, fmt.Errorf("dyld: %w", err)
+	}
+	runner, err := os.ReadFile(cfg.Runner)
+	if err != nil {
+		return nil, err
+	}
+	home, err := filepath.EvalSymlinks(cfg.Home)
+	if err != nil {
+		return nil, err
+	}
+	p = &Process{cache: cfg.Cache, dyld: dyld, home: home, runner: runner, runnerPath: cfg.Runner, system: cfg.System, os: cfg.OS, trace: cfg.Trace,
+		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[string]struct{}{},
+		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
+		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}}
+	var paths []string
+	for suffix, f := range cfg.Cache.Files {
+		path := cfg.CacheDir + "/" + CacheName + suffix
+		p.cachePaths[path] = f
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for i, path := range paths {
+		p.inodes[path] = cacheInode + uint64(i)
+	}
+	if p.uc, err = newEngine(p); err != nil {
+		return nil, err
+	}
+	created := p
+	defer func() {
+		if err != nil {
+			created.Close()
+			p = nil
+		}
+	}()
+	defer guard(&err)
+	p.uc.setReg(regCPACREL1, 3<<20)
+	p.addRegion(&region{start: stackTop - stackSize, end: stackTop, name: "stack"})
+	p.setupCommpage()
+	if err := p.setupMMU(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// Close releases the engine and any host files the guest left open.
+func (p *Process) Close() {
+	for n, f := range p.fds {
+		if f.kind == hostFD && f.host > 2 {
+			closeHost(f.host)
+		}
+		delete(p.fds, n)
+	}
+	p.uc.close()
+}
+
+// ExitCode is the guest's exit status; ok is false if it never exited.
+func (p *Process) ExitCode() (code int, ok bool) { return p.exitCode, p.exited }
+
+// Stdout is everything the guest wrote to file descriptor 1.
+func (p *Process) Stdout() string { return p.stdout.String() }
+
+// Stderr is everything the guest wrote to file descriptor 2.
+func (p *Process) Stderr() string { return p.stderr.String() }
+
+// MappedPages is the number of guest pages that were actually touched.
+func (p *Process) MappedPages() int { return len(p.mapped) }
+
+// ---- memory ----
+
+func (p *Process) addRegion(r *region) *region {
+	i := sort.Search(len(p.regions), func(i int) bool { return p.regions[i].start >= r.start })
+	p.regions = append(p.regions, nil)
+	copy(p.regions[i+1:], p.regions[i:])
+	p.regions[i] = r
+	return r
+}
+
+func (p *Process) findRegion(addr uint64) *region {
+	i := sort.Search(len(p.regions), func(i int) bool { return p.regions[i].start > addr }) - 1
+	if i >= 0 && addr < p.regions[i].end {
+		return p.regions[i]
+	}
+	return nil
+}
+
+func (p *Process) overlaps(start, end uint64) []*region {
+	var out []*region
+	for _, r := range p.regions {
+		if r.start < end && start < r.end {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (p *Process) isMapped(addr uint64) bool {
+	_, ok := p.mapped[addr/pageSize]
+	return ok
+}
+
+func (p *Process) unmap(start, end uint64) {
+	for _, r := range p.overlaps(start, end) {
+		for i, x := range p.regions {
+			if x == r {
+				p.regions = append(p.regions[:i], p.regions[i+1:]...)
+				break
+			}
+		}
+		if r.start < start {
+			p.addRegion(&region{r.start, start, r.kind, r.data, r.off, r.name})
+		}
+		if r.end > end {
+			p.addRegion(&region{end, r.end, r.kind, r.data, r.off + (end - r.start), r.name})
+		}
+	}
+	for a := start; a < end; {
+		if !p.isMapped(a) {
+			a += pageSize
+			continue
+		}
+		b := a
+		for ; b < end && p.isMapped(b); b += pageSize {
+			delete(p.mapped, b/pageSize)
+		}
+		p.uc.memUnmap(a, b-a)
+		a = b
+	}
+}
+
+type allocation struct {
+	addr      uint64
+	fixed     bool
+	mask      uint64
+	kind      regionKind
+	data      []byte
+	name      string
+	keepOther bool // a fixed request fails instead of replacing what is there
+}
+
+// alloc reserves guest address space; false when a fixed request cannot be honored.
+func (p *Process) alloc(size uint64, a allocation) (uint64, bool) {
+	size = align(size, pageSize)
+	var start uint64
+	if a.fixed {
+		if a.addr&tbiMask+size > vaLimit {
+			return 0, false
+		}
+		start = a.addr &^ (pageSize - 1)
+		if a.keepOther && len(p.overlaps(start, start+size)) > 0 {
+			return 0, false
+		}
+		p.unmap(start, start+size)
+	} else {
+		start = align(p.brk, max(a.mask+1, pageSize))
+		p.brk = start + size + pageSize
+	}
+	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, name: a.name})
+	return start, true
+}
+
+// materialize gives Unicorn the 16-page block around addr, filled from the region's backing.
+func (p *Process) materialize(addr uint64) bool {
+	r := p.findRegion(addr)
+	if r == nil {
+		return false
+	}
+	b0 := r.start + (addr-r.start)/blockSize*blockSize
+	b1 := min(b0+blockSize, r.end)
+	for a := b0; a < b1; {
+		if p.isMapped(a) {
+			a += pageSize
+			continue
+		}
+		b := a
+		for ; b < b1 && !p.isMapped(b); b += pageSize {
+			p.mapped[b/pageSize] = struct{}{}
+		}
+		p.uc.memMap(a, b-a)
+		switch r.kind {
+		case cacheRegion:
+			data, err := p.cache.Page(a-p.slide, b-a, p.slide)
+			if err != nil {
+				stopf("shared cache page %#x: %v", a-p.slide, err)
+			}
+			p.uc.memWrite(a, data)
+		case fileRegion:
+			if o := r.off + (a - r.start); o < uint64(len(r.data)) {
+				p.uc.memWrite(a, r.data[o:min(o+(b-a), uint64(len(r.data)))])
+			}
+		}
+		a = b
+	}
+	return true
+}
+
+func (p *Process) unmapped(addr uint64, size int) (ok bool) {
+	defer p.hookGuard(func() { ok = false })
+	addr &= tbiMask
+	ok = p.materialize(addr)
+	if last := addr + uint64(size) - 1; ok && last/pageSize != addr/pageSize {
+		ok = p.materialize(last)
+	}
+	if !ok {
+		p.fault = fmt.Sprintf("unmapped access %#x size %d", addr, size)
+	}
+	return ok
+}
+
+func (p *Process) invalid() bool {
+	defer p.hookGuard(nil)
+	pc := p.uc.reg(regPC)
+	p.fault = fmt.Sprintf("invalid instruction %08x at %s", p.u32(pc), p.where(pc))
+	return false
+}
+
+// hookGuard keeps panics from unwinding through Unicorn: the run stops with the message instead.
+func (p *Process) hookGuard(after func()) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	switch r := r.(type) {
+	case stop:
+		p.fault = r.message
+	case fault:
+		p.fault = r.message
+	default:
+		p.fault = fmt.Sprintf("emulator bug: %v\n%s", r, debug.Stack())
+	}
+	p.uc.stop()
+	if after != nil {
+		after()
+	}
+}
+
+func (p *Process) ensure(addr, n uint64) {
+	for a := addr &^ (pageSize - 1); a < addr+max(n, 1); a += pageSize {
+		if !p.isMapped(a) && !p.materialize(a) {
+			panic(fault{fmt.Sprintf("kernel access to unmapped guest memory %#x", a)})
+		}
+	}
+}
+
+func (p *Process) read(addr, n uint64) []byte {
+	if n == 0 {
+		return nil
+	}
+	addr &= tbiMask
+	if n > vaLimit || addr+n > vaLimit {
+		panic(fault{fmt.Sprintf("kernel access to guest memory %#x+%#x", addr, n)})
+	}
+	p.ensure(addr, n)
+	data, err := p.uc.memRead(addr, int(n))
+	if err != nil {
+		panic(fault{fmt.Sprintf("kernel read of guest memory %#x: %v", addr, err)})
+	}
+	return data
+}
+
+func (p *Process) write(addr uint64, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	addr &= tbiMask
+	if addr+uint64(len(data)) > vaLimit {
+		panic(fault{fmt.Sprintf("kernel access to guest memory %#x+%#x", addr, len(data))})
+	}
+	p.ensure(addr, uint64(len(data)))
+	p.uc.memWrite(addr, data)
+}
+
+func (p *Process) cstr(addr uint64) string {
+	const limit = 4096
+	var out []byte
+	for len(out) < limit {
+		at := addr + uint64(len(out))
+		chunk := p.read(at, min(256, pageSize-at&(pageSize-1)))
+		if i := strings.IndexByte(string(chunk), 0); i >= 0 {
+			out = append(out, chunk[:i]...)
+			break
+		}
+		out = append(out, chunk...)
+	}
+	return strings.ToValidUTF8(string(out), "�")
+}
+
+func (p *Process) u32(addr uint64) uint32 { return le.Uint32(p.read(addr, 4)) }
+func (p *Process) u64(addr uint64) uint64 { return le.Uint64(p.read(addr, 8)) }
+
+// setupMMU identity-maps the low 16 TB with 1 GB blocks so the core applies top-byte-ignore like
+// a real user process; pages still fault in lazily underneath.
+func (p *Process) setupMMU() error {
+	const l0, n = uint64(pageTables), uint64(vaLimit >> 39)
+	size := align((n+2)*4096, pageSize)
+	p.uc.memMap(l0, size)
+	p.addRegion(&region{start: l0, end: l0 + size, name: "pagetables"})
+	for a := l0; a < l0+size; a += pageSize {
+		p.mapped[a/pageSize] = struct{}{}
+	}
+	top := make([]uint64, n)
+	for i := range top {
+		top[i] = (l0 + uint64(i+1)*4096) | 3
+		blocks := make([]uint64, 512)
+		for j := range blocks {
+			blocks[j] = (uint64(i)*512+uint64(j))<<30 | 1<<10 | 3<<8 | 1
+		}
+		p.uc.memWrite(l0+uint64(i+1)*4096, le64(blocks...))
+	}
+	p.uc.memWrite(l0, le64(top...))
+	// Non-secure EL1 with nothing trapping to EL2/EL3 (page walks and pacga need both), then the
+	// translation registers, which guest code has to write for the core to pick the regime up.
+	p.uc.setCPReg(1, 1, 3, 6, 0, 1|1<<10|3<<16) // SCR_EL3: NS, RW, API, APK
+	p.uc.setCPReg(1, 1, 3, 4, 0, 1<<31|3<<40)   // HCR_EL2: RW, API, APK
+	stub := l0 + size - 4096
+	values := []uint64{
+		0xFF, // MAIR_EL1
+		l0,   // TTBR0_EL1
+		16 | 1<<8 | 1<<10 | 3<<12 | 1<<23 | 4<<32 | 1<<37, // TCR_EL1: 48-bit VA, 44-bit PA, 4K, TBI0
+		0xC50838 | 1, // SCTLR_EL1: MMU on, pointer-auth keys off
+	}
+	// msr mair_el1, x0; msr ttbr0_el1, x1; msr tcr_el1, x2; isb; msr sctlr_el1, x3; isb
+	code := []uint32{0xD518A200, 0xD5182001, 0xD5182042, 0xD5033FDF, 0xD5181003, 0xD5033FDF}
+	p.uc.memWrite(stub, le32(code...))
+	for i, v := range values {
+		p.setX(i, v)
+	}
+	if _, err := p.uc.start(stub, stub+4*uint64(len(code)), 0); err != nil {
+		return fmt.Errorf("MMU setup: %w", err)
+	}
+	for i := range values {
+		p.setX(i, 0)
+	}
+	return nil
+}
+
+func (p *Process) setupCommpage() {
+	for _, base := range []uint64{commPage, commPageRO} {
+		page := hostPage(base, pageSize)
+		if base == commPage {
+			clear(page[0x120:0x148]) // no timeofday fast path: forces the syscall
+			page[0x90] = 1           // USER_TIMEBASE_SPEC: plain cntvct_el0
+			page[0x10C] = 0          // no TPRO: dyld falls back to mprotect
+			// Hide CPU features the emulated core lacks (DIT, SHA3, SHA512, SPECRES) and report one CPU.
+			caps := le.Uint64(page[0x10:]) &^ (0x0200000000000000 | 0x100000000 | 0x80000000 | 0x0000100000000000)
+			caps = caps&^0x00FF0000 | 0x00010000
+			le.PutUint64(page[0x10:], caps)
+			le.PutUint32(page[0x20:], uint32(caps))
+			page[0x22], page[0x34], page[0x35], page[0x36] = 1, 1, 1, 1
+		}
+		p.uc.memMap(base, pageSize)
+		p.uc.memWrite(base, page)
+		p.mapped[base/pageSize] = struct{}{}
+		p.addRegion(&region{start: base, end: base + pageSize, name: "commpage"})
+	}
+}
+
+// ---- registers ----
+
+func (p *Process) x(i int) uint64           { return p.uc.reg(regX0 + i) }
+func (p *Process) setX(i int, v uint64)     { p.uc.setReg(regX0+i, v) }
+func (p *Process) xr(i uint32) uint64       { return p.uc.reg(xrID(i)) }
+func (p *Process) setXR(i uint32, v uint64) { p.uc.setReg(xrID(i), v) }
+
+// xrID is the register id of x0…x30 as numbered in an instruction encoding.
+func xrID(i uint32) int {
+	switch i {
+	case 29:
+		return regX29
+	case 30:
+		return regLR
+	}
+	return regX0 + int(i)
+}
+
+func (p *Process) carry(on bool) {
+	v := p.uc.reg(regNZCV)
+	if on {
+		v |= 1 << 29
+	} else {
+		v &^= 1 << 29
+	}
+	p.uc.setReg(regNZCV, v)
+}
+
+// where describes a guest address for messages: region or cache image, and offset.
+func (p *Process) where(addr uint64) string {
+	r := p.findRegion(addr)
+	if r == nil {
+		return fmt.Sprintf("%#x (?)", addr)
+	}
+	if r.kind != cacheRegion {
+		return fmt.Sprintf("%#x (%s+%#x)", addr, r.name, addr-r.start)
+	}
+	addr -= p.slide
+	main := p.cache.Files[""]
+	if p.texts == nil {
+		h := p.cache.Header
+		t, err := main.Pread(int64(le.Uint64(h[0x88:])), int64(le.Uint64(h[0x90:]))*32)
+		if err != nil {
+			return fmt.Sprintf("%#x (cache)", addr)
+		}
+		p.texts = []cacheText{}
+		for ; len(t) >= 32; t = t[32:] {
+			p.texts = append(p.texts, cacheText{le.Uint64(t[16:]), le.Uint32(t[24:]), le.Uint32(t[28:])})
+		}
+		sort.Slice(p.texts, func(i, j int) bool { return p.texts[i].address < p.texts[j].address })
+	}
+	i := sort.Search(len(p.texts), func(i int) bool { return p.texts[i].address > addr }) - 1
+	if i >= 0 && addr < p.texts[i].address+uint64(p.texts[i].size) {
+		if name, err := main.Pread(int64(p.texts[i].path), 200); err == nil {
+			path, _, _ := strings.Cut(string(name), "\x00")
+			return fmt.Sprintf("%#x (%s+%#x)", addr, path[strings.LastIndexByte(path, '/')+1:], addr-p.texts[i].address)
+		}
+	}
+	return fmt.Sprintf("%#x (cache data)", addr)
+}
+
+// section finds a section of the Mach-O loaded at header mh; zeros when there is none.
+func (p *Process) section(mh uint64, segment, name string, slide uint64) (addr, size uint64) {
+	trim := func(b []byte) string { return strings.TrimRight(string(b), "\x00") }
+	off := mh + 32
+	for n := p.u32(mh + 16); n > 0; n-- {
+		cmd, sz := p.u32(off), p.u32(off+4)
+		if cmd == 0x19 {
+			c := p.read(off, uint64(sz))
+			for i := uint32(0); i < le.Uint32(c[64:]); i++ {
+				s := c[72+i*80 : 152+i*80]
+				if trim(s[:16]) == name && trim(s[16:32]) == segment {
+					return le.Uint64(s[32:]) + slide, le.Uint64(s[40:])
+				}
+			}
+		}
+		off += uint64(sz)
+	}
+	return 0, 0
+}
+
+// Diagnostics describes a failed run: recent system calls, guest output and a backtrace.
+func (p *Process) Diagnostics() string {
+	const lines = 20
+	var out []string
+	for _, l := range p.log[max(0, len(p.log)-lines):] {
+		out = append(out, "  "+l)
+	}
+	if text := strings.TrimRight(p.stderr.String(), "\n"); text != "" {
+		stderr := strings.Split(text, "\n")
+		for _, l := range stderr[max(0, len(stderr)-8):] {
+			out = append(out, "  guest stderr: "+l)
+		}
+	}
+	var frames []string
+	for _, a := range p.backtrace() {
+		frames = append(frames, fmt.Sprintf("%#x", a-p.slide))
+	}
+	out = append(out, "  backtrace (cache addresses): "+strings.Join(frames, " "))
+	var unknown []string
+	for u := range p.unknown {
+		unknown = append(unknown, u)
+	}
+	sort.Strings(unknown)
+	for _, u := range unknown {
+		out = append(out, "  unhandled: "+u)
+	}
+	return strings.Join(out, "\n")
+}
+
+func (p *Process) backtrace() []uint64 {
+	out := []uint64{p.uc.reg(regPC), p.uc.reg(regLR)}
+	fp := p.uc.reg(regX29)
+	for i := 0; i < 24 && fp != 0 && p.isMapped(fp) && p.isMapped(fp+15); i++ {
+		frame, err := p.uc.memRead(fp, 16)
+		if err != nil {
+			break
+		}
+		fp = le.Uint64(frame)
+		out = append(out, le.Uint64(frame[8:])&0xFFFFFFFFFFFF)
+	}
+	return out
+}
+
+// ---- loading ----
+
+// loadMachO maps a Mach-O's segments the way the kernel does. base, if not zero, is where its
+// lowest segment goes. It returns the slide and the LC_UNIXTHREAD entry point, if any.
+func (p *Process) loadMachO(data []byte, name string, base uint64) (slide, entry uint64) {
+	type segment struct {
+		name                              string
+		vmaddr, vmsize, fileoff, filesize uint64
+	}
+	var segments []segment
+	lowest := ^uint64(0)
+	if len(data) < 32 {
+		stopf("%s is not a Mach-O", name)
+	}
+	off := uint64(32)
+	for n := le.Uint32(data[16:]); n > 0; n-- {
+		if off+8 > uint64(len(data)) {
+			stopf("%s has truncated load commands", name)
+		}
+		cmd, sz := le.Uint32(data[off:]), uint64(le.Uint32(data[off+4:]))
+		if sz < 8 || off+sz > uint64(len(data)) {
+			stopf("%s has truncated load commands", name)
+		}
+		switch {
+		case cmd == 0x19 && sz >= 56:
+			s := segment{strings.TrimRight(string(data[off+8:off+24]), "\x00"), le.Uint64(data[off+24:]), le.Uint64(data[off+32:]), le.Uint64(data[off+40:]), le.Uint64(data[off+48:])}
+			if s.name != "__PAGEZERO" {
+				lowest = min(lowest, s.vmaddr)
+			}
+			segments = append(segments, s)
+		case cmd == 0x5 && sz >= 16+33*8: // LC_UNIXTHREAD: arm_thread_state64 pc
+			entry = le.Uint64(data[off+16+32*8:])
+		}
+		off += sz
+	}
+	if base != 0 {
+		slide = base - lowest
+	}
+	for _, s := range segments {
+		if s.name == "__PAGEZERO" || s.vmsize == 0 {
+			continue
+		}
+		start := min(s.fileoff, uint64(len(data)))
+		end := min(start+s.filesize, uint64(len(data)))
+		p.alloc(s.vmsize, allocation{addr: s.vmaddr + slide, fixed: true, kind: fileRegion, data: data[start:end], name: name + ":" + s.name})
+	}
+	if entry != 0 {
+		entry += slide
+	}
+	return slide, entry
+}
+
+// Start runs the guest with the given arguments and environment until it exits. Any other end
+// (a fault, something unimplemented, the timeout) is a *StopError.
+func (p *Process) Start(argv, env []string, timeout time.Duration) (err error) {
+	defer guard(&err)
+	runner, err := thin(p.runner, 0)
+	if err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
+	p.loadMachO(runner, "runner", 0)
+	apple := []string{"executable_path=" + GuestExe, "", "", "", "ptr_munge=0x7a3c5e9b1d2f4a68",
+		fmt.Sprintf("main_stack=%#x,%#x,%#x,%#x", uint64(stackTop), uint64(stackSize), uint64(stackTop), uint64(stackSize)),
+		fmt.Sprintf("executable_file=%#x,%#x", uint64(0x1A<<32|deviceID), uint64(exeInode)),
+		fmt.Sprintf("dyld_file=%#x,%#x", uint64(0x1A<<32|deviceID), uint64(dyldInode)),
+		"executable_cdhash=" + strings.Repeat("11", 20), "executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", "th_port=0x103",
+		"ptrauth_disabled=1", "dyld_flags=0x0", "stack_guard=0x5a17c0de5a17c000", "malloc_entropy=0x1122334455667788,0x8877665544332211"}
+	var text []byte
+	var offsets [][]uint64
+	for _, group := range [][]string{argv, env, apple} {
+		var o []uint64
+		for _, s := range group {
+			o = append(o, uint64(len(text)))
+			text = append(append(text, s...), 0)
+		}
+		offsets = append(offsets, o)
+	}
+	sbase := stackTop - align(uint64(len(text))+64, 16)
+	words := []uint64{exeBase, uint64(len(argv))}
+	for _, o := range offsets {
+		for _, i := range o {
+			words = append(words, sbase+i)
+		}
+		words = append(words, 0)
+	}
+	sp := (sbase - uint64(len(words))*8) &^ 15
+	p.write(sbase, text)
+	p.write(sp, le64(words...))
+	p.uc.setReg(regSP, sp)
+	p.deadline = time.Now().Add(timeout)
+	var pc uint64
+	p.dyldSlide, pc = p.loadMachO(p.dyld, "dyld", dyldBase)
+	p.dyldHeader = dyldBase
+	p.run(pc)
+	return nil
+}
+
+func (p *Process) run(pc uint64) {
+	// One uninterrupted emu_start per stretch: resuming after Unicorn's own timeout fires is not
+	// reliable, so the timeout is only ever the overall deadline and hitting it is fatal, whatever
+	// else happened in that stretch. Stops requested from inside a hook (exit, an emulated
+	// instruction) are safe to resume from.
+	for !p.exited {
+		p.resume = false
+		left := max(time.Until(p.deadline).Microseconds(), 1)
+		timedOut, err := p.uc.start(pc, 0, uint64(left))
+		if err != nil {
+			reason := p.fault
+			if reason == "" {
+				reason = "no hook reported a cause"
+			}
+			pc = p.uc.reg(regPC)
+			stopf("%v: %s at %s lr %s", err, reason, p.where(pc), p.where(p.uc.reg(regLR)))
+		}
+		pc = p.uc.reg(regPC)
+		if timedOut {
+			stopf("timed out at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
+		}
+		if p.fault != "" {
+			stopf("%s", p.fault)
+		}
+		if !p.exited && !p.resume {
+			stopf("emulation stopped without a cause at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
+		}
+	}
+}
+
+// ---- traps ----
+
+func (p *Process) interrupt(number uint32) {
+	defer p.hookGuard(nil)
+	if number == 1 && p.undefined() {
+		p.resume = true
+		p.uc.stop()
+		return
+	}
+	if number != 2 {
+		pc := p.uc.reg(regPC)
+		words := "?"
+		func() {
+			defer func() { recover() }()
+			w := p.read(pc-8, 16)
+			words = fmt.Sprintf("%08x %08x %08x %08x", le.Uint32(w), le.Uint32(w[4:]), le.Uint32(w[8:]), le.Uint32(w[12:]))
+		}()
+		p.fault = fmt.Sprintf("CPU exception %d at %s (code around pc: %s)", number, p.where(pc), words)
+		p.uc.stop()
+		return
+	}
+	switch n := int64(p.uc.reg(regX0 + 16)); {
+	case n > 0 && n&0xFFFFFFFF == 0x80000000:
+		p.machdep()
+	case n < 0:
+		p.machTrap(-n)
+	default:
+		p.bsd(n)
+	}
+	if p.exited {
+		p.uc.stop()
+	}
+}
+
+// undefined emulates instructions the core refuses. Keys are off (as in any arm64 process running
+// arm64e system code) so pac*/aut* are no-ops, but pacga is never gated and the core traps it to a
+// hypervisor that is not there: compute a stand-in generic MAC instead.
+func (p *Process) undefined() bool {
+	pc := p.uc.reg(regPC)
+	insn := p.u32(pc)
+	rt := insn & 31
+	switch {
+	case insn&0xFFE0FC00 == 0x9AC03000: // pacga xd, xn, xm|sp
+		var n, m uint64
+		if rn := (insn >> 5) & 31; rn != 31 {
+			n = p.xr(rn)
+		}
+		if rm := (insn >> 16) & 31; rm == 31 {
+			m = p.uc.reg(regSP)
+		} else {
+			m = p.xr(rm)
+		}
+		if rt != 31 {
+			p.setXR(rt, (n*0x9E3779B97F4A7C15^m*0xC2B2AE3D27D4EB4F^n>>29)&0xFFFFFFFF00000000)
+		}
+	// PSTATE.DIT (data-independent timing), which some corecrypto builds use unconditionally.
+	case insn&0xFFFFFFE0 == 0xD53B42A0: // mrs xt, dit
+		if rt != 31 {
+			p.setXR(rt, p.dit<<24)
+		}
+	case insn&0xFFFFFFE0 == 0xD51B42A0: // msr dit, xt
+		p.dit = 0
+		if rt != 31 {
+			p.dit = p.xr(rt) >> 24 & 1
+		}
+	case insn&0xFFFFF0FF == 0xD503405F: // msr dit, #imm
+		p.dit = uint64(insn >> 8 & 1)
+	default:
+		return false
+	}
+	p.uc.setReg(regPC, pc+4)
+	return true
+}
+
+func (p *Process) machdep() {
+	switch selector := p.x(3); selector {
+	case 2: // set the thread-specific data base
+		p.tsd = p.x(0)
+		p.uc.setReg(regTPIDRRO, p.tsd)
+		p.setX(0, 0)
+	case 3:
+		p.setX(0, p.tsd)
+	default:
+		stopf("machdep call %d", selector)
+	}
+}
+
+func (p *Process) note(format string, args ...any) {
+	s := fmt.Sprintf(format, args...)
+	p.log = append(p.log, s)
+	if len(p.log) > 400 {
+		p.log = append(p.log[:0], p.log[200:]...)
+	}
+	if p.trace {
+		fmt.Fprintln(os.Stderr, "  "+s)
+	}
+}
+
+func hexArgs(args []uint64) string {
+	parts := make([]string, len(args))
+	for i, a := range args {
+		parts[i] = fmt.Sprintf("%#x", a)
+	}
+	return strings.Join(parts, ", ")
+}
