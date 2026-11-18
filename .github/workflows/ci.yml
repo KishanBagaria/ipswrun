@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # macos-latest is Apple silicon; the build needs cgo and the Xcode
+    # command line tools, both present on the runner image.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check architecture
+        run: test "$(uname -m)" = arm64
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build -o ipswrun ./cmd/ipswrun
