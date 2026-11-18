@@ -279,11 +279,7 @@ func migTaskInfo(p *Process, body []byte) migReply {
 	p.note("  task_info flavor %d", flavor)
 	switch flavor {
 	case 17: // TASK_DYLD_INFO
-		addr, size := p.section(p.dyldHeader, "__DATA", "__all_image_info", p.dyldSlide)
-		if addr == 0 {
-			addr, size = p.section(p.dyldHeader, "__DATA_DIRTY", "__all_image_info", p.dyldSlide)
-		}
-		return counted(append(le64(addr, size), le32(1)...))
+		return counted(append(le64(p.imageInfo[:]...), le32(1)...))
 	case 15: // TASK_AUDIT_TOKEN
 		return counted(le32(0, guestUID, guestGID, guestUID, guestGID, guestPID, 100000, 1))
 	}

@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/KishanBagaria/ipswrun/dyldcache"
+	"github.com/blacktop/go-macho"
+	"github.com/blacktop/go-macho/types"
 )
 
 const (
@@ -80,33 +82,18 @@ func le64(values ...uint64) []byte {
 }
 
 // thin returns the arm64 slice with the given CPU subtype of a (possibly fat) Mach-O.
-func thin(data []byte, subtype uint32) ([]byte, error) {
-	if len(data) < 8 {
-		return nil, errors.New("not a Mach-O")
-	}
-	magic := binary.BigEndian.Uint32(data)
-	if magic != 0xCAFEBABE && magic != 0xCAFEBABF {
+func thin(data []byte, subtype types.CPUSubtype) ([]byte, error) {
+	fat, err := macho.NewFatFile(bytes.NewReader(data))
+	if errors.Is(err, macho.ErrNotFat) {
 		return data, nil
 	}
-	be := binary.BigEndian
-	for i, n := uint64(0), uint64(be.Uint32(data[4:])); i < n; i++ {
-		var cpu, sub uint32
-		var off, size uint64
-		if magic == 0xCAFEBABE {
-			e := 8 + i*20
-			if e+20 > uint64(len(data)) {
-				break
-			}
-			cpu, sub, off, size = be.Uint32(data[e:]), be.Uint32(data[e+4:]), uint64(be.Uint32(data[e+8:])), uint64(be.Uint32(data[e+12:]))
-		} else {
-			e := 8 + i*32
-			if e+32 > uint64(len(data)) {
-				break
-			}
-			cpu, sub, off, size = be.Uint32(data[e:]), be.Uint32(data[e+4:]), be.Uint64(data[e+8:]), be.Uint64(data[e+16:])
-		}
-		if cpu == cpuARM64 && sub&0xFFFFFF == subtype && off <= uint64(len(data)) && size <= uint64(len(data))-off {
-			return data[off : off+size], nil
+	if err != nil {
+		return nil, err
+	}
+	size := uint64(len(data))
+	for _, a := range fat.Arches {
+		if a.CPU == cpuARM64 && a.SubCPU&types.CpuSubtypeMask == subtype && a.Offset64 <= size && a.Size64 <= size-a.Offset64 {
+			return data[a.Offset64 : a.Offset64+a.Size64], nil
 		}
 	}
 	return nil, errors.New("no matching arm64 slice in fat Mach-O")
@@ -208,8 +195,7 @@ type Process struct {
 	inodes     map[string]uint64
 	slide      uint64 // of the shared region, once dyld maps the cache into it
 	slideSet   bool
-	dyldSlide  uint64
-	dyldHeader uint64
+	imageInfo  [2]uint64 // address and size of dyld's __all_image_info, for TASK_DYLD_INFO
 }
 
 // unknownMIG is a Mach message nothing handles, and the return address of its sender.
@@ -641,26 +627,6 @@ func (p *Process) where(addr uint64) string {
 	return fmt.Sprintf("%#x (cache data)", addr)
 }
 
-// section finds a section of the Mach-O loaded at header mh; zeros when there is none.
-func (p *Process) section(mh uint64, segment, name string, slide uint64) (addr, size uint64) {
-	trim := func(b []byte) string { return strings.TrimRight(string(b), "\x00") }
-	off := mh + 32
-	for n := p.u32(mh + 16); n > 0; n-- {
-		cmd, sz := p.u32(off), p.u32(off+4)
-		if cmd == 0x19 {
-			c := p.read(off, uint64(sz))
-			for i := uint32(0); i < le.Uint32(c[64:]); i++ {
-				s := c[72+i*80 : 152+i*80]
-				if trim(s[:16]) == name && trim(s[16:32]) == segment {
-					return le.Uint64(s[32:]) + slide, le.Uint64(s[40:])
-				}
-			}
-		}
-		off += uint64(sz)
-	}
-	return 0, 0
-}
-
 // Diagnostics describes a failed run: recent system calls, guest output and a backtrace.
 func (p *Process) Diagnostics() string {
 	const lines = 20
@@ -706,52 +672,37 @@ func (p *Process) backtrace() []uint64 {
 
 // loadMachO maps a Mach-O's segments the way the kernel does. base, if not zero, is where its
 // lowest segment goes. It returns the slide and the LC_UNIXTHREAD entry point, if any.
-func (p *Process) loadMachO(data []byte, name string, base uint64) (slide, entry uint64) {
-	type segment struct {
-		name                              string
-		vmaddr, vmsize, fileoff, filesize uint64
+func (p *Process) loadMachO(data []byte, name string, base uint64) (f *macho.File, slide, entry uint64) {
+	f, err := macho.NewFile(bytes.NewReader(data))
+	if err != nil {
+		stopf("%s: %v", name, err)
 	}
-	var segments []segment
+	segments := f.Segments()
 	lowest := ^uint64(0)
-	if len(data) < 32 {
-		stopf("%s is not a Mach-O", name)
-	}
-	off := uint64(32)
-	for n := le.Uint32(data[16:]); n > 0; n-- {
-		if off+8 > uint64(len(data)) {
-			stopf("%s has truncated load commands", name)
+	for _, s := range segments {
+		if s.Name != "__PAGEZERO" {
+			lowest = min(lowest, s.Addr)
 		}
-		cmd, sz := le.Uint32(data[off:]), uint64(le.Uint32(data[off+4:]))
-		if sz < 8 || off+sz > uint64(len(data)) {
-			stopf("%s has truncated load commands", name)
-		}
-		switch {
-		case cmd == 0x19 && sz >= 56:
-			s := segment{strings.TrimRight(string(data[off+8:off+24]), "\x00"), le.Uint64(data[off+24:]), le.Uint64(data[off+32:]), le.Uint64(data[off+40:]), le.Uint64(data[off+48:])}
-			if s.name != "__PAGEZERO" {
-				lowest = min(lowest, s.vmaddr)
-			}
-			segments = append(segments, s)
-		case cmd == 0x5 && sz >= 16+33*8: // LC_UNIXTHREAD: arm_thread_state64 pc
-			entry = le.Uint64(data[off+16+32*8:])
-		}
-		off += sz
 	}
 	if base != 0 {
 		slide = base - lowest
 	}
 	for _, s := range segments {
-		if s.name == "__PAGEZERO" || s.vmsize == 0 {
+		if s.Name == "__PAGEZERO" || s.Memsz == 0 {
 			continue
 		}
-		start := min(s.fileoff, uint64(len(data)))
-		end := min(start+s.filesize, uint64(len(data)))
-		p.alloc(s.vmsize, allocation{addr: s.vmaddr + slide, fixed: true, kind: fileRegion, data: data[start:end], name: name + ":" + s.name})
+		start := min(s.Offset, uint64(len(data)))
+		end := min(start+s.Filesz, uint64(len(data)))
+		p.alloc(s.Memsz, allocation{addr: s.Addr + slide, fixed: true, kind: fileRegion, data: data[start:end], name: name + ":" + s.Name})
 	}
-	if entry != 0 {
-		entry += slide
+	for _, l := range f.Loads {
+		if t, ok := l.(*macho.UnixThread); ok && len(t.Threads) > 0 && len(t.Threads[0].Data) >= 33*8 {
+			if pc := le.Uint64(t.Threads[0].Data[32*8:]); pc != 0 { // arm_thread_state64
+				entry = pc + slide
+			}
+		}
 	}
-	return slide, entry
+	return f, slide, entry
 }
 
 // Start runs the guest with the given arguments and environment until it exits. Any other end
@@ -792,9 +743,13 @@ func (p *Process) Start(argv, env []string, timeout time.Duration) (err error) {
 	p.write(sp, le64(words...))
 	p.uc.setReg(regSP, sp)
 	p.deadline = time.Now().Add(timeout)
-	var pc uint64
-	p.dyldSlide, pc = p.loadMachO(p.dyld, "dyld", dyldBase)
-	p.dyldHeader = dyldBase
+	dyld, slide, pc := p.loadMachO(p.dyld, "dyld", dyldBase)
+	for _, segment := range []string{"__DATA", "__DATA_DIRTY"} {
+		if s := dyld.Section(segment, "__all_image_info"); s != nil && s.Addr+slide != 0 {
+			p.imageInfo = [2]uint64{s.Addr + slide, s.Size}
+			break
+		}
+	}
 	p.run(pc)
 	return nil
 }
