@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -31,7 +32,7 @@ type Run struct {
 	Executable string        // host path of the guest Mach-O (arm64, linked against the cache)
 	Args       []string      // guest arguments after argv[0]
 	Env        []string      // added to BaseEnv
-	System     []string      // system-volume files and directory prefixes (ending in "/") the guest may read
+	System     []string      // system-volume files and directory prefixes (ending in "/") the guest may read; DefaultSystem if empty
 	Timeout    time.Duration // for the whole run
 	Trace      bool          // print every system call to stderr
 }
@@ -41,6 +42,13 @@ var leadingDigits = regexp.MustCompile(`^\d+`)
 // RunBuild starts the guest inside the userland of the build in image and runs it to completion.
 // The process is returned even when the run fails, for its diagnostics; the caller closes it.
 func RunBuild(image *rangefs.Image, run Run) (*Process, *dyldcache.Cache, error) {
+	if err := os.MkdirAll(filepath.Join(run.Home, "tmp"), 0o777); err != nil { // BaseEnv's TMPDIR
+		return nil, nil, err
+	}
+	allowed := run.System
+	if len(allowed) == 0 {
+		allowed = DefaultSystem
+	}
 	var main *rangefs.File
 	var volume, guestDir string
 	for _, candidate := range [][2]string{{rangefs.SystemOS, cryptex + "/System/Library/dyld"}, {rangefs.FileSystem, "/System/Library/dyld"}} {
@@ -88,7 +96,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Process, *dyldcache.Cache, error)
 	known := map[string]SystemFile{}
 	system := func(path string) (SystemFile, error) {
 		wanted := false
-		for _, prefix := range run.System {
+		for _, prefix := range allowed {
 			wanted = wanted || strings.HasPrefix(path, prefix) || path+"/" == prefix || strings.HasPrefix(prefix, path+"/")
 		}
 		if !wanted {

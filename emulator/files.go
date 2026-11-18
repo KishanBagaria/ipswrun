@@ -3,6 +3,7 @@ package emulator
 import (
 	"errors"
 	"hash/crc32"
+	pathpkg "path"
 	"strings"
 	"syscall"
 
@@ -37,13 +38,12 @@ const (
 )
 
 type fd struct {
-	kind    fdKind
-	host    int
-	data    []byte
-	cache   dyldcache.File
-	path    string
-	hasPath bool // stdio descriptors have none
-	pos     int64
+	kind  fdKind
+	host  int
+	data  []byte
+	cache dyldcache.File
+	path  string // canonical; stdio descriptors have none
+	pos   int64
 }
 
 func (f *fd) size() int64 {
@@ -53,26 +53,40 @@ func (f *fd) size() int64 {
 	return int64(len(f.data))
 }
 
-// pread reads from a dataFD or cacheFD.
-func (f *fd) pread(off, n uint64) []byte {
-	if f.kind == cacheFD {
+// pread returns up to n bytes at off, or a negated errno.
+func (f *fd) pread(off, n uint64) ([]byte, int64) {
+	switch f.kind {
+	case hostFD:
+		data := hostBuffer(n)
+		got, err := syscall.Pread(f.host, data, int64(off))
+		if err != nil {
+			return nil, hostErrno(err)
+		}
+		return data[:got], 0
+	case cacheFD:
 		data, err := f.cache.Pread(int64(min(off, 1<<62)), int64(min(n, 1<<40)))
 		if err != nil {
 			stopf("read %s: %v", f.path, err)
 		}
-		return data
+		return data, 0
+	case dataFD:
+		off = min(off, uint64(len(f.data)))
+		return f.data[off:min(off+min(n, 1<<40), uint64(len(f.data)))], 0
 	}
-	off = min(off, uint64(len(f.data)))
-	return f.data[off:min(off+min(n, 1<<40), uint64(len(f.data)))]
+	return nil, -eISDIR
 }
 
 // target is what a guest path resolves to.
 type target struct {
 	kind  fdKind
+	path  string // canonical
 	host  string
 	data  []byte
 	cache dyldcache.File
 }
+
+// fd is the descriptor for a target that is not a host file.
+func (t target) fd() *fd { return &fd{kind: t.kind, data: t.data, cache: t.cache, path: t.path} }
 
 // hostErrno is the negated errno of a failed host call.
 func hostErrno(err error) int64 {
@@ -85,39 +99,10 @@ func hostErrno(err error) int64 {
 
 func closeHost(fd int) { syscall.Close(fd) }
 
-// normpath is Python's posixpath.normpath, which the path rules below were written against.
-func normpath(path string) string {
-	if path == "" {
-		return "."
-	}
-	slashes := 0
-	if strings.HasPrefix(path, "/") {
-		slashes = 1
-		if strings.HasPrefix(path, "//") && !strings.HasPrefix(path, "///") {
-			slashes = 2
-		}
-	}
-	var parts []string
-	for _, part := range strings.Split(path, "/") {
-		switch {
-		case part == "" || part == ".":
-		case part != ".." || (slashes == 0 && len(parts) == 0) || (len(parts) > 0 && parts[len(parts)-1] == ".."):
-			parts = append(parts, part)
-		case len(parts) > 0:
-			parts = parts[:len(parts)-1]
-		}
-	}
-	path = strings.Repeat("/", slashes) + strings.Join(parts, "/")
-	if path == "" {
-		return "."
-	}
-	return path
-}
-
 // canonical is the normalized guest path with the cryptex symlink of a real system followed, so a
 // file has one identity (and one inode number) however the guest names it.
 func canonical(path string) string {
-	path = normpath(path)
+	path = pathpkg.Clean(path)
 	if path == cryptexLink || strings.HasPrefix(path, cryptexLink+"/") {
 		path = cryptex + path[len(cryptexLink):]
 	}
@@ -130,6 +115,12 @@ func crcInode(path string) uint64 { return uint64(crc32.ChecksumIEEE([]byte(path
 // device nodes ever name host files; everything else is served from memory or does not exist.
 func (p *Process) resolve(path string) (target, bool) {
 	path = canonical(path)
+	t, ok := p.lookup(path)
+	t.path = path
+	return t, ok
+}
+
+func (p *Process) lookup(path string) (target, bool) {
 	switch {
 	case path == GuestExe:
 		return target{kind: hostFD, host: p.runnerPath}, true
@@ -173,8 +164,8 @@ func statBuf(mode uint16, size int64, ino uint64, mtime int64) []byte {
 	le.PutUint16(b[4:], mode)
 	le.PutUint16(b[6:], 1)
 	le.PutUint64(b[8:], ino)
-	le.PutUint32(b[16:], 501)
-	le.PutUint32(b[20:], 20)
+	le.PutUint32(b[16:], guestUID)
+	le.PutUint32(b[20:], guestGID)
 	for i := 32; i < 96; i += 16 { // access, modification, change and birth times
 		le.PutUint64(b[i:], uint64(mtime))
 	}
@@ -190,12 +181,29 @@ const (
 	modeFile   = syscall.S_IFREG | 0o755
 )
 
-// hostStatBuf reports a host file with a pinned inode number where the guest path has one.
-func (p *Process) hostStatBuf(st *syscall.Stat_t, ino uint64, pinned bool) []byte {
-	if !pinned || ino == 1 {
-		ino = st.Ino & 0xFFFFFFFF
+// stat writes the struct stat64 of a resolved path or an open descriptor. Paths with a pinned
+// inode number report it; hostStat is consulted for a hostFD only.
+func (p *Process) stat(buf uint64, kind fdKind, path string, size int64, hostStat func(*syscall.Stat_t) error) int64 {
+	ino := p.inodes[path]
+	switch kind {
+	case hostFD:
+		var st syscall.Stat_t
+		if err := hostStat(&st); err != nil {
+			return hostErrno(err)
+		}
+		if ino == 0 {
+			ino = st.Ino & 0xFFFFFFFF
+		}
+		p.write(buf, statBuf(uint16(st.Mode), st.Size, ino, st.Mtimespec.Sec))
+	case dirFD:
+		p.write(buf, statBuf(modeDir, 0, crcInode(path), fixedMtime))
+	default:
+		if ino == 0 {
+			ino = crcInode(path)
+		}
+		p.write(buf, statBuf(modeFile, size, ino, fixedMtime))
 	}
-	return statBuf(uint16(st.Mode), st.Size, ino, st.Mtimespec.Sec)
+	return 0
 }
 
 func (p *Process) doStat(path string, buf uint64, follow bool) int64 {
@@ -204,33 +212,12 @@ func (p *Process) doStat(path string, buf uint64, follow bool) int64 {
 		p.note("  ENOENT stat %s", path)
 		return -eNOENT
 	}
-	ino, pinned := p.inodes[canonical(path)]
-	switch t.kind {
-	case hostFD:
-		var st syscall.Stat_t
-		var err error
+	return p.stat(buf, t.kind, t.path, t.fd().size(), func(st *syscall.Stat_t) error {
 		if follow {
-			err = syscall.Stat(t.host, &st)
-		} else {
-			err = syscall.Lstat(t.host, &st)
+			return syscall.Stat(t.host, st)
 		}
-		if err != nil {
-			return hostErrno(err)
-		}
-		p.write(buf, p.hostStatBuf(&st, ino, pinned))
-	case dirFD:
-		p.write(buf, statBuf(modeDir, 0, crcInode(path), fixedMtime))
-	default:
-		size := int64(len(t.data))
-		if t.kind == cacheFD {
-			size = t.cache.Size()
-		}
-		if !pinned {
-			ino = crcInode(path)
-		}
-		p.write(buf, statBuf(modeFile, size, ino, fixedMtime))
-	}
-	return 0
+		return syscall.Lstat(t.host, st)
+	})
 }
 
 func sysStat64(p *Process, a []uint64) int64  { return p.doStat(p.cstr(a[0]), a[1], true) }
@@ -245,26 +232,7 @@ func sysFstat64(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	ino, pinned := uint64(0), false
-	if f.hasPath {
-		ino, pinned = p.inodes[f.path]
-	}
-	switch f.kind {
-	case hostFD:
-		var st syscall.Stat_t
-		if err := syscall.Fstat(f.host, &st); err != nil {
-			return hostErrno(err)
-		}
-		p.write(a[1], p.hostStatBuf(&st, ino, pinned))
-	case dirFD:
-		p.write(a[1], statBuf(modeDir, 0, crcInode(f.path), fixedMtime))
-	default:
-		if !pinned || ino == 0 {
-			ino = crcInode(f.path)
-		}
-		p.write(a[1], statBuf(modeFile, f.size(), ino, fixedMtime))
-	}
-	return 0
+	return p.stat(a[1], f.kind, f.path, f.size(), func(st *syscall.Stat_t) error { return syscall.Fstat(f.host, st) })
 }
 
 func (p *Process) doOpen(path string, flags, mode uint64) int64 {
@@ -290,11 +258,9 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 			p.note("  open %s failed: %v", path, err)
 			return hostErrno(err)
 		}
-		p.fds[n] = &fd{kind: hostFD, host: h, path: path, hasPath: true}
-	case dirFD:
-		p.fds[n] = &fd{kind: dirFD, path: canonical(path), hasPath: true}
+		p.fds[n] = &fd{kind: hostFD, host: h, path: t.path}
 	default:
-		p.fds[n] = &fd{kind: t.kind, data: t.data, cache: t.cache, path: canonical(path), hasPath: true}
+		p.fds[n] = t.fd()
 	}
 	p.nextFD++
 	p.note("  open %s -> %d", path, n)
@@ -309,7 +275,7 @@ func (p *Process) at(dirfd, path uint64) string {
 	}
 	if !strings.HasPrefix(s, "/") {
 		dir := "/"
-		if f := p.fds[dirfd&0xFFFFFFFF]; f != nil && f.hasPath {
+		if f := p.fds[dirfd&0xFFFFFFFF]; f != nil && f.path != "" {
 			dir = f.path
 		}
 		if !strings.HasSuffix(dir, "/") {
@@ -352,19 +318,19 @@ func sysRead(p *Process, a []uint64) int64 {
 		return -eBADF
 	}
 	var data []byte
-	switch f.kind {
-	case hostFD:
+	if f.kind == hostFD { // the host keeps the position
 		data = hostBuffer(a[2])
 		n, err := syscall.Read(f.host, data)
 		if err != nil {
 			return hostErrno(err)
 		}
 		data = data[:n]
-	case dataFD, cacheFD:
-		data = f.pread(uint64(max(f.pos, 0)), a[2])
+	} else {
+		var errno int64
+		if data, errno = f.pread(uint64(max(f.pos, 0)), a[2]); errno != 0 {
+			return errno
+		}
 		f.pos += int64(len(data))
-	default:
-		return -eISDIR
 	}
 	p.write(a[1], data)
 	return int64(len(data))
@@ -375,19 +341,9 @@ func sysPread(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	var data []byte
-	switch f.kind {
-	case hostFD:
-		data = hostBuffer(a[2])
-		n, err := syscall.Pread(f.host, data, int64(a[3]))
-		if err != nil {
-			return hostErrno(err)
-		}
-		data = data[:n]
-	case dataFD, cacheFD:
-		data = f.pread(a[3], a[2])
-	default:
-		return -eISDIR
+	data, errno := f.pread(a[3], a[2])
+	if errno != 0 {
+		return errno
 	}
 	p.write(a[1], data)
 	return int64(len(data))
@@ -524,7 +480,7 @@ func sysFcntl(p *Process, a []uint64) int64 {
 	switch cmd, arg := a[1], a[2]; cmd {
 	case 50: // F_GETPATH
 		path := "/dev/fd"
-		if f.hasPath {
+		if f.path != "" {
 			path = f.path
 		}
 		p.write(arg, append([]byte(path), 0))
@@ -536,7 +492,7 @@ func sysFcntl(p *Process, a []uint64) int64 {
 			if err != nil {
 				return hostErrno(err)
 			}
-			p.fds[n] = &fd{kind: hostFD, host: h, path: f.path, hasPath: f.hasPath}
+			p.fds[n] = &fd{kind: hostFD, host: h, path: f.path}
 		} else {
 			p.fds[n] = f // shares the offset, like a real duplicate
 		}

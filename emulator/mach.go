@@ -1,7 +1,6 @@
 package emulator
 
 import (
-	"fmt"
 	"strconv"
 	"time"
 )
@@ -62,10 +61,7 @@ func (p *Process) machTrap(n int64) {
 	if !ok {
 		name = strconv.FormatInt(n, 10)
 	}
-	args := make([]uint64, 8)
-	for i := range args {
-		args[i] = p.x(i)
-	}
+	args := p.args()
 	h, ok := machHandlers[name]
 	if !ok {
 		stopf("unimplemented mach trap %d %s(%s) from %s", n, name, hexArgs(args[:6]), p.where(p.uc.reg(regLR)))
@@ -80,8 +76,13 @@ func (p *Process) newPort() uint32 {
 	return p.nextPort
 }
 
+// vmMap reserves memory as the VM_FLAGS of vm_allocate and vm_map ask; false when it cannot.
+func (p *Process) vmMap(addr, size, mask, flags uint64, name string) (uint64, bool) {
+	return p.alloc(size, allocation{addr: addr, fixed: flags&1 == 0, mask: mask, name: name, keepOther: flags&0x4000 == 0})
+}
+
 func (p *Process) vmAllocate(addrp, size, mask, flags uint64, name string) int64 {
-	start, ok := p.alloc(size, allocation{addr: p.u64(addrp), fixed: flags&1 == 0, mask: mask, name: name, keepOther: flags&0x4000 == 0})
+	start, ok := p.vmMap(p.u64(addrp), size, mask, flags, name)
 	if !ok {
 		return kernNoSpace
 	}
@@ -94,10 +95,7 @@ func machVMAllocate(p *Process, a []uint64) int64 {
 }
 func machVMMap(p *Process, a []uint64) int64 { return p.vmAllocate(a[1], a[2], a[3], a[4], "vm_map") }
 
-func machVMDeallocate(p *Process, a []uint64) int64 {
-	p.unmap(a[1]&^(pageSize-1), align(a[1]+a[2], pageSize))
-	return 0
-}
+func machVMDeallocate(p *Process, a []uint64) int64 { return sysMunmap(p, a[1:]) }
 
 func machPortType(p *Process, a []uint64) int64 {
 	p.write(a[2], le32(0x20000))
@@ -120,7 +118,7 @@ func machSemaphoreWait(p *Process, a []uint64) int64 {
 }
 
 func machPidForTask(p *Process, a []uint64) int64 {
-	p.write(a[1], le32(4242))
+	p.write(a[1], le32(guestPID))
 	return 0
 }
 
@@ -177,7 +175,7 @@ func (p *Process) doMsg(m message) int64 {
 	}
 	p.note("  mach_msg id %d to port %#x send %d rcv %d%s", m.id, m.remote, m.sendSize, m.rcvSize, unhandled)
 	if routine == nil {
-		p.unknown[fmt.Sprintf("mig %d port %#x from %s", m.id, m.remote, p.where(p.uc.reg(regLR)))] = struct{}{}
+		p.unknown[unknownMIG{m.id, m.remote, p.uc.reg(regLR)}] = struct{}{} // symbolized only if the run fails
 		return sendInvalidDest
 	}
 	reply := routine(p, body)
@@ -246,7 +244,7 @@ func migTaskGetSpecialPort(p *Process, body []byte) migReply {
 
 func migVMMap(p *Process, body []byte) migReply { // mach_vm_map
 	addr, size, mask, flags := le.Uint64(body[48:]), le.Uint64(body[56:]), le.Uint64(body[64:]), uint64(le.Uint32(body[72:]))
-	start, ok := p.alloc(size, allocation{addr: addr, fixed: flags&1 == 0, mask: mask, name: "vm_map", keepOther: flags&0x4000 == 0})
+	start, ok := p.vmMap(addr, size, mask, flags, "vm_map")
 	if !ok {
 		return migCode(kernNoSpace)
 	}
@@ -267,7 +265,7 @@ func migHostInfo(p *Process, body []byte) migReply {
 	var info []byte
 	switch flavor {
 	case 1: // HOST_BASIC_INFO
-		info = append(le32(1, 1, 0, 0x100000C, 2, 0x10000, 0x100000C, 0, 0, 1), le64(8<<30)...)
+		info = append(le32(1, 1, 0, cpuARM64, cpuSubtypeARM64E, 0x10000, cpuARM64, 0, 0, 1), le64(guestMemory)...)
 	case 5: // HOST_PRIORITY_INFO
 		info = le32(0, 31, 31, 31, 0, 31, 0, 127)
 	default:
@@ -287,7 +285,7 @@ func migTaskInfo(p *Process, body []byte) migReply {
 		}
 		return counted(append(le64(addr, size), le32(1)...))
 	case 15: // TASK_AUDIT_TOKEN
-		return counted(le32(0, 501, 20, 501, 20, 4242, 100000, 1))
+		return counted(le32(0, guestUID, guestGID, guestUID, guestGID, guestPID, 100000, 1))
 	}
 	return migCode(kernInvalidArg)
 }

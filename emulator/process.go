@@ -8,12 +8,15 @@
 package emulator
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -46,6 +49,14 @@ const (
 	exeInode    = 0x5105F2A
 	dyldInode   = 0x5105F2B
 	cacheInode  = 0x5105F30
+
+	// The one process, user and machine the guest sees, however it asks.
+	guestPID         = 4242
+	guestUID         = 501
+	guestGID         = 20
+	guestMemory      = 8 << 30
+	cpuARM64         = 0x100000C
+	cpuSubtypeARM64E = 2
 )
 
 var le = binary.LittleEndian
@@ -94,7 +105,7 @@ func thin(data []byte, subtype uint32) ([]byte, error) {
 			}
 			cpu, sub, off, size = be.Uint32(data[e:]), be.Uint32(data[e+4:]), be.Uint64(data[e+8:]), be.Uint64(data[e+16:])
 		}
-		if cpu == 0x100000C && sub&0xFFFFFF == subtype && off <= uint64(len(data)) && size <= uint64(len(data))-off {
+		if cpu == cpuARM64 && sub&0xFFFFFF == subtype && off <= uint64(len(data)) && size <= uint64(len(data))-off {
 			return data[off : off+size], nil
 		}
 	}
@@ -183,7 +194,7 @@ type Process struct {
 	deadline time.Time
 
 	log     []string
-	unknown map[string]struct{}
+	unknown map[unknownMIG]struct{}
 	tsd     uint64
 	oids    []string
 	sysctls map[string]any
@@ -199,12 +210,12 @@ type Process struct {
 	slideSet   bool
 	dyldSlide  uint64
 	dyldHeader uint64
-	texts      []cacheText
 }
 
-type cacheText struct {
-	address    uint64
-	size, path uint32
+// unknownMIG is a Mach message nothing handles, and the return address of its sender.
+type unknownMIG struct {
+	id, port uint32
+	lr       uint64
 }
 
 // guard turns the panics the emulator uses for control flow into an error.
@@ -225,7 +236,7 @@ func New(cfg Config) (p *Process, err error) {
 	if err := loadUnicorn(cfg.Unicorn); err != nil {
 		return nil, err
 	}
-	dyld, err := thin(cfg.Dyld, 2)
+	dyld, err := thin(cfg.Dyld, cpuSubtypeARM64E)
 	if err != nil {
 		return nil, fmt.Errorf("dyld: %w", err)
 	}
@@ -238,17 +249,13 @@ func New(cfg Config) (p *Process, err error) {
 		return nil, err
 	}
 	p = &Process{cache: cfg.Cache, dyld: dyld, home: home, runner: runner, runnerPath: cfg.Runner, system: cfg.System, os: cfg.OS, trace: cfg.Trace,
-		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[string]struct{}{},
+		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]struct{}{},
 		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}}
-	var paths []string
 	for suffix, f := range cfg.Cache.Files {
-		path := cfg.CacheDir + "/" + CacheName + suffix
-		p.cachePaths[path] = f
-		paths = append(paths, path)
+		p.cachePaths[cfg.CacheDir+"/"+CacheName+suffix] = f
 	}
-	sort.Strings(paths)
-	for i, path := range paths {
+	for i, path := range slices.Sorted(maps.Keys(p.cachePaths)) {
 		p.inodes[path] = cacheInode + uint64(i)
 	}
 	if p.uc, err = newEngine(p); err != nil {
@@ -298,9 +305,7 @@ func (p *Process) MappedPages() int { return len(p.mapped) }
 
 func (p *Process) addRegion(r *region) *region {
 	i := sort.Search(len(p.regions), func(i int) bool { return p.regions[i].start >= r.start })
-	p.regions = append(p.regions, nil)
-	copy(p.regions[i+1:], p.regions[i:])
-	p.regions[i] = r
+	p.regions = slices.Insert(p.regions, i, r)
 	return r
 }
 
@@ -329,12 +334,8 @@ func (p *Process) isMapped(addr uint64) bool {
 
 func (p *Process) unmap(start, end uint64) {
 	for _, r := range p.overlaps(start, end) {
-		for i, x := range p.regions {
-			if x == r {
-				p.regions = append(p.regions[:i], p.regions[i+1:]...)
-				break
-			}
-		}
+		i := slices.Index(p.regions, r)
+		p.regions = slices.Delete(p.regions, i, i+1)
 		if r.start < start {
 			p.addRegion(&region{r.start, start, r.kind, r.data, r.off, r.name})
 		}
@@ -504,7 +505,7 @@ func (p *Process) cstr(addr uint64) string {
 	for len(out) < limit {
 		at := addr + uint64(len(out))
 		chunk := p.read(at, min(256, pageSize-at&(pageSize-1)))
-		if i := strings.IndexByte(string(chunk), 0); i >= 0 {
+		if i := bytes.IndexByte(chunk, 0); i >= 0 {
 			out = append(out, chunk[:i]...)
 			break
 		}
@@ -585,7 +586,17 @@ func (p *Process) setupCommpage() {
 
 // ---- registers ----
 
-func (p *Process) x(i int) uint64           { return p.uc.reg(regX0 + i) }
+func (p *Process) x(i int) uint64 { return p.uc.reg(regX0 + i) }
+
+// args is x0…x7, the argument registers of a system call or trap.
+func (p *Process) args() []uint64 {
+	args := make([]uint64, 8)
+	for i := range args {
+		args[i] = p.x(i)
+	}
+	return args
+}
+
 func (p *Process) setX(i int, v uint64)     { p.uc.setReg(regX0+i, v) }
 func (p *Process) xr(i uint32) uint64       { return p.uc.reg(xrID(i)) }
 func (p *Process) setXR(i uint32, v uint64) { p.uc.setReg(xrID(i), v) }
@@ -621,25 +632,11 @@ func (p *Process) where(addr uint64) string {
 		return fmt.Sprintf("%#x (%s+%#x)", addr, r.name, addr-r.start)
 	}
 	addr -= p.slide
-	main := p.cache.Files[""]
-	if p.texts == nil {
-		h := p.cache.Header
-		t, err := main.Pread(int64(le.Uint64(h[0x88:])), int64(le.Uint64(h[0x90:]))*32)
-		if err != nil {
-			return fmt.Sprintf("%#x (cache)", addr)
-		}
-		p.texts = []cacheText{}
-		for ; len(t) >= 32; t = t[32:] {
-			p.texts = append(p.texts, cacheText{le.Uint64(t[16:]), le.Uint32(t[24:]), le.Uint32(t[28:])})
-		}
-		sort.Slice(p.texts, func(i, j int) bool { return p.texts[i].address < p.texts[j].address })
-	}
-	i := sort.Search(len(p.texts), func(i int) bool { return p.texts[i].address > addr }) - 1
-	if i >= 0 && addr < p.texts[i].address+uint64(p.texts[i].size) {
-		if name, err := main.Pread(int64(p.texts[i].path), 200); err == nil {
-			path, _, _ := strings.Cut(string(name), "\x00")
-			return fmt.Sprintf("%#x (%s+%#x)", addr, path[strings.LastIndexByte(path, '/')+1:], addr-p.texts[i].address)
-		}
+	switch path, offset, err := p.cache.Image(addr); {
+	case err != nil:
+		return fmt.Sprintf("%#x (cache)", addr)
+	case path != "":
+		return fmt.Sprintf("%#x (%s+%#x)", addr, path[strings.LastIndexByte(path, '/')+1:], offset)
 	}
 	return fmt.Sprintf("%#x (cache data)", addr)
 }
@@ -684,12 +681,10 @@ func (p *Process) Diagnostics() string {
 	out = append(out, "  backtrace (cache addresses): "+strings.Join(frames, " "))
 	var unknown []string
 	for u := range p.unknown {
-		unknown = append(unknown, u)
+		unknown = append(unknown, fmt.Sprintf("  unhandled: mig %d port %#x from %s", u.id, u.port, p.where(u.lr)))
 	}
-	sort.Strings(unknown)
-	for _, u := range unknown {
-		out = append(out, "  unhandled: "+u)
-	}
+	slices.Sort(unknown)
+	out = append(out, unknown...)
 	return strings.Join(out, "\n")
 }
 

@@ -19,7 +19,8 @@ var le = binary.LittleEndian
 // File is one file of the cache (the main file or a subcache).
 type File interface {
 	Size() int64
-	// Pread returns up to n bytes at off; fewer only at the end of the file.
+	// Pread returns up to n bytes at off; fewer only at the end of the file. The bytes are the
+	// caller's to change.
 	Pread(off, n int64) ([]byte, error)
 }
 
@@ -47,12 +48,17 @@ type slideInfo struct {
 type Cache struct {
 	Mappings []*Mapping      // sorted by address
 	Files    map[string]File // by file name suffix; "" is the main file
-	Suffixes []string        // in subcache order, main file first
-	Header   []byte          // the first 0x400 bytes of the main file
 	UUID     [16]byte
 	Base     uint64
 
-	headerSize uint32
+	textsOff, textsCount uint64
+	texts                []imageText // sorted by address; read on first use
+}
+
+// imageText is the text segment of one image in the cache.
+type imageText struct {
+	address    uint64
+	size, path uint32
 }
 
 // Open parses the cache whose files opener returns by suffix ("" for the main file).
@@ -68,19 +74,20 @@ func Open(opener func(suffix string) (File, error)) (*Cache, error) {
 	if len(h) < 0x200 || string(bytes.TrimRight(h[:16], "\x00")) != "dyld_v1  arm64e" {
 		return nil, errors.New("not an arm64e dyld cache")
 	}
-	c := &Cache{Files: map[string]File{"": main}, Suffixes: []string{""}, Header: h, headerSize: le.Uint32(h[0x10:])}
+	c := &Cache{Files: map[string]File{"": main}, textsOff: le.Uint64(h[0x88:]), textsCount: le.Uint64(h[0x90:])}
+	headerSize := le.Uint32(h[0x10:])
 	copy(c.UUID[:], h[0x58:0x68])
 	if err := c.add(main, h); err != nil {
 		return nil, err
 	}
 	var subOff, subCount uint32
-	if c.headerSize > 0x188 {
+	if headerSize > 0x188 {
 		subOff, subCount = le.Uint32(h[0x188:]), le.Uint32(h[0x18C:])
 	}
 	if subCount > 256 {
 		return nil, errors.New("too many subcaches")
 	}
-	v1 := c.headerSize <= 0x1C8
+	v1 := headerSize <= 0x1C8
 	entrySize := int64(56)
 	if v1 {
 		entrySize = 24
@@ -112,7 +119,6 @@ func Open(opener func(suffix string) (File, error)) (*Cache, error) {
 			return nil, fmt.Errorf("subcache uuid mismatch %s", suffix)
 		}
 		c.Files[suffix] = f
-		c.Suffixes = append(c.Suffixes, suffix)
 		if err := c.add(f, sh); err != nil {
 			return nil, err
 		}
@@ -157,6 +163,32 @@ func (c *Cache) Mapping(addr uint64) *Mapping {
 		}
 	}
 	return nil
+}
+
+// Image names the image whose text segment holds the unslid address addr, with the offset into
+// it; path is empty when no image's text does.
+func (c *Cache) Image(addr uint64) (path string, offset uint64, err error) {
+	main := c.Files[""]
+	if c.texts == nil {
+		t, err := main.Pread(int64(c.textsOff), int64(c.textsCount)*32)
+		if err != nil {
+			return "", 0, err
+		}
+		c.texts = []imageText{}
+		for ; len(t) >= 32; t = t[32:] {
+			c.texts = append(c.texts, imageText{le.Uint64(t[16:]), le.Uint32(t[24:]), le.Uint32(t[28:])})
+		}
+		sort.Slice(c.texts, func(i, j int) bool { return c.texts[i].address < c.texts[j].address })
+	}
+	i := sort.Search(len(c.texts), func(i int) bool { return c.texts[i].address > addr }) - 1
+	if i < 0 || addr >= c.texts[i].address+uint64(c.texts[i].size) {
+		return "", 0, nil
+	}
+	name, err := main.Pread(int64(c.texts[i].path), 200)
+	if err != nil {
+		return "", 0, err
+	}
+	return cstring(name), addr - c.texts[i].address, nil
 }
 
 func (m *Mapping) slideInfo() (*slideInfo, error) {
@@ -212,12 +244,13 @@ func (c *Cache) Page(addr, n, slide uint64) ([]byte, error) {
 	if m == nil {
 		return nil, fmt.Errorf("address outside cache: %#x", addr)
 	}
-	raw, err := m.File.Pread(int64(m.Offset+addr-m.Address), int64(n))
+	data, err := m.File.Pread(int64(m.Offset+addr-m.Address), int64(n))
 	if err != nil {
 		return nil, err
 	}
-	data := make([]byte, n)
-	copy(data, raw)
+	if uint64(len(data)) < n { // the end of the file: the rest is zero
+		data = append(data, make([]byte, n-uint64(len(data)))...)
+	}
 	s, err := m.slideInfo()
 	if err != nil || s == nil {
 		return data, err

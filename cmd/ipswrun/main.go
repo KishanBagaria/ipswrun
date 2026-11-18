@@ -88,12 +88,6 @@ func run() (int, error) {
 		}
 		defer os.RemoveAll(*home)
 	}
-	if err := os.MkdirAll(filepath.Join(*home, "tmp"), 0o777); err != nil {
-		return 0, err
-	}
-	if len(system) == 0 {
-		system = emulator.DefaultSystem
-	}
 
 	started := time.Now()
 	image, err := rangefs.Open(flag.Arg(0), *cache, *device)

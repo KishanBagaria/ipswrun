@@ -33,7 +33,6 @@ type Image struct {
 	info    *info.Info
 	device  string
 	volumes map[string]*apfs.Reader
-	names   map[string]string
 }
 
 // Open reads the ZIP directory and build manifest of the restore image at url. device is the
@@ -56,7 +55,7 @@ func Open(url, cacheDir, device string) (*Image, error) {
 		return nil, errors.New("restore image has no BuildManifest.plist")
 	}
 	return &Image{OpenMember: OpenStoredMember, remote: remote, archive: archive, info: parsed, device: device,
-		volumes: map[string]*apfs.Reader{}, names: map[string]string{}}, nil
+		volumes: map[string]*apfs.Reader{}}, nil
 }
 
 // Version is the product version in the build manifest, e.g. "15.6.1".
@@ -64,9 +63,6 @@ func (m *Image) Version() string { return m.info.Plists.BuildManifest.ProductVer
 
 // Build is the product build version in the build manifest, e.g. "24G90".
 func (m *Image) Build() string { return m.info.Plists.BuildManifest.ProductBuildVersion }
-
-// Size is the length of the whole restore image in bytes.
-func (m *Image) Size() int64 { return m.remote.size }
 
 // Stats reports the range requests made so far and the bytes they returned.
 func (m *Image) Stats() (requests, bytes int64) {
@@ -188,7 +184,7 @@ func (m *Image) volume(kind string) (*apfs.Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s volume %s: %w", kind, name, err)
 	}
-	m.volumes[kind], m.names[kind] = v, name
+	m.volumes[kind] = v
 	return v, nil
 }
 

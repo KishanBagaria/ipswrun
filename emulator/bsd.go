@@ -3,9 +3,9 @@ package emulator
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -39,8 +39,8 @@ func init() {
 		"mremap_encrypted": {0, constant(0)}, "shared_region_check_np": {1, sysSharedRegionCheck},
 		"shared_region_map_and_slide_2_np": {4, sysSharedRegionMap}, "map_with_linking_np": {4, constant(-eNOTSUP)},
 		// process
-		"exit": {1, sysExit}, "getpid": {0, constant(4242)}, "getppid": {0, constant(1)}, "getuid": {0, constant(501)},
-		"geteuid": {0, constant(501)}, "getgid": {0, constant(20)}, "getegid": {0, constant(20)}, "gettid": {2, constant(-eSRCH)},
+		"exit": {1, sysExit}, "getpid": {0, constant(guestPID)}, "getppid": {0, constant(1)}, "getuid": {0, constant(guestUID)},
+		"geteuid": {0, constant(guestUID)}, "getgid": {0, constant(guestGID)}, "getegid": {0, constant(guestGID)}, "gettid": {2, constant(-eSRCH)},
 		"issetugid": {0, constant(0)}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
 		"__pthread_sigmask": {3, sysSigprocmask}, "__pthread_kill": {2, sysPthreadKill}, "kill": {3, sysKill},
 		"sigaltstack": {2, constant(0)}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, constant(0x4242)},
@@ -50,12 +50,15 @@ func init() {
 		"csops": {4, sysCsops}, "csops_audittoken": {4, sysCsops}, "csrctl": {3, constant(-ePERM)}, "getrlimit": {2, sysGetrlimit},
 		"setrlimit": {2, constant(0)}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
-		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
+		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait},
 		"ulock_wake": {3, constant(-eNOENT)}, "proc_info": {6, sysProcInfo}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+	}
+	for name, v := range trivial {
+		bsdHandlers[name] = handler{4, constant(v)}
 	}
 }
 
-// trivial are calls answered with a constant (negative: errno) and no side effects.
+// trivial are more calls answered with a constant (negative: errno) and no side effects.
 var trivial = map[string]int64{
 	"objc_bp_assist_cfg_np": 0, "work_interval_ctl": -eNOTSUP, "memorystatus_control": 0, "proc_rlimit_control": 0,
 	"thread_selfusage": 0, "crossarch_trap": -eNOTSUP, "__semwait_signal": 0, "kevent_qos": 0, "kevent_id": 0, "kevent64": 0, "kevent": 0,
@@ -64,7 +67,7 @@ var trivial = map[string]int64{
 	"debug_syscall_reject_config": 0, "debug_syscall_reject": 0, "setattrlist": 0, "fsetattrlist": 0, "chmod": 0, "fchmod": 0,
 	"flock": 0, "setxattr": 0, "fsetxattr": 0, "getxattr": -eNOATTR, "fgetxattr": -eNOATTR, "listxattr": 0, "flistxattr": 0, "chdir": 0,
 	"memorystatus_get_level": 0, "record_system_event": 0, "log_data": 0, "oslog_coproc_reg": 0, "oslog_coproc": 0, "setpriority": 0,
-	"getpriority": 0, "setsid": 0, "getpgrp": 4242, "setitimer": 0, "utimes": 0, "futimes": 0, "fchown": 0, "chown": 0, "sync": 0,
+	"getpriority": 0, "setsid": 0, "getpgrp": guestPID, "setitimer": 0, "utimes": 0, "futimes": 0, "fchown": 0, "chown": 0, "sync": 0,
 }
 
 // call runs a handler; touching unmapped guest memory yields onFault instead of ending the run.
@@ -85,30 +88,17 @@ func (p *Process) bsd(n int64) {
 	if !ok {
 		name = strconv.FormatInt(n, 10)
 	}
-	args := make([]uint64, 8)
-	for i := range args {
-		args[i] = p.x(i)
-	}
+	args := p.args()
 	h, ok := bsdHandlers[strings.ReplaceAll(name, "_nocancel", "")]
 	if !ok {
-		r, ok := trivial[name]
-		if !ok {
-			stopf("unimplemented syscall %d %s(%s) from %s", n, name, hexArgs(args[:6]), p.where(p.uc.reg(regLR)))
-		}
-		p.setX(0, uint64(max(r, -r)))
-		p.carry(r < 0)
-		p.note("%s(%s) = trivial %d", name, hexArgs(args[:4]), r)
-		return
+		stopf("unimplemented syscall %d %s(%s) from %s", n, name, hexArgs(args[:6]), p.where(p.uc.reg(regLR)))
 	}
 	r := p.call(h, args, -eFAULT)
+	p.setX(0, uint64(max(r, -r)))
+	p.carry(r < 0)
 	result := fmt.Sprintf("%#x", uint64(r))
 	if r < 0 {
-		p.setX(0, uint64(-r))
-		p.carry(true)
 		result = fmt.Sprintf("errno %d", -r)
-	} else {
-		p.setX(0, uint64(r))
-		p.carry(false)
 	}
 	p.note("%s(%s) = %s", name, hexArgs(args[:h.args]), result)
 }
@@ -132,23 +122,16 @@ func sysMmap(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	var data []byte
+	if f.kind == dirFD {
+		return -eACCES
+	}
 	name := "?"
-	if f.hasPath {
+	if f.path != "" {
 		name = f.path
 	}
-	switch f.kind {
-	case hostFD:
-		data = hostBuffer(length)
-		n, err := syscall.Pread(f.host, data, int64(off))
-		if err != nil {
-			return hostErrno(err)
-		}
-		data = data[:n]
-	case dataFD, cacheFD:
-		data = f.pread(off, length)
-	default:
-		return -eACCES
+	data, errno := f.pread(off, length)
+	if errno != 0 {
+		return errno
 	}
 	start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, kind: fileRegion, data: data, name: "mmap:" + name})
 	if !ok {
@@ -344,13 +327,8 @@ func sysOSFaultWithPayload(p *Process, a []uint64) int64 {
 	return 0
 }
 
-func sysUlockWait(p *Process, a []uint64) int64 {
+func sysUlockWait(p *Process, a []uint64) int64 { // also ulock_wait2
 	p.note("  ulock_wait op %#x addr %#x", a[0], a[1])
-	return 0
-}
-
-func sysUlockWait2(p *Process, a []uint64) int64 {
-	p.note("  ulock_wait2 op %#x addr %#x", a[0], a[1])
 	return 0
 }
 
@@ -364,10 +342,10 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 		p.write(buf, append([]byte(GuestExe), 0))
 		return 0
 	case callnum == 2 && flavor == 17 && size >= 56: // PROC_PIDUNIQIDENTIFIERINFO
-		p.write(buf, append(make([]byte, 16), le64(4242, 1, 0, 0, 0)...))
+		p.write(buf, append(make([]byte, 16), le64(guestPID, 1, 0, 0, 0)...))
 		return 56
 	case callnum == 2 && flavor == 19: // PROC_PIDARCHINFO
-		info := le32(0x100000C, 2, 0)
+		info := le32(cpuARM64, cpuSubtypeARM64E, 0)
 		p.write(buf, info[:min(size, 12)])
 		return int64(min(size, 12))
 	}
@@ -399,12 +377,7 @@ func sysSysctl(p *Process, a []uint64) int64 {
 			p.note("  sysctl name2oid ENOENT %s", s)
 			return -eNOENT
 		}
-		index := -1
-		for i, known := range p.oids {
-			if known == s {
-				index = i
-			}
-		}
+		index := slices.Index(p.oids, s)
 		if index < 0 {
 			index = len(p.oids)
 			p.oids = append(p.oids, s)
@@ -443,8 +416,8 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 		p.sysctls = map[string]any{
 			"hw.pagesize": n(16384), "hw.pagesize32": n(16384), "vm.pagesize": n(16384), "hw.ncpu": n(1), "hw.activecpu": n(1),
 			"hw.physicalcpu": n(1), "hw.physicalcpu_max": n(1), "hw.logicalcpu": n(1), "hw.logicalcpu_max": n(1),
-			"hw.memsize": n(8 << 30), "hw.physmem": n(8 << 30), "hw.byteorder": n(1234), "hw.cputype": n(0x100000C),
-			"hw.cpusubtype": n(2), "hw.cpufamily": n(0x1b588bb3), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128),
+			"hw.memsize": n(guestMemory), "hw.physmem": n(guestMemory), "hw.byteorder": n(1234), "hw.cputype": n(cpuARM64),
+			"hw.cpusubtype": n(cpuSubtypeARM64E), "hw.cpufamily": n(0x1b588bb3), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128),
 			"hw.l1dcachesize": n(65536), "hw.l1icachesize": n(131072), "hw.l2cachesize": n(4 << 20), "hw.packages": n(1),
 			"hw.nperflevels": n(1), "hw.perflevel0.logicalcpu": n(1), "hw.perflevel0.physicalcpu": n(1),
 			"hw.perflevel0.logicalcpu_max": n(1), "hw.machine": "arm64", "hw.model": "Macmini9,1", "hw.targettype": "J274",
