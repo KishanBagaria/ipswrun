@@ -1,0 +1,284 @@
+package emulator
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/KishanBagaria/ipswrun/dyldcache"
+)
+
+// Unicorn needs the main thread's stack (see cmd/ipswrun), and tests run on other goroutines:
+// TestMain keeps the main thread and runs on it whatever onMain is given.
+var mainThread = make(chan func())
+
+func init() { runtime.LockOSThread() }
+
+func TestMain(m *testing.M) {
+	code := make(chan int)
+	go func() { code <- m.Run() }()
+	for {
+		select {
+		case f := <-mainThread:
+			f()
+		case c := <-code:
+			os.Exit(c)
+		}
+	}
+}
+
+func onMain(f func()) {
+	done := make(chan struct{})
+	mainThread <- func() { defer close(done); f() }
+	<-done
+}
+
+// ---- the tables ----
+
+func TestHandlersAreReachable(t *testing.T) {
+	// A handler is found by the name its number has, so one filed under a name no number has can
+	// never run.
+	bsd := map[string]bool{}
+	for _, name := range bsdNames {
+		bsd[strings.ReplaceAll(name, "_nocancel", "")] = true
+	}
+	mach := map[string]bool{}
+	for _, name := range machNames {
+		mach[name] = true
+	}
+	for _, table := range []struct {
+		kind     string
+		handlers map[string]handler
+		names    map[string]bool
+	}{{"system call", bsdHandlers, bsd}, {"mach trap", machHandlers, mach}} {
+		for name, h := range table.handlers {
+			if !table.names[name] {
+				t.Errorf("%s handler %q has no number", table.kind, name)
+			}
+			if h.fn == nil || h.args < 0 || h.args > 8 { // the trace slices x0…x7 by args
+				t.Errorf("%s handler %q: %d arguments, fn set: %v", table.kind, name, h.args, h.fn != nil)
+			}
+		}
+	}
+}
+
+func TestNamesAreUnique(t *testing.T) {
+	for kind, names := range map[string]map[int64]string{"system call": bsdNames, "mach trap": machNames} {
+		numbers := map[string]int64{}
+		for n, name := range names {
+			if other, ok := numbers[name]; ok {
+				t.Errorf("%s %q is both %d and %d", kind, name, other, n)
+			}
+			numbers[name] = n
+		}
+	}
+}
+
+func TestSystemCallNumbers(t *testing.T) {
+	// From xnu's bsd/kern/syscalls.master and osfmk/kern/syscall_sw.c: the calls every guest makes.
+	for n, name := range map[int64]string{1: "exit", 3: "read", 4: "write", 5: "open", 6: "close", 20: "getpid", 73: "munmap",
+		92: "fcntl", 153: "pread", 197: "mmap", 199: "lseek", 202: "sysctl", 274: "sysctlbyname", 294: "shared_region_check_np",
+		336: "proc_info", 338: "stat64", 339: "fstat64", 340: "lstat64", 366: "bsdthread_register", 372: "thread_selfid",
+		381: "__mac_syscall", 396: "read_nocancel", 397: "write_nocancel", 398: "open_nocancel", 399: "close_nocancel",
+		441: "guarded_open_np", 463: "openat", 500: "getentropy", 515: "ulock_wait", 516: "ulock_wake",
+		520: "terminate_with_payload", 521: "abort_with_payload", 536: "shared_region_map_and_slide_2_np", 544: "ulock_wait2"} {
+		if bsdNames[n] != name {
+			t.Errorf("system call %d is %q, want %q", n, bsdNames[n], name)
+		}
+	}
+	for n, name := range map[int64]string{10: "vm_allocate", 12: "vm_deallocate", 15: "vm_map", 26: "reply_port", 27: "thread_self",
+		28: "task_self", 29: "host_self", 31: "mach_msg", 32: "mach_msg_overwrite", 36: "semaphore_wait", 47: "mach_msg2",
+		89: "timebase_info", 91: "mk_timer_create"} {
+		if machNames[n] != name {
+			t.Errorf("mach trap %d is %q, want %q", n, machNames[n], name)
+		}
+	}
+}
+
+func TestSystemCallNumbersMatchSDK(t *testing.T) {
+	sdk, err := exec.Command("xcrun", "--show-sdk-path").Output()
+	if err != nil {
+		t.Skip("no SDK:", err)
+	}
+	header, err := os.ReadFile(filepath.Join(strings.TrimSpace(string(sdk)), "usr/include/sys/syscall.h"))
+	if err != nil {
+		t.Skip(err)
+	}
+	defined := regexp.MustCompile(`(?m)^#define\s+SYS_(\w+)\s+(\d+)$`).FindAllStringSubmatch(string(header), -1)
+	if len(defined) < 400 {
+		t.Fatalf("only %d system calls found in the SDK's sys/syscall.h", len(defined))
+	}
+	for _, d := range defined {
+		n, _ := strconv.ParseInt(d[2], 10, 64)
+		if name, ok := bsdNames[n]; ok && name != d[1] && d[1] != "MAXSYSCALL" && d[1] != "invalid" {
+			t.Errorf("system call %d is %q, and %q in the SDK", n, name, d[1])
+		}
+	}
+}
+
+func TestConstantHandlers(t *testing.T) {
+	// These answer without looking at the process or the arguments.
+	for name, want := range map[string]int64{"getpid": guestPID, "getppid": 1, "getuid": guestUID, "geteuid": guestUID,
+		"getgid": guestGID, "getegid": guestGID, "issetugid": 0, "ioctl": -eNOTTY, "readlink": -eINVAL, "csrctl": -ePERM} {
+		if got := bsdHandlers[name].fn(nil, nil); got != want {
+			t.Errorf("%s() = %d, want %d", name, got, want)
+		}
+	}
+	for name, want := range trivial {
+		if got := bsdHandlers[name].fn(nil, nil); got != want {
+			t.Errorf("%s() = %d, want %d", name, got, want)
+		}
+	}
+	for name, want := range map[string]int64{"task_self": 0x203, "thread_self": 0x103, "host_self": 0x303,
+		"task_dyld_process_info_notify_get": kernFailure} {
+		if got := machHandlers[name].fn(nil, nil); got != want {
+			t.Errorf("mach %s() = %#x, want %#x", name, got, want)
+		}
+	}
+}
+
+// ---- dispatch, through the real engine ----
+
+const (
+	svc       = 0xD4001001 // svc #0x80
+	codeAddr  = stackTop - stackSize
+	dataAddr  = codeAddr + pageSize
+	nowhere   = 0x7000000000 // in no region
+	carryFlag = 1 << 29
+)
+
+// newProcess is a process with no program: enough to make system calls from. It skips the test
+// unless ipswrun has already fetched its libunicorn (ipswrun --setup); tests do not download.
+func newProcess(t *testing.T) *Process {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		t.Skip(err)
+	}
+	unicorn := unicornPath(filepath.Join(base, "ipswrun"))
+	if library, err := os.ReadFile(unicorn); err != nil || sha256Hex(library) != unicornLibrarySHA256 {
+		t.Skip("no verified libunicorn in the user cache directory; run ipswrun --setup")
+	}
+	runner := filepath.Join(t.TempDir(), "runner")
+	if err := os.WriteFile(runner, []byte("not run"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	var p *Process
+	onMain(func() { // New runs the engine to turn the MMU on
+		p, err = New(Config{Unicorn: unicorn, Cache: &dyldcache.Cache{}, Home: t.TempDir(), Runner: runner, Dyld: le32(0xFEEDFACF, cpuARM64, 0, 0, 0, 0, 0, 0),
+			OS: map[string]string{"build": "24G90", "version": "15.6.1"}})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { onMain(p.Close) })
+	p.deadline = time.Now().Add(time.Minute)
+	return p
+}
+
+// trap executes one svc with x16 = number and the given argument registers. It returns x0, the
+// carry flag (how a BSD call reports an errno) and what stopped the run, if anything did.
+func (p *Process) trap(number int64, args ...uint64) (x0 uint64, carry bool, stopped string) {
+	p.fault = ""
+	p.write(codeAddr, le32(svc))
+	for i := 0; i < 8; i++ {
+		p.setX(i, 0)
+	}
+	for i, a := range args {
+		p.setX(i, a)
+	}
+	p.uc.setReg(regX0+16, uint64(number))
+	if _, err := p.uc.start(codeAddr, codeAddr+4, 10_000_000); err != nil && p.fault == "" {
+		p.fault = err.Error()
+	}
+	return p.x(0), p.uc.reg(regNZCV)&carryFlag != 0, p.fault
+}
+
+func TestDispatch(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		number := func(name string) int64 {
+			for n, candidate := range bsdNames {
+				if candidate == name {
+					return n
+				}
+			}
+			t.Errorf("no system call named %s", name)
+			return 0
+		}
+		p.write(dataAddr, []byte("kern.osversion\x00"))
+		p.write(dataAddr+0x100, le64(64)) // the size of the buffer at dataAddr+0x200
+
+		for _, tc := range []struct {
+			name  string
+			args  []uint64
+			x0    uint64
+			carry bool
+		}{
+			{"getpid", nil, guestPID, false},
+			{"umask", nil, 0o22, false},
+			{"socket", nil, eACCES, true}, // a negative result is an errno: carry set, x0 positive
+			{"read", []uint64{99, dataAddr, 8}, eBADF, true},
+			{"read_nocancel", []uint64{99, dataAddr, 8}, eBADF, true},   // shares read's handler
+			{"open", []uint64{nowhere, 0, 0}, eFAULT, true},             // a path the guest has not mapped
+			{"sysctlbyname", []uint64{nowhere, 15, 0, 0}, eFAULT, true}, // likewise
+			{"sysctlbyname", []uint64{dataAddr, 15, dataAddr + 0x200, dataAddr + 0x100}, 0, false},
+		} {
+			x0, carry, stopped := p.trap(number(tc.name), tc.args...)
+			if stopped != "" || x0 != tc.x0 || carry != tc.carry {
+				t.Errorf("%s: x0 %d carry %v stopped %q; want x0 %d carry %v", tc.name, x0, carry, stopped, tc.x0, tc.carry)
+			}
+		}
+		if got := p.cstr(dataAddr + 0x200); got != "24G90" || p.u64(dataAddr+0x100) != 6 {
+			t.Errorf("sysctlbyname kern.osversion wrote %q, length %d", got, p.u64(dataAddr+0x100))
+		}
+
+		// Mach traps are the negative numbers, and return a kern_return_t or a value: no carry.
+		if x0, carry, stopped := p.trap(-28); x0 != 0x203 || carry || stopped != "" {
+			t.Errorf("task_self: x0 %#x carry %v stopped %q", x0, carry, stopped)
+		}
+		first, _, _ := p.trap(-26)
+		if second, _, stopped := p.trap(-26); first == 0 || first == second || stopped != "" {
+			t.Errorf("reply_port gave %#x then %#x (stopped %q), want two ports", first, second, stopped)
+		}
+		if x0, _, stopped := p.trap(-10, 0x203, nowhere, pageSize, 1); x0 != 1 || stopped != "" { // KERN_INVALID_ADDRESS
+			t.Errorf("vm_allocate with an unmapped out pointer: x0 %d stopped %q", x0, stopped)
+		}
+
+		// Machine-dependent calls: set and get the thread pointer.
+		if x0, _, stopped := p.trap(0x80000000, 0x1234000, 0, 0, 2); x0 != 0 || stopped != "" {
+			t.Errorf("set thread pointer: x0 %#x stopped %q", x0, stopped)
+		}
+		if x0, _, stopped := p.trap(0x80000000, 0, 0, 0, 3); x0 != 0x1234000 || stopped != "" {
+			t.Errorf("get thread pointer: x0 %#x stopped %q", x0, stopped)
+		}
+
+		// Nothing is guessed: a call with no handler stops the run and says which.
+		for number, want := range map[int64]string{
+			2:   "unimplemented syscall 2 fork(",
+			999: "unimplemented syscall 999 999(",
+			-90: "unimplemented mach trap 90 mach_wait_until(",
+			-99: "unimplemented mach trap 99 99(",
+		} {
+			if _, _, stopped := p.trap(number, 1, 2); !strings.HasPrefix(stopped, want) || !strings.Contains(stopped, "0x1, 0x2, 0x0") {
+				t.Errorf("trap %d stopped with %q, want %q and its arguments", number, stopped, want)
+			}
+		}
+		if _, _, stopped := p.trap(0x80000000, 0, 0, 0, 7); stopped != "machdep call 7" {
+			t.Errorf("machdep call 7 stopped with %q", stopped)
+		}
+
+		// exit ends the process with its status.
+		if _, _, stopped := p.trap(1, 3); stopped != "" {
+			t.Errorf("exit stopped with %q", stopped)
+		}
+		if code, ok := p.ExitCode(); !ok || code != 3 {
+			t.Errorf("after exit(3): code %d, exited %v", code, ok)
+		}
+	})
+}

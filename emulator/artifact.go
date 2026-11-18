@@ -31,6 +31,11 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// unicornPath is where the pinned libunicorn is kept under dir.
+func unicornPath(dir string) string {
+	return filepath.Join(dir, "unicorn", "2.1.4", unicornLibrarySHA256, filepath.Base(unicornWheelMember))
+}
+
 // EnsureUnicorn returns the path of the pinned libunicorn under dir, downloading it on first use.
 // The file is hashed on every call, so a library that was replaced or damaged is fetched again
 // rather than loaded.
@@ -38,7 +43,7 @@ func EnsureUnicorn(dir string) (string, error) {
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		return "", fmt.Errorf("the emulator needs an Apple silicon Mac (this is %s/%s)", runtime.GOOS, runtime.GOARCH)
 	}
-	path := filepath.Join(dir, "unicorn", "2.1.4", unicornLibrarySHA256, filepath.Base(unicornWheelMember))
+	path := unicornPath(dir)
 	if existing, err := os.ReadFile(path); err == nil && sha256Hex(existing) == unicornLibrarySHA256 {
 		return path, nil
 	}
