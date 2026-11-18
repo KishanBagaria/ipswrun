@@ -1,0 +1,7 @@
+{
+  "build": "25G83",
+  "cache_uuid": "F2E86C53-6052-388B-BA71-5A0C9B569413",
+  "exit_code": 0,
+  "output": "macOS 26.6.2 (25G83)\nloaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking\nsqlite 3.51.0: 1 row(s) in /Users/emu/guest.sqlite\n",
+  "version": "26.6.2"
+}

@@ -1,0 +1,7 @@
+{
+  "build": "24G90",
+  "cache_uuid": "4C1223E5-CACE-3982-A003-6110A7A8A25C",
+  "exit_code": 0,
+  "output": "macOS 15.6.1 (24G90)\nloaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking\nsqlite 3.43.2: 1 row(s) in /Users/emu/guest.sqlite\n",
+  "version": "15.6.1"
+}

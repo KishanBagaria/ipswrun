@@ -1,0 +1,7 @@
+{
+  "build": "26A428",
+  "cache_uuid": "EA2C265E-297C-39C2-8646-7D8A2DFF648A",
+  "exit_code": 0,
+  "output": "macOS 27.0 (26A428)\nloaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking\nsqlite 3.54.0: 1 row(s) in /Users/emu/guest.sqlite\n",
+  "version": "27.0"
+}

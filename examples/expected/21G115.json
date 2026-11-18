@@ -1,0 +1,7 @@
+{
+  "build": "21G115",
+  "cache_uuid": "049B583E-D4DC-3B2B-88DA-E52D6E18313D",
+  "exit_code": 0,
+  "output": "macOS 12.6 (21G115)\nloaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking\nsqlite 3.37.0: 1 row(s) in /Users/emu/guest.sqlite\n",
+  "version": "12.6"
+}
