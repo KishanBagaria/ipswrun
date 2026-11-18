@@ -7,9 +7,9 @@ go build -o ipswrun ./cmd/ipswrun
 ./ipswrun 'https://…/UniversalMac_15.6.1_24G90_Restore.ipsw' ./guest arg1 arg2
 ```
 
-The guest is an ordinary executable built on the host (`clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains …`). It is loaded by the build's own dyld against the build's own dyld shared cache, so `dlopen` of any system framework gets that release's code. Its stdout and stderr are passed through and its exit status becomes ipswrun's (70 means the run itself failed).
+The guest is an ordinary executable built on a Mac (`clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains …`). It is loaded by the build's own dyld against the build's own dyld shared cache, so `dlopen` of any system framework gets that release's code. Its stdout and stderr are passed through and its exit status becomes ipswrun's (70 means the run itself failed).
 
-Requires macOS on Apple silicon, Go, and a C compiler (the Xcode command line tools): the image-format libraries it builds on (`go-apfs` and `ipsw`, for their LZFSE and disassembler code) use cgo, so `CGO_ENABLED=0` does not build. ipswrun's own code has no C; Unicorn is bound at run time through [purego](https://github.com/ebitengine/purego). The first run downloads a pinned, hash-verified `libunicorn` into the user cache directory. macOS 15 and later images also need Apple's image key service.
+Runs on macOS on Apple silicon and on Linux (arm64 or x86-64, glibc). Building needs Go and a C compiler (the Xcode command line tools, or gcc): the image-format libraries it builds on (`go-apfs` and `ipsw`, for their LZFSE and disassembler code) use cgo, so `CGO_ENABLED=0` does not build. ipswrun's own code has no C; Unicorn is bound at run time through [purego](https://github.com/ebitengine/purego). The first run downloads a pinned, hash-verified `libunicorn` into the user cache directory. On Linux there is no Apple toolchain to build a guest with, so bring one built on a Mac; and since Linux has no commpage, the guest is given a recorded one from an Apple silicon Mac. macOS 15 and later images also need Apple's image key service.
 
 ## Options
 

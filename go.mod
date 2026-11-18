@@ -7,6 +7,7 @@ require (
 	github.com/blacktop/go-macho v1.1.296
 	github.com/blacktop/ipsw v0.0.0-20261117074031-5d96e8d73a66
 	github.com/ebitengine/purego v0.11.3
+	golang.org/x/sys v0.50.0
 )
 
 require (
@@ -112,7 +113,6 @@ require (
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.38.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
-	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/term v0.48.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect

@@ -14,16 +14,23 @@ concurrency:
 
 jobs:
   test:
-    # macos-latest is Apple silicon; the build needs cgo and the Xcode
-    # command line tools, both present on the runner image.
-    runs-on: macos-latest
+    # The build needs cgo and a C compiler, present on every runner image. macos-latest is Apple
+    # silicon; ubuntu-latest is x86-64.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - name: Check architecture
+        if: runner.os == 'macOS'
         run: test "$(uname -m)" = arm64
       - run: go vet ./...
-      - run: go test ./...
       - run: go build -o ipswrun ./cmd/ipswrun
+      # Fetches the pinned libunicorn, so that the tests that need the engine run instead of skipping.
+      - run: ./ipswrun --setup
+      - run: go test ./...

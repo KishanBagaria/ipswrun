@@ -161,7 +161,7 @@ func newProcess(t *testing.T) *Process {
 		t.Skip(err)
 	}
 	unicorn := unicornPath(filepath.Join(base, "ipswrun"))
-	if library, err := os.ReadFile(unicorn); err != nil || sha256Hex(library) != unicornLibrarySHA256 {
+	if library, err := os.ReadFile(unicorn); err != nil || sha256Hex(library) != unicornBuilds[runtime.GOOS+"/"+runtime.GOARCH].librarySHA256 {
 		t.Skip("no verified libunicorn in the user cache directory; run ipswrun --setup")
 	}
 	runner := filepath.Join(t.TempDir(), "runner")

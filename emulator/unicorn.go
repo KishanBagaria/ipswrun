@@ -27,35 +27,28 @@ const (
 
 // Other constants of unicorn.h.
 const (
-	archARM64       = 2
-	modeARM         = 0
-	protAll         = 7
-	ctlCPUModel     = 7 | 1<<26 // UC_CTL_CPU_MODEL with one argument
-	ctlWrite        = 1 << 30
-	ctlRead         = 2 << 30
-	queryTimeout    = 4
-	hookInterrupt   = 1 << 0
-	hookUnmapped    = 1<<4 | 1<<5 | 1<<6 // read, write, fetch
-	hookInvalid     = 1 << 14
-	clockUptimeRaw  = 8
-	libSystemHandle = purego.RTLD_DEFAULT
+	archARM64     = 2
+	modeARM       = 0
+	protAll       = 7
+	ctlCPUModel   = 7 | 1<<26 // UC_CTL_CPU_MODEL with one argument
+	ctlWrite      = 1 << 30
+	ctlRead       = 2 << 30
+	queryTimeout  = 4
+	hookInterrupt = 1 << 0
+	hookUnmapped  = 1<<4 | 1<<5 | 1<<6 // read, write, fetch
+	hookInvalid   = 1 << 14
 )
 
 // The part of libunicorn 2.1's C API the emulator uses, bound at run time so that the library can
 // be fetched and verified first (see artifact.go). Every call but version and strerror returns a
-// uc_err.
-//
-// uc_ctl is variadic, and on Apple arm64 variadic arguments travel on the stack, never in
-// registers: the six placeholders fill the remaining integer registers so that the value lands
-// where the callee looks for it. uc_hook_add is variadic too, but only past the arguments used here.
+// uc_err. uc_ctl is variadic, and how it is called depends on the host (see ucCtl); uc_hook_add
+// is variadic too, but only past the arguments used here.
 var api struct {
 	version  func(major, minor *uint32) uint32
 	strerror func(code int32) string
 	open     func(arch, mode int32, uc *uintptr) int32
 	close    func(uc uintptr) int32
 	query    func(uc uintptr, kind int32, result *uint64) int32
-	ctlSet   func(uc uintptr, control uint32, _, _, _, _, _, _ uintptr, value uintptr) int32
-	ctlGet   func(uc uintptr, control uint32, _, _, _, _, _, _ uintptr, value *int32) int32
 	regRead  func(uc uintptr, id int32, value unsafe.Pointer) int32
 	regWrite func(uc uintptr, id int32, value unsafe.Pointer) int32
 	memMap   func(uc uintptr, address, size uint64, protection uint32) int32
@@ -66,12 +59,15 @@ var api struct {
 	emuStop  func(uc uintptr) int32
 	hookAdd  func(uc uintptr, hook *uintptr, kind int32, callback, user uintptr, begin, end uint64) int32
 
-	// From the host's libSystem.
-	memcpy     func(to unsafe.Pointer, from, size uintptr) uintptr
-	uptimeNsec func(clock int32) uint64
-
 	// C entry points of the hook callbacks; user is a key of targets.
 	onInterrupt, onUnmapped, onInvalid uintptr
+}
+
+// symbol is a C function to bind: its library, its name and a pointer to the Go func variable.
+type symbol struct {
+	library  uintptr
+	name     string
+	function any
 }
 
 var loadOnce struct {
@@ -93,21 +89,16 @@ func loadUnicorn(path string) error {
 	if err != nil {
 		return fmt.Errorf("load unicorn: %w", err)
 	}
-	for _, symbol := range []struct {
-		library  uintptr
-		name     string
-		function any
-	}{
+	for _, symbol := range append([]symbol{
 		{library, "uc_version", &api.version}, {library, "uc_strerror", &api.strerror},
 		{library, "uc_open", &api.open}, {library, "uc_close", &api.close},
-		{library, "uc_query", &api.query}, {library, "uc_ctl", &api.ctlSet}, {library, "uc_ctl", &api.ctlGet},
+		{library, "uc_query", &api.query}, {library, "uc_ctl", &ucCtl.set}, {library, "uc_ctl", &ucCtl.get},
 		{library, "uc_reg_read", &api.regRead}, {library, "uc_reg_write", &api.regWrite},
 		{library, "uc_mem_map", &api.memMap}, {library, "uc_mem_unmap", &api.memUnmap},
 		{library, "uc_mem_read", &api.memRead}, {library, "uc_mem_write", &api.memWrite},
 		{library, "uc_emu_start", &api.emuStart}, {library, "uc_emu_stop", &api.emuStop},
 		{library, "uc_hook_add", &api.hookAdd},
-		{libSystemHandle, "memcpy", &api.memcpy}, {libSystemHandle, "clock_gettime_nsec_np", &api.uptimeNsec},
-	} {
+	}, hostSymbols()...) {
 		address, err := purego.Dlsym(symbol.library, symbol.name)
 		if err != nil {
 			return fmt.Errorf("load unicorn: %s has no %s", path, symbol.name)
@@ -206,8 +197,8 @@ func (e *engine) setup() error {
 	// The model has to be chosen before anything else touches the engine. Reading it back is what
 	// shows the variadic call above really delivered it; a default core lacks what dyld needs.
 	model := int32(-1)
-	if err := errors.Join(check(api.ctlSet(e.uc, ctlCPUModel|ctlWrite, 0, 0, 0, 0, 0, 0, cpuModelMax)),
-		check(api.ctlGet(e.uc, ctlCPUModel|ctlRead, 0, 0, 0, 0, 0, 0, &model))); err != nil {
+	if err := errors.Join(check(ctlSet(e.uc, ctlCPUModel|ctlWrite, cpuModelMax)),
+		check(ctlGet(e.uc, ctlCPUModel|ctlRead, &model))); err != nil {
 		return err
 	}
 	if model != cpuModelMax {
@@ -285,14 +276,3 @@ func (e *engine) start(begin, until, timeoutMicros uint64) (timedOut bool, err e
 }
 
 func (e *engine) stop() { api.emuStop(e.uc) }
-
-// hostPage copies memory of this process: the host's own commpage, which the guest's libsystem
-// expects at the same address.
-func hostPage(addr uint64, size int) []byte {
-	out := make([]byte, size)
-	api.memcpy(unsafe.Pointer(&out[0]), uintptr(addr), uintptr(size))
-	return out
-}
-
-// uptimeNanos is nanoseconds of uptime, not counting sleep (mach_absolute_time's clock).
-func uptimeNanos() uint64 { return api.uptimeNsec(clockUptimeRaw) }

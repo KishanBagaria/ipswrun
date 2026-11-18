@@ -92,7 +92,7 @@ func (t target) fd() *fd { return &fd{kind: t.kind, data: t.data, cache: t.cache
 func hostErrno(err error) int64 {
 	var errno syscall.Errno
 	if errors.As(err, &errno) && errno != 0 {
-		return -int64(errno)
+		return -guestErrno(errno)
 	}
 	return -eINVAL
 }
@@ -194,7 +194,7 @@ func (p *Process) stat(buf uint64, kind fdKind, path string, size int64, hostSta
 		if ino == 0 {
 			ino = st.Ino & 0xFFFFFFFF
 		}
-		p.write(buf, statBuf(uint16(st.Mode), st.Size, ino, st.Mtimespec.Sec))
+		p.write(buf, statBuf(uint16(st.Mode), st.Size, ino, mtimeSeconds(&st)))
 	case dirFD:
 		p.write(buf, statBuf(modeDir, 0, crcInode(path), fixedMtime))
 	default:
@@ -394,7 +394,7 @@ func sysLseek(p *Process, a []uint64) int64 {
 	off := int64(a[1])
 	switch f.kind {
 	case hostFD:
-		pos, err := syscall.Seek(f.host, off, int(int32(a[2])))
+		pos, err := syscall.Seek(f.host, off, hostWhence(int(int32(a[2]))))
 		if err != nil {
 			return hostErrno(err)
 		}
