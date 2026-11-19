@@ -4,7 +4,7 @@ name: Guests
 # running under ipswrun anywhere else.
 on:
   push:
-    paths: [examples/**, .github/workflows/guests.yml]
+    paths: [examples/**, emulator/**, .github/workflows/guests.yml]
   workflow_dispatch:
 
 permissions:
@@ -17,6 +17,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: make -C examples
       - run: file examples/bin/* && shasum -a 256 examples/bin/*
+      # What these guests print on a real Mac, which is what they should print under ipswrun.
+      - run: |
+          for guest in threads swiftasync; do
+            examples/bin/$guest | tee native.txt && diff native.txt examples/expected/$guest/native.txt || exit
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: guests
@@ -44,3 +49,4 @@ jobs:
           path: examples/bin
       - run: chmod +x examples/bin/*
       - run: examples/matrix.sh --guest=crypto 15.0 27.2
+      - run: examples/matrix.sh --guest=threads 15.0 27.2
