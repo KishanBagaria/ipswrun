@@ -80,7 +80,11 @@ func (d *xpcDictionary) String() string {
 	for _, key := range d.keys {
 		switch v := d.values[key].(type) {
 		case []byte:
-			out = append(out, fmt.Sprintf("%s: %d bytes", key, len(v)))
+			if len(v) <= 32 {
+				out = append(out, fmt.Sprintf("%s: %x", key, v))
+			} else {
+				out = append(out, fmt.Sprintf("%s: %d bytes", key, len(v)))
+			}
 		case xpcPort:
 			out = append(out, fmt.Sprintf("%s: port %#x", key, v.name))
 		case string:

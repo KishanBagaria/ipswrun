@@ -96,11 +96,31 @@ func TestProcesses(t *testing.T) {
 			t.Errorf("send to the port of a process that exited: %#x", x0)
 		}
 
-		// Memory with a name is one memory in every process that maps it.
+		// What a process's code signature says of it is told to whoever asks about it by pid: with
+		// too little room only how much is needed, as a length after a magic number.
+		csops := number("csops")
+		p.identity, p.entitlementsDER = "com.example.signed", []byte{0x70, 0x03, 0x02, 0x01, 0x01}
 		r, err := p.m.newProcess(p.exePath, p.exe)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if x0, carry, _ := r.trap(csops, uint64(p.pid), csOpsIdentity, in_, 8); !carry || x0 != eRANGE || r.u32(in_+4) != 27<<24 {
+			t.Errorf("identity into 8 bytes: %d carry %v, header % x", x0, carry, r.read(in_, 8))
+		}
+		if _, carry, _ := r.trap(csops, uint64(p.pid), csOpsIdentity, in_, 64); carry || r.cstr(in_+8) != "com.example.signed" {
+			t.Errorf("identity: carry %v, %q", carry, r.cstr(in_+8))
+		}
+		if _, carry, _ := r.trap(csops, uint64(p.pid), csOpsEntitlementsDER, in_, 64); carry || !bytes.Equal(r.read(in_, 13), []byte{0xFA, 0xDE, 0x71, 0x72, 0, 0, 0, 13, 0x70, 0x03, 0x02, 0x01, 0x01}) {
+			t.Errorf("entitlements: carry %v, % x", carry, r.read(in_, 13))
+		}
+		if x0, carry, _ := p.trap(csops, uint64(r.pid), csOpsEntitlementsDER, in_, 64); !carry || x0 != eNOENT {
+			t.Errorf("entitlements of a process with none: %d carry %v", x0, carry)
+		}
+		if x0, carry, _ := p.trap(csops, 999, csOpsStatus, in_, 4); !carry || x0 != eSRCH {
+			t.Errorf("status of no process: %d carry %v", x0, carry)
+		}
+
+		// Memory with a name is one memory in every process that maps it.
 		open, truncate, mmap := number("shm_open"), number("ftruncate"), number("mmap")
 		p.write(msg, str("com.example.shared"))
 		r.write(msg, str("com.example.shared"))

@@ -205,10 +205,14 @@ type Process struct {
 	exe     []byte  // the guest executable
 	exePath string  // and where it is on the host, or what it is called if it is not a file there
 	hostExe bool
-	system  func(path string) (SystemFile, error)
-	os      map[string]string
-	trace   bool
-	survey  bool
+	// What the executable's code signature says of it, if it has one: the name it was signed
+	// under, and the entitlements it was signed with, as a property list and as DER.
+	identity, entitlements string
+	entitlementsDER        []byte
+	system                 func(path string) (SystemFile, error)
+	os                     map[string]string
+	trace                  bool
+	survey                 bool
 
 	regions []*region // sorted by start
 	mapped  map[uint64]struct{}
@@ -883,7 +887,13 @@ func (p *Process) load(argv, env []string) error {
 	if err != nil {
 		return fmt.Errorf("guest executable: %w", err)
 	}
-	p.loadMachO(exe, "guest", 0)
+	if image, _, _ := p.loadMachO(exe, "guest", 0); image.CodeSignature() != nil {
+		signed := image.CodeSignature()
+		for _, directory := range signed.CodeDirectories {
+			p.identity = directory.ID
+		}
+		p.entitlements, p.entitlementsDER = signed.Entitlements, signed.EntitlementsDER
+	}
 	apple := []string{"executable_path=" + GuestExe, "", "", "", "ptr_munge=0x7a3c5e9b1d2f4a68",
 		fmt.Sprintf("main_stack=%#x,%#x,%#x,%#x", uint64(stackTop), uint64(stackSize), uint64(stackTop), uint64(stackSize)),
 		fmt.Sprintf("executable_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(exeInode)),
