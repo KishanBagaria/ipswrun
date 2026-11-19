@@ -41,30 +41,24 @@ var DefaultSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/C
 // and not from the host: system:/usr/sbin/cfprefsd.
 const SystemPrefix = "system:"
 
-// Daemon is a guest that runs beside the main one, to provide Mach services to it.
-type Daemon struct {
-	Services   []string // the names it may check in with launchd
-	Executable string   // host path of its Mach-O, or with SystemPrefix its path in the build
-	Args       []string // after argv[0]
-	Root       bool     // it runs as root, as a launchd daemon does, and not as the guest's user, as an agent
-}
-
 // Run describes one guest execution against a build.
 type Run struct {
-	Unicorn    string        // path of the verified libunicorn (see EnsureUnicorn)
-	Home       string        // host directory behind GuestHome
-	Mounts     []Mount       // more host directories the guests may change (see CheckMounts)
-	Services   []string      // the Mach services the guest provides: the names it may check in with launchd
-	Executable string        // host path of the guest Mach-O (arm64, linked against the cache), or with SystemPrefix its path in the build
-	Args       []string      // guest arguments after argv[0]
-	Daemons    []Daemon      // more guests, started with it, that provide services
-	Drivers    []Driver      // the kernel's services, which guests reach through IOKit: none unless given
-	Env        []string      // added to BaseEnv, for every guest
-	System     []string      // system-volume files and directory prefixes (ending in "/") the guest may read; DefaultSystem if empty
-	Timeout    time.Duration // for the whole run
-	Trace      bool          // print every system call to stderr
-	Survey     bool          // answer calls nothing implements with an error instead of stopping (see Config.Survey)
-	Notes      io.Writer     // told about a cache location that could not be read, unless the release has none there; os.Stderr if nil
+	Unicorn    string   // path of the verified libunicorn (see EnsureUnicorn)
+	Home       string   // host directory behind GuestHome
+	Mounts     []Mount  // more host directories the guests may change (see CheckMounts)
+	Services   []string // the Mach services the guest provides: the names it may check in with launchd
+	Executable string   // host path of the guest Mach-O (arm64, linked against the cache), or with SystemPrefix its path in the build
+	Args       []string // guest arguments after argv[0]
+	// Daemons are more guests, started beside it to provide services: as root, as a daemon of
+	// launchd's is, or as the guest's user, as an agent. Their environment is the guest's.
+	Daemons []Guest
+	Drivers []Driver      // the kernel's services, which guests reach through IOKit: none unless given
+	Env     []string      // added to BaseEnv, for every guest
+	System  []string      // system-volume files and directory prefixes (ending in "/") the guest may read; DefaultSystem if empty
+	Timeout time.Duration // for the whole run
+	Trace   bool          // print every system call to stderr
+	Survey  bool          // answer calls nothing implements with an error instead of stopping (see Config.Survey)
+	Notes   io.Writer     // told about a cache location that could not be read, unless the release has none there; os.Stderr if nil
 }
 
 var leadingDigits = regexp.MustCompile(`^\d+`)
@@ -170,12 +164,12 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 
 	known := map[string]SystemFile{}
 	system := func(path string) (SystemFile, error) {
+		if f, ok := known[path]; ok {
+			return f, nil
+		}
 		wanted := false
 		for _, prefix := range allowed {
 			wanted = wanted || strings.HasPrefix(path, prefix) || path+"/" == prefix || strings.HasPrefix(prefix, path+"/")
-		}
-		if f, ok := known[path]; ok {
-			return f, nil
 		}
 		if !wanted {
 			// A framework inside another is reached through a symbolic link (Frameworks, for
@@ -188,11 +182,11 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 			if err != nil {
 				return SystemFile{}, err
 			}
-			f := SystemFile{Dir: real != "" && real != path, Real: real}
-			known[path] = f
-			if !f.Dir {
-				return SystemFile{}, nil
+			var f SystemFile
+			if real != "" && real != path {
+				f = SystemFile{Dir: true, Real: real}
 			}
+			known[path] = f
 			return f, nil
 		}
 		entry, err := image.Stat(rangefs.FileSystem, path)
@@ -217,13 +211,14 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		return nil, cache, err
 	}
 	env := slices.Clone(BaseEnv)
-	if !slices.ContainsFunc(run.Daemons, func(d Daemon) bool { return slices.Contains(d.Services, preferencesAgent) }) {
+	if !slices.ContainsFunc(run.Daemons, func(d Guest) bool { return slices.Contains(d.Services, preferencesAgent) }) {
 		env = append(env, noPreferencesEnv...)
 	}
 	env = append(env, run.Env...)
 	guests := []Guest{{Executable: run.Executable, Args: run.Args, Env: env, Services: run.Services}}
 	for _, d := range run.Daemons {
-		guests = append(guests, Guest{Executable: d.Executable, Args: d.Args, Env: env, Services: d.Services, Root: d.Root})
+		d.Env = env
+		guests = append(guests, d)
 	}
 	for _, g := range guests {
 		if path, ok := strings.CutPrefix(g.Executable, SystemPrefix); ok {

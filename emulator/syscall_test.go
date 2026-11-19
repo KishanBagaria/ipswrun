@@ -185,6 +185,17 @@ func newProcess(t *testing.T) *Process {
 	return p
 }
 
+// number is the number of the system call with a name.
+func number(t *testing.T, name string) int64 {
+	for n, candidate := range bsdNames {
+		if candidate == name {
+			return n
+		}
+	}
+	t.Fatalf("no system call named %s", name)
+	return 0
+}
+
 // trap executes one svc with x16 = number and the given argument registers. It returns x0, the
 // carry flag (how a BSD call reports an errno) and what stopped the run, if anything did.
 func (p *Process) trap(number int64, args ...uint64) (x0 uint64, carry bool, stopped string) {
@@ -206,15 +217,6 @@ func (p *Process) trap(number int64, args ...uint64) (x0 uint64, carry bool, sto
 func TestDispatch(t *testing.T) {
 	p := newProcess(t)
 	onMain(func() {
-		number := func(name string) int64 {
-			for n, candidate := range bsdNames {
-				if candidate == name {
-					return n
-				}
-			}
-			t.Errorf("no system call named %s", name)
-			return 0
-		}
 		p.write(dataAddr, []byte("kern.osversion\x00"))
 		p.write(dataAddr+0x100, le64(64)) // the size of the buffer at dataAddr+0x200
 
@@ -235,7 +237,7 @@ func TestDispatch(t *testing.T) {
 			{"sysctlbyname", []uint64{nowhere, 15, 0, 0}, eFAULT, true}, // likewise
 			{"sysctlbyname", []uint64{dataAddr, 15, dataAddr + 0x200, dataAddr + 0x100}, 0, false},
 		} {
-			x0, carry, stopped := p.trap(number(tc.name), tc.args...)
+			x0, carry, stopped := p.trap(number(t, tc.name), tc.args...)
 			if stopped != "" || x0 != tc.x0 || carry != tc.carry {
 				t.Errorf("%s: x0 %d carry %v stopped %q; want x0 %d carry %v", tc.name, x0, carry, stopped, tc.x0, tc.carry)
 			}

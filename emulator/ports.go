@@ -128,18 +128,6 @@ func (p *Process) owned(name uint32) *port {
 	return nil
 }
 
-// ownedPorts are the ports and sets the process can receive from, lowest name first.
-func (p *Process) ownedPorts() []*port {
-	var out []*port
-	for _, r := range p.names {
-		if r.receive {
-			out = append(out, r.port)
-		}
-	}
-	slices.SortFunc(out, func(a, b *port) int { return cmp.Compare(a.name, b.name) })
-	return out
-}
-
 // forget drops a name that no right is left under.
 func (p *Process) forget(name uint32) {
 	if r := p.names[name]; r != nil && !r.receive && r.sends == 0 && !r.once {
@@ -159,12 +147,13 @@ func (p *Process) readable(q *port) *port {
 		}
 		return nil
 	}
-	for _, member := range p.ownedPorts() {
-		if member.in == q && len(member.queue) > 0 {
-			return member
+	var first *port
+	for _, r := range p.names {
+		if member := r.port; r.receive && member.in == q && len(member.queue) > 0 && (first == nil || member.name < first.name) {
+			first = member
 		}
 	}
-	return nil
+	return first
 }
 
 // destination is the port a message to name goes to, if the process has a right to send there.
@@ -207,11 +196,7 @@ func (p *Process) takeIn(name, disposition uint32) carried {
 	case disposition == moveReceive && r.receive && !q.set:
 		r.receive = false
 		p.forget(name)
-		q.owner, q.in = nil, nil
-		for _, t := range p.waiters(waitPort, uint64(name)) {
-			t.answer = &result{x0: rcvPortDied}
-			t.wake()
-		}
+		p.portGone(q)
 	default:
 		return c // not a right the process has to give
 	}
@@ -248,6 +233,13 @@ func (p *Process) giveOut(c carried, from *Process) uint32 {
 		r.sends++
 	}
 	return name
+}
+
+// sendRight makes a send right to q that is the process's from the start, and names it there.
+func (p *Process) sendRight(q *port) uint32 {
+	q.sends++
+	q.made++
+	return p.giveOut(carried{port: q, disposition: moveSend}, nil)
 }
 
 // sendOnce names, for the process, a new right to send to q once.
@@ -317,37 +309,52 @@ func destroy(q *port) {
 	queue := q.queue
 	q.queue = nil
 	if owner := q.owner; owner != nil {
-		for _, member := range owner.ownedPorts() {
-			if member.in == q {
-				member.in = nil
-			}
-		}
-		for _, t := range owner.waiters(waitPort, uint64(q.name)) {
-			t.answer = &result{x0: rcvPortDied}
-			t.wake()
-		}
 		if r := owner.names[q.name]; r != nil && r.port == q {
 			r.receive = false
 			owner.forget(q.name)
 		}
+		owner.portGone(q)
 	}
+	// Every right to send to it once is gone with it, and whoever asked is told that the name it
+	// has for the port is now dead: in the order of the names, for a run to repeat.
 	for _, other := range q.m.procs {
-		for _, name := range slices.Sorted(maps.Keys(other.names)) {
-			switch r := other.names[name]; {
+		var told []uint32
+		for name, r := range other.names {
+			switch {
 			case r.port != q:
 			case r.once:
 				delete(other.names, name)
 			case r.deadName != nil:
-				to := r.deadName
-				r.deadName = nil
-				notify(to, notifyDeadName, migCode(name).body)
+				told = append(told, name)
 			}
 		}
+		slices.Sort(told)
+		for _, name := range told {
+			to := other.names[name].deadName
+			other.names[name].deadName = nil
+			notify(to, notifyDeadName, migCode(name).body)
+		}
 	}
-	q.owner, q.in = nil, nil
 	for _, m := range queue {
 		discard(m)
 	}
+}
+
+// portGone is the process losing the receive right of q, to a message or for good: the port is
+// no longer its own, nor in any set of its, and its threads that wait there are told.
+func (p *Process) portGone(q *port) {
+	if q.set {
+		for _, r := range p.names {
+			if r.port.in == q {
+				r.port.in = nil
+			}
+		}
+	}
+	for _, t := range p.waiters(waitPort, uint64(q.name)) {
+		t.answer = &result{x0: rcvPortDied}
+		t.wake()
+	}
+	q.owner, q.in = nil, nil
 }
 
 // reap ends every right of a process that has exited: its ports die, and the ports it could
@@ -560,9 +567,9 @@ func machTimerCancel(p *Process, a []uint64) int64 {
 // fireTimers sends the message of every timer that is due, and reports when the next one is.
 func (p *Process) fireTimers(now time.Time) (next time.Time) {
 	var due []*port
-	for _, q := range p.ownedPorts() {
-		switch {
-		case q.due.IsZero():
+	for _, r := range p.names {
+		switch q := r.port; {
+		case !r.receive || q.due.IsZero():
 		case !q.due.After(now):
 			due = append(due, q)
 		case next.IsZero() || q.due.Before(next):
@@ -629,7 +636,7 @@ func (p *Process) outgoing(m message, out []byte) (machMessage, bool) {
 		bits &^= 0x1F
 	}
 	copy(out, header(bits, uint32(len(out)), 0, m.id))
-	sent := machMessage{data: out, sender: p.pid, from: p, moved: m.bits&0x1F == moveSend}
+	sent := machMessage{data: out, sender: p.pid, from: p}
 	if m.bits&bitsComplex != 0 {
 		if _, ok := descriptors(out, func(int, byte) {}); !ok {
 			return sent, false // before anything is taken from the sender
@@ -740,7 +747,7 @@ func (p *Process) hand(q *port, m message) int64 {
 	if next.moved {
 		defer release(q)
 	}
-	data := slices.Clone(next.data)
+	data := append(make([]byte, 0, len(next.data)+trailer), next.data...)
 	le.PutUint32(data[12:], q.name)
 	if next.from != nil {
 		le.PutUint32(data[8:], p.giveOut(next.reply, next.from))
@@ -762,7 +769,7 @@ func (p *Process) hand(q *port, m message) int64 {
 	}
 	// The format (0) and size; a sequence number; the sender's user and group; its audit token;
 	// the port's context; and nothing of the access checks the last words are for.
-	tail := append(le32(0, uint32(trailer), 0, uid, gid, 0, uid, gid, uid, gid, next.sender, 100000, guestExecution), le64(q.context, 0)...)
+	tail := append(append(le32(0, uint32(trailer), 0, uid, gid), auditToken(uid, gid, next.sender)...), le64(q.context, 0)...)
 	p.write(m.rcvMsg, append(data, tail[:trailer]...))
 	switch {
 	case uint64(len(next.aux)) <= m.auxRcvSize && len(next.aux) > 0:

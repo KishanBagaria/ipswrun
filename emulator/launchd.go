@@ -30,12 +30,13 @@ const (
 	routineLookUp       = 207
 	routineLookUpLegacy = 804 // the same question, as bootstrap_look_up asks it
 	routineCheckIn      = 805
+	routineCheckInMach  = 206 // a check-in as bootstrap_check_in asks it: how a daemon that is not an XPC listener gets its port
 	routineEventStream  = 403 // a daemon asking for the events launchd keeps for it (xpc_set_event_stream_handler)
 	routineJobValue     = 301 // a process asking for one of the values launchd keeps about its job, by number
 
-	jobManagerUID      = 3   // the user of the launchd domain the process is in
-	jobManagerName     = 6   // and the name of that domain
-	routineCheckInMach = 206 // the same, as bootstrap_check_in asks it: how a daemon that is not an XPC listener gets its port
+	// The values a process asks for.
+	jobManagerUID  = 3 // the user of the launchd domain the process is in
+	jobManagerName = 6 // and the name of that domain
 
 	noSuchService = 3 // ESRCH, as launchd says it
 	launchdPID    = 1
@@ -98,9 +99,7 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 	case checkIn:
 		reply.set("port", xpcPort{xpcReceive, p.giveOut(carried{port: s.port, disposition: moveReceive}, nil)})
 	default:
-		s.port.sends++
-		s.port.made++
-		reply.set("port", xpcPort{xpcSend, p.giveOut(carried{port: s.port, disposition: moveSend}, nil)})
+		reply.set("port", xpcPort{xpcSend, p.sendRight(s.port)})
 	}
 	// libxpc takes an answer only from launchd (root, pid 1, as the message's trailer says) and
 	// only if it names the process that asked and which of its executions.

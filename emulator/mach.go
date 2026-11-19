@@ -204,7 +204,8 @@ func (p *Process) send(m message) int64 {
 	if !m.inline {
 		m.bits, m.remote, m.local, m.id = le.Uint32(body), le.Uint32(body[8:]), le.Uint32(body[12:]), le.Uint32(body[20:])
 	}
-	if q := p.destination(m.remote); q != nil && q.object != nil {
+	q := p.destination(m.remote)
+	if q != nil && q.object != nil {
 		// A port of the kernel's: it answers at once, and a request it does not know is one
 		// nothing implements.
 		reply, ok := q.object.request(p, m.id, body)
@@ -218,7 +219,8 @@ func (p *Process) send(m message) int64 {
 			p.releaseSend(m.remote)
 		}
 		return 0
-	} else if q != nil {
+	}
+	if q != nil {
 		said := ""
 		if p.trace { // what an XPC message says, read before its rights are taken out of it
 			if ports, payload, ok := xpcBody(m.bits, body); ok {
@@ -235,11 +237,12 @@ func (p *Process) send(m message) int64 {
 		switch r := p.names[m.remote]; {
 		case m.bits&0x1F == makeSend:
 			q.made++
-		case sent.moved && r != nil && r.sends > 0: // given up now; the port counts it until the message is received
+		case m.bits&0x1F == moveSend && r != nil && r.sends > 0:
+			// The right it was sent with is given up now. The port counts it until the message
+			// is received.
 			r.sends--
 			p.forget(m.remote)
-		default:
-			sent.moved = false
+			sent.moved = true
 		}
 		if m.auxSendSize > 0 {
 			sent.aux = p.read(m.aux, m.auxSendSize)
@@ -359,8 +362,7 @@ func migHostGetSpecialPort(p *Process, body []byte) migReply {
 func migMakeMemoryEntry(p *Process, body []byte) migReply {
 	size, offset := le.Uint64(body[48:]), le.Uint64(body[56:])
 	size = align(offset+size, pageSize) - offset&^(pageSize-1)
-	entry := &port{m: p.m, memory: p.read(offset&^(pageSize-1), size), sends: 1}
-	name := p.giveOut(carried{port: entry, disposition: moveSend}, nil)
+	name := p.sendRight(&port{m: p.m, memory: p.read(offset&^(pageSize-1), size)})
 	p.note("  mach_make_memory_entry(%#x, %#x) = %#x", offset, size, name)
 	return migReply{body: append(append(migPort(name).body, ndr...), le64(size)...), port: true}
 }
@@ -422,6 +424,13 @@ func migHostInfo(p *Process, body []byte) migReply {
 	return counted(info[:min(count*4, uint64(len(info)))])
 }
 
+// auditToken is who a process is, as the kernel says it: its audit user (none), its user and
+// group twice over, effective and real, its pid, its audit session, and which of its executions
+// this is.
+func auditToken(uid, gid, pid uint32) []byte {
+	return le32(0, uid, gid, uid, gid, pid, 100000, guestExecution)
+}
+
 func migTaskInfo(p *Process, body []byte) migReply {
 	flavor := int32(le.Uint32(body[32:]))
 	p.note("  task_info flavor %d", flavor)
@@ -429,7 +438,7 @@ func migTaskInfo(p *Process, body []byte) migReply {
 	case 17: // TASK_DYLD_INFO
 		return counted(append(le64(p.imageInfo[:]...), le32(1)...))
 	case 15: // TASK_AUDIT_TOKEN
-		return counted(le32(0, p.uid, p.gid, p.uid, p.gid, p.pid, 100000, guestExecution))
+		return counted(auditToken(p.uid, p.gid, p.pid))
 	}
 	return migCode(kernInvalidArg)
 }

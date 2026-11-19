@@ -57,10 +57,7 @@ func sysShmOpen(p *Process, a []uint64) int64 {
 	case a[1]&oCreate != 0 && a[1]&oExcl != 0:
 		return -eEXIST
 	}
-	n := p.nextFD
-	p.fds[n] = &fd{kind: dataFD, shared: s}
-	p.nextFD++
-	return int64(n)
+	return int64(p.newFD(&fd{kind: dataFD, shared: s}))
 }
 
 // sysShmUnlink takes the name away. Whoever has the memory open or mapped keeps it.

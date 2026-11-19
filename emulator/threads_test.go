@@ -24,16 +24,7 @@ func TestThreads(t *testing.T) {
 	p := newProcess(t)
 	onMain(func() {
 		const lock, sem = dataAddr + 0x400, 0x5503
-		number := func(name string) int64 {
-			for n, candidate := range bsdNames {
-				if candidate == name {
-					return n
-				}
-			}
-			t.Fatalf("no system call named %s", name)
-			return 0
-		}
-		wait, wake := number("ulock_wait"), number("ulock_wake")
+		wait, wake := number(t, "ulock_wait"), number(t, "ulock_wake")
 		// schedule is the machine's, for the thread that stopped at pc; it returns where the next resumes.
 		schedule := func(pc uint64) uint64 {
 			p.current.pc, p.m.running = pc, p
