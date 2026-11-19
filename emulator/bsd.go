@@ -42,7 +42,7 @@ func init() {
 		"mremap_encrypted": {0, constant(0)}, "shared_region_check_np": {1, sysSharedRegionCheck},
 		"shared_region_map_and_slide_2_np": {4, sysSharedRegionMap}, "map_with_linking_np": {4, constant(-eNOTSUP)},
 		// process
-		"exit": {1, sysExit}, "getpid": {0, constant(guestPID)}, "getppid": {0, constant(1)}, "getuid": {0, constant(guestUID)},
+		"exit": {1, sysExit}, "getpid": {0, sysGetpid}, "getppid": {0, constant(1)}, "getuid": {0, constant(guestUID)},
 		"geteuid": {0, constant(guestUID)}, "getgid": {0, constant(guestGID)}, "getegid": {0, constant(guestGID)}, "gettid": {2, constant(-eSRCH)},
 		"issetugid": {0, constant(0)}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
 		"__pthread_sigmask": {3, sysSigprocmask}, "__pthread_kill": {2, sysPthreadKill}, "kill": {3, sysKill},
@@ -58,7 +58,7 @@ func init() {
 		"setrlimit": {2, constant(0)}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
-		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
 	}
 	for name, v := range trivial {
 		bsdHandlers[name] = handler{4, constant(v)}
@@ -74,7 +74,7 @@ var trivial = map[string]int64{
 	"debug_syscall_reject_config": 0, "debug_syscall_reject": 0, "setattrlist": 0, "fsetattrlist": 0, "chmod": 0, "fchmod": 0,
 	"flock": 0, "setxattr": 0, "fsetxattr": 0, "getxattr": -eNOATTR, "fgetxattr": -eNOATTR, "listxattr": 0, "flistxattr": 0, "chdir": 0,
 	"memorystatus_get_level": 0, "record_system_event": 0, "log_data": 0, "oslog_coproc_reg": 0, "oslog_coproc": 0, "setpriority": 0,
-	"getpriority": 0, "setsid": 0, "getpgrp": guestPID, "setitimer": 0, "utimes": 0, "futimes": 0, "fchown": 0, "chown": 0, "sync": 0,
+	"getpriority": 0, "setsid": 0, "setitimer": 0, "utimes": 0, "futimes": 0, "fchown": 0, "chown": 0, "sync": 0,
 }
 
 // call runs a handler; touching unmapped guest memory yields onFault instead of ending the run.
@@ -233,6 +233,8 @@ func sysExit(p *Process, a []uint64) int64 {
 	return 0
 }
 
+func sysGetpid(p *Process, a []uint64) int64 { return int64(p.pid) }
+
 func sysSigaction(p *Process, a []uint64) int64 {
 	if a[2] != 0 {
 		p.write(a[2], make([]byte, 16))
@@ -390,7 +392,7 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 		p.write(buf, str(GuestExe))
 		return 0
 	case callnum == 2 && flavor == 17 && size >= 56: // PROC_PIDUNIQIDENTIFIERINFO
-		p.write(buf, append(make([]byte, 16), le64(guestPID, 1, 0, 0, 0)...))
+		p.write(buf, append(make([]byte, 16), le64(uint64(p.pid), 1, 0, 0, 0)...))
 		return 56
 	case callnum == 2 && flavor == 19: // PROC_PIDARCHINFO
 		info := le32(cpuARM64, cpuSubtypeARM64E, 0)

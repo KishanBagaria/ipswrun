@@ -73,7 +73,7 @@ func TestPorts(t *testing.T) {
 			t.Errorf("received % x", got)
 		}
 		// The right to reply once has a name of its own, and its port is told if it is dropped unused.
-		if once == b || once == 0 || p.once[once] != p.ports[b] {
+		if r := p.names[once]; once == b || r == nil || !r.once || r.port != p.owned(b) {
 			t.Errorf("the reply right arrived as %#x; the reply port is %#x", once, b)
 		}
 		p.trap(-18, 0x203, uint64(once))
@@ -124,24 +124,24 @@ func TestPorts(t *testing.T) {
 		if waiter.state != waiting || waiter.kind != waitPort {
 			t.Errorf("receive from an empty port: state %d", waiter.state)
 		}
-		p.post(p.ports[a], machMessage{data: header(0, 24, a, 55), sender: guestPID})
-		if waiter.state != runnable || waiter.answer == nil || waiter.answer.x0 != 0 || p.u32(in+20) != 55 || len(p.ports[a].queue) != 0 {
+		post(p.owned(a), machMessage{data: header(0, 24, 0, 55)})
+		if waiter.state != runnable || waiter.answer == nil || waiter.answer.x0 != 0 || p.u32(in+20) != 55 || p.u32(in+12) != a || len(p.owned(a).queue) != 0 {
 			t.Errorf("after a message for the waiter: state %d answer %v id %d", waiter.state, waiter.answer, p.u32(in+20))
 		}
 		waiter.answer = nil
 
 		// launchd knows the services the guest provides, and no other.
-		p.services["com.example.provided"] = nil
+		p.m.services["com.example.provided"] = &service{provider: p}
 		ask := func(routine uint32, name string) *xpcDictionary {
 			reply := allocate()
 			request, _ := xpcEncode((&xpcDictionary{}).set("name", name))
-			if !p.launchd(message{id: 0x40000000 | routine, local: reply}, append(header(0, 0, bootstrapPort, 0), request...)) {
+			if !p.m.launchd(p, message{bits: makeSendOnce << 8, id: 0x40000000 | routine, local: reply}, append(header(0, 0, bootstrapPort, 0), request...)) {
 				t.Errorf("launchd has no answer to routine %d", routine)
 			}
-			answer := p.ports[reply].queue[0]
+			answer := p.owned(reply).queue[0]
 			ports, payload, _ := xpcBody(le.Uint32(answer.data), answer.data)
 			d, err := xpcDecode(payload, ports)
-			if err != nil || answer.sender != launchdPID || d.uint("req_pid") != guestPID {
+			if err != nil || answer.sender != launchdPID || d.uint("req_pid") != uint64(p.pid) {
 				t.Errorf("launchd's answer: %v %v from pid %d", d, err, answer.sender)
 			}
 			return d
@@ -154,7 +154,7 @@ func TestPorts(t *testing.T) {
 		}
 		checked, _ := ask(routineCheckIn, "com.example.provided").values["port"].(xpcPort)
 		found, _ := ask(routineLookUpLegacy, "com.example.provided").values["port"].(xpcPort)
-		if checked.kind != xpcReceive || found.kind != xpcSend || checked.name != found.name || p.ports[found.name] == nil || p.ports[found.name].sends != 1 {
+		if checked.kind != xpcReceive || found.kind != xpcSend || checked.name != found.name || p.owned(found.name) == nil || p.owned(found.name).sends != 1 {
 			t.Errorf("checked in as %+v, found as %+v", checked, found)
 		}
 		// bootstrap_check_in asks with a routine of its own, and gets the same port.

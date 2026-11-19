@@ -34,6 +34,12 @@ func TestThreads(t *testing.T) {
 			return 0
 		}
 		wait, wake := number("ulock_wait"), number("ulock_wake")
+		// schedule is the machine's, for the thread that stopped at pc; it returns where the next resumes.
+		schedule := func(pc uint64) uint64 {
+			p.current.pc, p.m.running = pc, p
+			p.m.schedule()
+			return p.current.pc
+		}
 
 		// A lock word that is not what the caller expects is not waited for.
 		p.write(lock, le32(7))
@@ -66,7 +72,7 @@ func TestThreads(t *testing.T) {
 			t.Fatalf("ulock_wait on the expected word: state %d, reschedule %v", main.state, p.reschedule())
 		}
 		p.setX(19, 0x1919) // a register no call touches: it has to come back with the thread
-		if pc := p.schedule(codeAddr + 4); pc != codeAddr+0x100 || p.current != other {
+		if pc := schedule(codeAddr + 4); pc != codeAddr+0x100 || p.current != other {
 			t.Fatalf("scheduled thread %d at %#x, want the new thread at its entry", p.current.id, pc)
 		}
 		if p.x(0) != 11 || p.x(1) != 22 || p.uc.reg(regSP) != dataAddr+0x800 || p.uc.reg(regTPIDRRO) != 0x7700 || p.x(19) != 0 {
@@ -79,7 +85,7 @@ func TestThreads(t *testing.T) {
 			t.Errorf("ulock_wake: x0 %d carry %v, waiter state %d", x0, carry, main.state)
 		}
 		p.end(other)
-		if pc := p.schedule(0); pc != codeAddr+4 || p.current != main || p.x(19) != 0x1919 || len(p.threads) != 1 {
+		if pc := schedule(0); pc != codeAddr+4 || p.current != main || p.x(19) != 0x1919 || len(p.threads) != 1 {
 			t.Errorf("after the new thread ended: thread %d at %#x, x19 %#x, %d threads", p.current.id, pc, p.x(19), len(p.threads))
 		}
 
@@ -89,7 +95,7 @@ func TestThreads(t *testing.T) {
 		if main.state != waiting {
 			t.Fatalf("semaphore_timedwait on an empty semaphore: state %d", main.state)
 		}
-		p.schedule(codeAddr + 4)
+		schedule(codeAddr + 4)
 		if waited := time.Since(started); p.x(0) != kernTimedOut || main.state != runnable || waited < 25*time.Millisecond {
 			t.Errorf("after the deadline: x0 %d state %d, waited %v", p.x(0), main.state, waited)
 		}

@@ -52,7 +52,7 @@ const (
 	dyldInode   = 0x5105F2B
 	cacheInode  = 0x5105F30
 
-	// The one process, user and machine the guest sees, however it asks.
+	// The user and machine a guest sees, however it asks, and the pid of the first process.
 	guestPID         = 4242
 	guestExecution   = 1 // how many programs the process has run: the version of its pid
 	guestUID         = 501
@@ -169,17 +169,14 @@ type SystemFile struct {
 	Dir  bool
 }
 
-// Config describes one guest process.
+// Config describes the machine the guests run on.
 type Config struct {
 	Unicorn  string           // path of the verified libunicorn (see EnsureUnicorn)
 	Cache    *dyldcache.Cache // the build's dyld shared cache
 	CacheDir string           // guest directory the cache files appear in
 	Home     string           // host directory behind GuestHome
-	Mounts   []Mount          // more host directories the guest may change (see CheckMounts)
-	// Services are the Mach services the guest provides: the names it may check in with launchd.
-	Services   []string
-	Executable string // host path of the guest executable
-	Dyld       []byte // the build's /usr/lib/dyld
+	Mounts   []Mount          // more host directories the guests may change (see CheckMounts)
+	Dyld     []byte           // the build's /usr/lib/dyld
 	// System serves read-only files from the build's system volume; a lookup failure stops the run.
 	System func(path string) (SystemFile, error)
 	OS     map[string]string // "version", "build" and "release" reported by sysctl
@@ -191,6 +188,9 @@ type Config struct {
 
 // Process is one emulated process.
 type Process struct {
+	m       *Machine
+	pid     uint32
+	label   string // what it is called in traces and diagnostics: the name of its executable
 	uc      *engine
 	cache   *dyldcache.Cache
 	dyld    []byte
@@ -227,10 +227,8 @@ type Process struct {
 	handoffs    map[uint64]int // mutexes unlocked for a waiter that had not arrived
 	kqueues     map[uint64]*kqueue
 	rwlocks     map[uint64]*rwlock
-	ports       map[uint32]*port  // the receive rights and port sets the guest has
-	once        map[uint32]*port  // its rights to send to one of them once, by name
-	entries     map[uint32][]byte // the memory behind each port that names some
-	services    map[string]*port  // the services the guest provides, and the port of each once it is asked for
+	names       map[uint32]*right // the port rights it holds, by the name it has for each (see ports.go)
+	named       map[*port]uint32  // the name it has for a port it can receive from or send to
 	eventData   uint64            // where a kevent says a message it did not deliver is
 	ignored     map[int]int       // kevent filters nothing emulates, and how many changes each was sent
 	threadStart uint64            // libpthread's entry points, and what it said of a pthread
@@ -321,37 +319,18 @@ func guard(err *error) {
 	}
 }
 
-// New creates a process with a stack, the commpage and the MMU set up, ready for Start.
-func New(cfg Config) (p *Process, err error) {
-	if err := loadUnicorn(cfg.Unicorn); err != nil {
-		return nil, err
-	}
-	dyld, err := thin(cfg.Dyld, cpuSubtypeARM64E)
-	if err != nil {
-		return nil, fmt.Errorf("dyld: %w", err)
-	}
-	exe, err := os.ReadFile(cfg.Executable)
+// newProcess gives the machine a process with a stack, the commpage and the MMU set up, ready for
+// load.
+func (m *Machine) newProcess(executable string) (p *Process, err error) {
+	exe, err := os.ReadFile(executable)
 	if err != nil {
 		return nil, err
 	}
-	if err := CheckMounts(cfg.Mounts); err != nil {
-		return nil, err
-	}
-	mounts := append([]Mount{{GuestHome, cfg.Home}}, cfg.Mounts...)
-	for i, m := range mounts {
-		host, err := filepath.EvalSymlinks(m.Host)
-		if err != nil {
-			return nil, err
-		}
-		mounts[i] = Mount{canonical(m.Guest), host}
-	}
-	slices.SortStableFunc(mounts, func(a, b Mount) int { return len(b.Guest) - len(a.Guest) })
-	services := map[string]*port{}
-	for _, name := range cfg.Services {
-		services[name] = nil
-	}
-	p = &Process{services: services, mounts: mounts, cache: cfg.Cache, dyld: dyld, exe: exe, exePath: cfg.Executable, system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
-		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{}, ports: map[uint32]*port{}, once: map[uint32]*port{}, entries: map[uint32][]byte{}, ignored: map[int]int{},
+	cfg := m.cfg
+	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), label: filepath.Base(executable), mounts: m.mounts, cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
+		system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
+		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
+		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},
 		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
 	for _, v := range volumes { // their roots, for fsgetpath
@@ -382,11 +361,15 @@ func New(cfg Config) (p *Process, err error) {
 	if err := p.setupMMU(); err != nil {
 		return nil, err
 	}
+	m.procs = append(m.procs, p)
 	return p, nil
 }
 
 // Close releases the engine and any host files the guest left open.
 func (p *Process) Close() {
+	if p.uc == nil {
+		return
+	}
 	for _, t := range p.threads {
 		if t.ctx != 0 {
 			p.uc.freeContext(t.ctx)
@@ -400,7 +383,11 @@ func (p *Process) Close() {
 		delete(p.fds, n)
 	}
 	p.uc.close()
+	p.uc = nil
 }
+
+// Label is what the process is called in traces and diagnostics: the name of its executable.
+func (p *Process) Label() string { return p.label }
 
 // ExitCode is the guest's exit status; ok is false if it never exited.
 func (p *Process) ExitCode() (code int, ok bool) { return p.exitCode, p.exited }
@@ -870,10 +857,10 @@ func (p *Process) loadMachO(data []byte, name string, base uint64) (f *macho.Fil
 	return f, slide, entry
 }
 
-// Start runs the guest with the given arguments and environment until it exits. Any other end
-// (a fault, something unimplemented, the timeout) is a *StopError.
-func (p *Process) Start(argv, env []string, timeout time.Duration) (err error) {
-	defer guard(&err)
+// load maps the guest's executable and the build's dyld, and leaves the first thread where the
+// kernel leaves a new process: at dyld's entry point, with its arguments and environment on the
+// stack.
+func (p *Process) load(argv, env []string) error {
 	// A guest built for this is arm64. What Apple ships has only arm64e, which runs the same
 	// here: the keys are off, as dyld is told below.
 	exe, err := thin(p.exe, 0, cpuSubtypeARM64E)
@@ -909,7 +896,6 @@ func (p *Process) Start(argv, env []string, timeout time.Duration) (err error) {
 	p.write(sbase, text)
 	p.write(sp, le64(words...))
 	p.uc.setReg(regSP, sp)
-	p.deadline = time.Now().Add(timeout)
 	dyld, slide, pc := p.loadMachO(p.dyld, "dyld", dyldBase)
 	for _, segment := range []string{"__DATA", "__DATA_DIRTY"} {
 		if s := dyld.Section(segment, "__all_image_info"); s != nil && s.Addr+slide != 0 {
@@ -917,41 +903,38 @@ func (p *Process) Start(argv, env []string, timeout time.Duration) (err error) {
 			break
 		}
 	}
-	p.run(pc)
+	p.current.pc = pc
 	return nil
 }
 
-func (p *Process) run(pc uint64) {
+// step runs the thread that has the turn until it gives it up, the process exits, or the run
+// has to stop.
+func (p *Process) step() {
 	// One uninterrupted emu_start per stretch: resuming after Unicorn's own timeout fires is not
 	// reliable, so the timeout is only ever the overall deadline and hitting it is fatal, whatever
 	// else happened in that stretch. Stops requested from inside a hook (exit, an emulated
 	// instruction) are safe to resume from.
-	for !p.exited {
-		p.resume = false
-		left := max(time.Until(p.deadline).Microseconds(), 1)
-		timedOut, err := p.uc.start(pc, 0, uint64(left))
-		if err != nil {
-			reason := p.fault
-			if reason == "" {
-				reason = "no hook reported a cause"
-			}
-			pc = p.uc.reg(regPC)
-			stopf("%v: %s at %s lr %s", err, reason, p.where(pc), p.where(p.uc.reg(regLR)))
+	p.resume = false
+	left := max(time.Until(p.m.deadline).Microseconds(), 1)
+	timedOut, err := p.uc.start(p.current.pc, 0, uint64(left))
+	pc := p.uc.reg(regPC)
+	if err != nil {
+		reason := p.fault
+		if reason == "" {
+			reason = "no hook reported a cause"
 		}
-		pc = p.uc.reg(regPC)
-		if timedOut {
-			stopKind(StopTimeout, "timed out at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
-		}
-		if p.fault != "" {
-			stopKind(p.faultKind, "%s", p.fault)
-		}
-		if !p.exited && !p.resume {
-			stopf("emulation stopped without a cause at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
-		}
-		if !p.exited && p.reschedule() {
-			pc = p.schedule(pc)
-		}
+		stopf("%v: %s at %s lr %s", err, reason, p.where(pc), p.where(p.uc.reg(regLR)))
 	}
+	if timedOut {
+		stopKind(StopTimeout, "timed out at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
+	}
+	if p.fault != "" {
+		stopKind(p.faultKind, "%s", p.fault)
+	}
+	if !p.exited && !p.resume {
+		stopf("emulation stopped without a cause at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
+	}
+	p.current.pc = pc
 }
 
 // ---- traps ----
@@ -1050,6 +1033,9 @@ func (p *Process) note(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	if len(p.threads) > 1 {
 		s = fmt.Sprintf("[%d] %s", p.current.id, s)
+	}
+	if p.m != nil && len(p.m.procs) > 1 {
+		s = fmt.Sprintf("[%s] %s", p.label, s)
 	}
 	p.log = append(p.log, s)
 	if len(p.log) > 400 {

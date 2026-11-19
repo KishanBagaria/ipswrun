@@ -122,7 +122,7 @@ func machGenerateActivityID(p *Process, a []uint64) int64 {
 func machThreadSelf(p *Process, a []uint64) int64 { return int64(p.current.port) }
 
 func machPidForTask(p *Process, a []uint64) int64 {
-	p.write(a[1], le32(guestPID))
+	p.write(a[1], le32(p.pid))
 	return 0
 }
 
@@ -194,8 +194,8 @@ func (p *Process) doMsg(m message) int64 {
 	return 0
 }
 
-// send delivers a message: to the queue of a port of the guest's own, or to the kernel, whose
-// answer is queued on the reply port at once.
+// send delivers a message: to the queue of a port, whichever process receives from it, or to the
+// kernel, whose answer is queued on the reply port at once.
 func (p *Process) send(m message) int64 {
 	if m.sendSize < 24 || m.sendSize&3 != 0 {
 		return sendTooSmall // no header, or not a whole number of words
@@ -205,23 +205,27 @@ func (p *Process) send(m message) int64 {
 		m.bits, m.remote, m.local, m.id = le.Uint32(body), le.Uint32(body[8:]), le.Uint32(body[12:]), le.Uint32(body[20:])
 	}
 	if q := p.destination(m.remote); q != nil {
-		arrived, ok := p.carried(m, body)
+		sent, ok := p.outgoing(m, body)
 		if !ok {
 			return sendTooSmall // shorter than what it says it carries
 		}
-		le.PutUint32(arrived[12:], q.name)
-		p.note("  mach_msg id %d to port %#x: %d bytes queued", m.id, q.name, len(arrived))
-		sent := machMessage{data: arrived, sender: guestPID, moved: m.bits&0x1F == moveSend}
-		if m.bits&0x1F == makeSend {
+		p.note("  mach_msg id %d to port %#x: %d bytes queued", m.id, m.remote, len(sent.data))
+		switch r := p.names[m.remote]; {
+		case m.bits&0x1F == makeSend:
 			q.made++
+		case sent.moved && r != nil && r.sends > 0: // given up now; the port counts it until the message is received
+			r.sends--
+			p.forget(m.remote)
+		default:
+			sent.moved = false
 		}
 		if m.auxSendSize > 0 {
 			sent.aux = p.read(m.aux, m.auxSendSize)
 		}
-		p.post(q, sent)
+		post(q, sent)
 		return 0
 	}
-	if m.remote == bootstrapPort && p.launchd(m, body) {
+	if m.remote == bootstrapPort && p.m.launchd(p, m, body) {
 		return 0
 	}
 	routine := migRoutines[m.id]
@@ -262,7 +266,7 @@ func migPort(name uint32) migReply {
 
 // answer queues the reply to a message on the port its sender gave for one, if it gave one.
 func (p *Process) answer(m message, id uint32, reply migReply, sender uint32) {
-	to := p.ports[m.local]
+	to := p.takeIn(m.local, m.bits>>8&0x1F).port
 	if to == nil {
 		if m.local != 0 {
 			p.note("  no port %#x to answer on", m.local)
@@ -273,7 +277,7 @@ func (p *Process) answer(m message, id uint32, reply migReply, sender uint32) {
 	if reply.port {
 		bits |= bitsComplex
 	}
-	p.enqueue(to, bits, id, reply.body, sender)
+	enqueue(to, bits, id, reply.body, sender)
 }
 
 var migRoutines map[uint32]func(p *Process, body []byte) migReply
@@ -326,13 +330,13 @@ func migHostGetSpecialPort(p *Process, body []byte) migReply {
 
 // migMakeMemoryEntry (mach_make_memory_entry_64) names a stretch of memory with a port, by which
 // it can be mapped again: how large data is passed along without copying it into a message. The
-// entry is a copy made now, and a mapping of it a copy of that. Rights to it are not counted, so
-// the copy is kept for as long as the process runs.
+// entry is a copy made now, and a mapping of it, in this process or one the port is sent to, a
+// copy of that.
 func migMakeMemoryEntry(p *Process, body []byte) migReply {
 	size, offset := le.Uint64(body[48:]), le.Uint64(body[56:])
 	size = align(offset+size, pageSize) - offset&^(pageSize-1)
-	name := p.newPort()
-	p.entries[name] = p.read(offset&^(pageSize-1), size)
+	entry := &port{m: p.m, memory: p.read(offset&^(pageSize-1), size), sends: 1}
+	name := p.giveOut(carried{port: entry, disposition: moveSend}, nil)
 	p.note("  mach_make_memory_entry(%#x, %#x) = %#x", offset, size, name)
 	return migReply{body: append(append(migPort(name).body, ndr...), le64(size)...), port: true}
 }
@@ -340,7 +344,8 @@ func migMakeMemoryEntry(p *Process, body []byte) migReply {
 func migVMMap(p *Process, body []byte) migReply { // mach_vm_map
 	addr, size, mask, flags := le.Uint64(body[48:]), le.Uint64(body[56:]), le.Uint64(body[64:]), uint64(le.Uint32(body[72:]))
 	what := allocation{name: "vm_map"}
-	if entry, ok := p.entries[le.Uint32(body[28:])]; ok {
+	if r := p.names[le.Uint32(body[28:])]; r != nil && r.port.memory != nil {
+		entry := r.port.memory
 		from := min(le.Uint64(body[76:]), uint64(len(entry)))
 		what = allocation{kind: fileRegion, data: entry[from:], name: "memory entry"}
 	}
@@ -400,7 +405,7 @@ func migTaskInfo(p *Process, body []byte) migReply {
 	case 17: // TASK_DYLD_INFO
 		return counted(append(le64(p.imageInfo[:]...), le32(1)...))
 	case 15: // TASK_AUDIT_TOKEN
-		return counted(le32(0, guestUID, guestGID, guestUID, guestGID, guestPID, 100000, guestExecution))
+		return counted(le32(0, guestUID, guestGID, guestUID, guestGID, p.pid, 100000, guestExecution))
 	}
 	return migCode(kernInvalidArg)
 }
