@@ -1,0 +1,7 @@
+{
+  "build": "21G115",
+  "cache_uuid": "049B583E-D4DC-3B2B-88DA-E52D6E18313D",
+  "exit_code": 0,
+  "output": "group    100 tasks: squares 338350 actor 5050\nlet      884\nsleep    at least 50 ms true, under 5 s true\nresume   7\ndetached 81\ncancel   true\n",
+  "version": "12.6"
+}

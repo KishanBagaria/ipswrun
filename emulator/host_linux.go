@@ -2,7 +2,6 @@ package emulator
 
 import (
 	"syscall"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -20,7 +19,7 @@ func hostSymbols() []symbol { return nil }
 
 // commpageRows is what is not zero in the two commpages of an Apple silicon Mac (macOS 27.2),
 // in rows of 16 bytes: a Linux host has no commpage of its own to give the guest. The per-boot
-// random values at 0x320 are left out, and hostPage replaces the clock fields.
+// random values at 0x320 are left out. setupCommpage replaces the clock fields.
 var commpageRows = []struct {
 	addr  uint64
 	bytes string
@@ -53,16 +52,6 @@ func hostPage(addr uint64, size int) []byte {
 		if row.addr >= addr && row.addr < addr+uint64(size) {
 			copy(out[row.addr-addr:], row.bytes)
 		}
-	}
-	if addr == commPage {
-		// The clock fields describe the machine the page was taken from. Left as they were, the
-		// offset libsystem adds to the counter puts mach_absolute_time before zero on a host that
-		// has been up for less time than that machine had, and every deadline with it. Describe
-		// this host instead: no offset, no time asleep, booted when it was, no approximate time.
-		clear(out[0x88:0x90]) // TIMEBASE_OFFSET
-		clear(out[0x98:0xB0]) // CONT_TIMEBASE, BOOTTIME_USEC, CONT_HW_TIMEBASE
-		le.PutUint64(out[0xA0:], uint64(time.Now().UnixMicro())-uptimeNanos()/1000)
-		clear(out[0xC0:0xD0]) // APPROX_TIME and whether it is supported
 	}
 	return out
 }

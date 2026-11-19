@@ -1,0 +1,6 @@
+group    100 tasks: squares 338350 actor 5050
+let      884
+sleep    at least 50 ms true, under 5 s true
+resume   7
+detached 81
+cancel   true

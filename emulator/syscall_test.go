@@ -93,7 +93,8 @@ func TestSystemCallNumbers(t *testing.T) {
 		}
 	}
 	for n, name := range map[int64]string{10: "vm_allocate", 12: "vm_deallocate", 15: "vm_map", 26: "reply_port", 27: "thread_self",
-		28: "task_self", 29: "host_self", 31: "mach_msg", 32: "mach_msg_overwrite", 36: "semaphore_wait", 47: "mach_msg2",
+		28: "task_self", 29: "host_self", 31: "mach_msg", 32: "mach_msg_overwrite", 36: "semaphore_wait", 38: "semaphore_timedwait",
+		41: "port_guard", 42: "port_unguard", 46: "pid_for_task", 47: "mach_msg2",
 		89: "timebase_info", 91: "mk_timer_create"} {
 		if machNames[n] != name {
 			t.Errorf("mach trap %d is %q, want %q", n, machNames[n], name)
@@ -135,7 +136,7 @@ func TestConstantHandlers(t *testing.T) {
 			t.Errorf("%s() = %d, want %d", name, got, want)
 		}
 	}
-	for name, want := range map[string]int64{"task_self": 0x203, "thread_self": 0x103, "host_self": 0x303,
+	for name, want := range map[string]int64{"task_self": 0x203, "host_self": 0x303,
 		"task_dyld_process_info_notify_get": kernFailure} {
 		if got := machHandlers[name].fn(nil, nil); got != want {
 			t.Errorf("mach %s() = %#x, want %#x", name, got, want)

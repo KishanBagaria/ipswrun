@@ -11,8 +11,8 @@ var machNames = map[int64]string{
 	15: "vm_map", 16: "port_allocate", 18: "port_deallocate", 19: "port_mod_refs", 20: "port_move_member", 21: "port_insert_right",
 	22: "port_insert_member", 23: "port_extract_member", 24: "port_construct", 25: "port_destruct", 26: "reply_port",
 	27: "thread_self", 28: "task_self", 29: "host_self", 31: "mach_msg", 32: "mach_msg_overwrite", 33: "semaphore_signal",
-	36: "semaphore_wait", 38: "semaphore_timedwait", 40: "port_guard", 41: "port_unguard", 43: "generate_activity_id",
-	45: "pid_for_task", 47: "mach_msg2", 50: "thread_get_special_reply_port", 59: "swtch_pri", 60: "swtch", 61: "thread_switch",
+	34: "semaphore_signal_all", 36: "semaphore_wait", 37: "semaphore_wait_signal", 38: "semaphore_timedwait", 40: "port_get_attributes", 41: "port_guard", 42: "port_unguard", 43: "generate_activity_id",
+	46: "pid_for_task", 47: "mach_msg2", 50: "thread_get_special_reply_port", 59: "swtch_pri", 60: "swtch", 61: "thread_switch",
 	70: "host_create_mach_voucher", 76: "port_type", 77: "port_request_notification", 89: "timebase_info", 90: "mach_wait_until",
 	91: "mk_timer_create", 92: "mk_timer_destroy", 93: "mk_timer_arm", 94: "mk_timer_cancel", 95: "mk_timer_arm_leeway",
 }
@@ -38,21 +38,22 @@ func init() {
 		}
 	}
 	machHandlers = map[string]handler{
-		"task_self": {0, constant(0x203)}, "thread_self": {0, constant(0x103)}, "host_self": {0, constant(0x303)},
+		"task_self": {0, constant(0x203)}, "thread_self": {0, machThreadSelf}, "host_self": {0, constant(0x303)},
 		"reply_port": {0, newPort}, "thread_get_special_reply_port": {0, newPort},
 		"vm_allocate": {4, machVMAllocate}, "vm_map": {6, machVMMap}, "vm_deallocate": {3, machVMDeallocate},
 		"vm_protect": {5, constant(0)}, "vm_purgable_control": {4, constant(0)},
-		"port_allocate": {3, portOut(2)}, "port_construct": {4, portOut(3)}, "port_deallocate": {2, constant(0)},
+		"port_allocate": {3, portOut(2)}, "port_construct": {4, machPortConstruct}, "port_deallocate": {2, constant(0)},
 		"port_mod_refs": {4, constant(0)}, "port_insert_right": {4, constant(0)}, "port_destruct": {4, constant(0)},
-		"port_guard": {4, constant(0)}, "port_unguard": {3, constant(0)}, "port_insert_member": {3, constant(0)},
+		"port_guard": {4, machPortGuard}, "port_unguard": {3, constant(0)}, "port_insert_member": {3, constant(0)},
 		"port_move_member": {3, constant(0)}, "port_extract_member": {3, constant(0)}, "port_type": {3, machPortType},
 		"port_request_notification":         {0, constant(0)},
 		"task_dyld_process_info_notify_get": {2, constant(kernFailure)}, // nobody is watching
 		"timebase_info":                     {1, machTimebaseInfo}, "generate_activity_id": {3, machGenerateActivityID},
-		"host_create_mach_voucher": {4, portOut(3)}, "swtch_pri": {1, constant(0)}, "thread_switch": {3, constant(0)},
+		"host_create_mach_voucher": {4, portOut(3)}, "swtch_pri": {1, sysYield}, "swtch": {0, sysYield}, "thread_switch": {3, sysYield},
 		"mk_timer_create": {0, newPort}, "mk_timer_destroy": {1, constant(0)}, "mk_timer_arm": {2, constant(0)},
-		"mk_timer_arm_leeway": {4, constant(0)}, "mk_timer_cancel": {2, constant(0)}, "semaphore_signal": {1, constant(0)},
-		"semaphore_wait": {1, machSemaphoreWait}, "pid_for_task": {2, machPidForTask},
+		"mk_timer_arm_leeway": {4, constant(0)}, "mk_timer_cancel": {2, constant(0)}, "semaphore_signal": {1, machSemaphoreSignal},
+		"semaphore_signal_all": {1, machSemaphoreSignalAll}, "semaphore_wait": {1, machSemaphoreWait},
+		"semaphore_timedwait": {3, machSemaphoreTimedwait}, "semaphore_wait_signal": {2, machSemaphoreWaitSignal}, "pid_for_task": {2, machPidForTask},
 		"mach_msg": {7, machMsg}, "mach_msg_overwrite": {8, machMsgOverwrite}, "mach_msg2": {8, machMsg2},
 	}
 }
@@ -107,7 +108,7 @@ func machPortType(p *Process, a []uint64) int64 {
 }
 
 func machTimebaseInfo(p *Process, a []uint64) int64 {
-	p.write(a[0], le32(125, 3))
+	p.write(a[0], le32(tickNanos, 1))
 	return 0
 }
 
@@ -116,10 +117,27 @@ func machGenerateActivityID(p *Process, a []uint64) int64 {
 	return 0
 }
 
-func machSemaphoreWait(p *Process, a []uint64) int64 {
-	p.note("  semaphore_wait (would block)")
+// machPortConstruct makes a port and keeps the context it is given, which its owner reads back.
+func machPortConstruct(p *Process, a []uint64) int64 {
+	port := p.newPort()
+	p.write(a[3], le32(port))
+	p.contexts[port] = a[2]
 	return 0
 }
+
+// machPortGuard guards a port with a value, which is also its context.
+func machPortGuard(p *Process, a []uint64) int64 {
+	p.contexts[uint32(a[1])] = a[2]
+	return 0
+}
+
+func migPortGetContext(p *Process, body []byte) migReply {
+	port := le.Uint32(body[32:])
+	p.note("  mach_port_get_context %#x = %#x", port, p.contexts[port])
+	return migData(le64(p.contexts[port]))
+}
+
+func machThreadSelf(p *Process, a []uint64) int64 { return int64(p.current.port) }
 
 func machPidForTask(p *Process, a []uint64) int64 {
 	p.write(a[1], le32(guestPID))
@@ -227,6 +245,7 @@ func init() {
 		206:  freshPort,                                                          // host_get_clock_service
 		1000: migClockGetTime,
 		3405: migTaskInfo,
+		3228: migPortGetContext,
 		3409: migTaskGetSpecialPort,
 		3410: ok,        // task_set_special_port
 		3418: freshPort, // semaphore_create

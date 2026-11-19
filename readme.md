@@ -113,7 +113,8 @@ What the guest gets:
 
 ## What does not work
 
-- **Threads, daemons and the network.** There is one thread: work queued to other threads never runs. A blocking Mach receive is answered with a dead-reply notification, which callers see as an interrupted XPC connection.
+- **Threads that never wait.** Threads take turns: one runs until it waits for something (a lock, a condition, a semaphore, a queue, a timer), yields or ends, and only then does another. POSIX threads and libdispatch queues, groups, semaphores and timers work this way. A thread that spins without a system call until another thread does something waits forever, and a run where no thread can go on stops and lists what each was waiting for. Read-write locks that have to wait, signals between threads and thread cancellation are not there.
+- **Daemons and the network.** A blocking Mach receive is answered with a dead-reply notification, which callers see as an interrupted XPC connection. Of the events libdispatch can wait for, only timers happen: not Mach ports, files, sockets, signals or processes.
 - **Anything that needs a daemon.** `NSUserDefaults` reads back nothing (no `cfprefsd`). `SecKeyCreateRandomKey` fails unless the key is made the iOS way (`kSecUseDataProtectionKeychain`, not permanent), because the macOS default is the legacy CDSA stack behind `securityd`.
 - **Files outside the home.** What the guest writes outside `--home` never reaches the host, and it can read system files only from the `--system` allowlist.
 - **macOS 13 and 14 by range.** Their images keep the shared cache in a deflate-compressed ZIP member, which cannot be read by range. `--stream-compressed` downloads that one member (3.6–4.5 GB).
@@ -123,7 +124,7 @@ What the guest gets:
 
 ## What is tested
 
-Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
+Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads and libdispatch. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
 
 ## How it works
 

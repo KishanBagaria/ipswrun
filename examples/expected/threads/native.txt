@@ -1,0 +1,13 @@
+pthread  4 threads: mutex 80000 atomic 80000 thread-local 80004 destructors 4
+cond     4 turns in order
+sleep    joined a sleeping thread, main there 0 here 1
+rwlock   writer kept out by readers 1, then let in 1
+rwlock   5 readers and a writer waited: readers consistent 1, value 11
+async    ran 1 off the main thread 1 timed out 0
+group    100 blocks sum 5050 timed out 0
+serial   50 blocks in order 1
+apply    64 iterations sum 2016
+once     1 call
+after    fired 1 timed out 0
+timer    3 ticks 1 timed out 0
+main     block on the main thread 0

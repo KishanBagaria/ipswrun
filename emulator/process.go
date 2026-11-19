@@ -209,10 +209,27 @@ type Process struct {
 	resume    bool
 	deadline  time.Time
 
+	// Threads: see threads.go.
+	threads     []*thread
+	current     *thread
+	nextThread  int
+	yield       bool // the running thread offered its turn
+	waits       uint64
+	semaphores  map[uint32]int
+	handoffs    map[uint64]int // mutexes unlocked for a waiter that had not arrived
+	kqueues     map[uint64]*kqueue
+	rwlocks     map[uint64]*rwlock
+	contexts    map[uint32]uint64 // of ports made with one
+	ignored     map[int]int       // kevent filters nothing emulates, and how many changes each was sent
+	threadStart uint64            // libpthread's entry points, and what it said of a pthread
+	wqThread    uint64
+	pthreadSize uint64
+	tsdOffset   uint64
+	portOffset  uint64
+
 	log     []string
 	unknown map[unknownMIG]int // how often each was sent
 	missing []*missingCall     // in the order first made
-	tsd     uint64
 	oids    []string
 	sysctls map[string]any
 	dit     uint64
@@ -272,6 +289,9 @@ func (p *Process) Unimplemented() string {
 	for u, count := range p.unknown {
 		messages = append(messages, fmt.Sprintf("  %4d× mach message %d to port %#x from %s", count, u.id, u.port, p.where(u.lr)))
 	}
+	for filter, count := range p.ignored {
+		messages = append(messages, fmt.Sprintf("  %4d× kevent filter %d: its events never happen", count, filter))
+	}
 	slices.Sort(messages)
 	return strings.Join(append(out, messages...), "\n")
 }
@@ -307,7 +327,7 @@ func New(cfg Config) (p *Process, err error) {
 		return nil, err
 	}
 	p = &Process{cache: cfg.Cache, dyld: dyld, home: home, exe: exe, exePath: cfg.Executable, system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
-		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{},
+		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{}, contexts: map[uint32]uint64{}, ignored: map[int]int{},
 		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
 	for _, v := range volumes { // their roots, for fsgetpath
@@ -322,6 +342,8 @@ func New(cfg Config) (p *Process, err error) {
 	if p.uc, err = newEngine(p); err != nil {
 		return nil, err
 	}
+	p.current = &thread{port: mainThreadPort, ctx: p.uc.newContext()}
+	p.threads = []*thread{p.current}
 	created := p
 	defer func() {
 		if err != nil {
@@ -341,6 +363,12 @@ func New(cfg Config) (p *Process, err error) {
 
 // Close releases the engine and any host files the guest left open.
 func (p *Process) Close() {
+	for _, t := range p.threads {
+		if t.ctx != 0 {
+			p.uc.freeContext(t.ctx)
+			t.ctx = 0
+		}
+	}
 	for n, f := range p.fds {
 		if f.kind == hostFD && f.host > 2 {
 			closeHost(f.host)
@@ -636,13 +664,34 @@ func (p *Process) setupMMU() error {
 	return nil
 }
 
+// tickNanos is how long a tick of the emulated CPU's counter lasts: it counts the host's uptime at
+// 62.5 MHz, whatever the host. mach_timebase_info says so, which is what makes the guest's idea
+// of how long things take the same as the host's.
+const tickNanos = 16
+
+// machTicks is the guest's mach_absolute_time now.
+func machTicks() uint64 { return uptimeNanos() / tickNanos }
+
+// tickTime is when the guest's mach_absolute_time is, or was, ticks.
+func tickTime(ticks uint64) time.Time {
+	return time.Now().Add(time.Duration(int64(ticks-machTicks()) * tickNanos))
+}
+
 func (p *Process) setupCommpage() {
 	for _, base := range []uint64{commPage, commPageRO} {
 		page := hostPage(base, pageSize)
 		if base == commPage {
 			clear(page[0x120:0x148]) // no timeofday fast path: forces the syscall
-			page[0x90] = 1           // USER_TIMEBASE_SPEC: plain cntvct_el0
-			page[0x10C] = 0          // no TPRO: dyld falls back to mprotect
+			// The clock is the emulated CPU's counter and nothing else: no offset added to it (the
+			// host's own, or the one of the Mac a Linux host's page was taken from, would put
+			// mach_absolute_time anywhere, before zero included), no time asleep, no approximate
+			// time. machTicks is how the counter runs.
+			clear(page[0x88:0x90]) // TIMEBASE_OFFSET
+			clear(page[0x98:0xB0]) // CONT_TIMEBASE, BOOTTIME_USEC, CONT_HW_TIMEBASE
+			le.PutUint64(page[0xA0:], uint64(time.Now().UnixMicro())-uptimeNanos()/1000)
+			clear(page[0xC0:0xD0]) // APPROX_TIME and whether it is supported
+			page[0x90] = 1         // USER_TIMEBASE_SPEC: plain cntvct_el0
+			page[0x10C] = 0        // no TPRO: dyld falls back to mprotect
 			// Hide CPU features the emulated core lacks (DIT, SHA3, SHA512, SPECRES) and report one CPU.
 			caps := le.Uint64(page[0x10:]) &^ (0x0200000000000000 | 0x100000000 | 0x80000000 | 0x0000100000000000)
 			caps = caps&^0x00FF0000 | 0x00010000
@@ -727,6 +776,9 @@ func (p *Process) Diagnostics() string {
 			out = append(out, "  guest stderr: "+l)
 		}
 	}
+	if len(p.threads) > 1 || p.current.state != runnable {
+		out = append(out, fmt.Sprintf("  threads (the backtrace is of thread %d):", p.current.id), p.threadList())
+	}
 	out = append(out, "  backtrace (cache addresses):")
 	for _, a := range p.backtrace() {
 		out = append(out, "    "+p.where(a))
@@ -804,7 +856,7 @@ func (p *Process) Start(argv, env []string, timeout time.Duration) (err error) {
 		fmt.Sprintf("main_stack=%#x,%#x,%#x,%#x", uint64(stackTop), uint64(stackSize), uint64(stackTop), uint64(stackSize)),
 		fmt.Sprintf("executable_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(exeInode)),
 		fmt.Sprintf("dyld_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(dyldInode)),
-		"executable_cdhash=" + strings.Repeat("11", 20), "executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", "th_port=0x103",
+		"executable_cdhash=" + strings.Repeat("11", 20), "executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", fmt.Sprintf("th_port=%#x", mainThreadPort),
 		"ptrauth_disabled=1", "dyld_flags=0x0", "stack_guard=0x5a17c0de5a17c000", "malloc_entropy=0x1122334455667788,0x8877665544332211"}
 	var text []byte
 	var offsets [][]uint64
@@ -867,6 +919,9 @@ func (p *Process) run(pc uint64) {
 		if !p.exited && !p.resume {
 			stopf("emulation stopped without a cause at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
 		}
+		if !p.exited && p.reschedule() {
+			pc = p.schedule(pc)
+		}
 	}
 }
 
@@ -899,7 +954,8 @@ func (p *Process) interrupt(number uint32) {
 	default:
 		p.bsd(n)
 	}
-	if p.exited {
+	if p.exited || p.reschedule() {
+		p.resume = true
 		p.uc.stop()
 	}
 }
@@ -947,11 +1003,11 @@ func (p *Process) undefined() bool {
 func (p *Process) machdep() {
 	switch selector := p.x(3); selector {
 	case 2: // set the thread-specific data base
-		p.tsd = p.x(0)
-		p.uc.setReg(regTPIDRRO, p.tsd)
+		p.current.tsd = p.x(0)
+		p.uc.setReg(regTPIDRRO, p.current.tsd)
 		p.setX(0, 0)
 	case 3:
-		p.setX(0, p.tsd)
+		p.setX(0, p.current.tsd)
 	default:
 		stopf("machdep call %d", selector)
 	}
@@ -959,6 +1015,9 @@ func (p *Process) machdep() {
 
 func (p *Process) note(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
+	if len(p.threads) > 1 {
+		s = fmt.Sprintf("[%d] %s", p.current.id, s)
+	}
 	p.log = append(p.log, s)
 	if len(p.log) > 400 {
 		p.log = append(p.log[:0], p.log[200:]...)

@@ -1,0 +1,294 @@
+package emulator
+
+import (
+	"slices"
+	"time"
+)
+
+// libdispatch gets its events from the kernel as kevents, and gets threads to handle them on from
+// the work queue. Two kinds of event are emulated: timers, and the requests a serial queue (a
+// "workloop") makes for a thread to drain it or for a turn at owning it. Either goes to the one
+// work queue kqueue every process has, or to the kqueue of one workloop, named by its id.
+
+// kevent is struct kevent_qos_s.
+type kevent struct {
+	ident  uint64
+	filter int16
+	flags  uint16
+	qos    uint32
+	udata  uint64
+	fflags uint32
+	xflags uint32
+	data   int64
+	ext    [4]uint64
+}
+
+const (
+	keventSize = 72
+
+	filterTimer    = -7
+	filterUser     = -10
+	filterMemory   = -14 // memory pressure: never happens here
+	filterWorkloop = -17
+
+	evAdd     = 0x1
+	evDelete  = 0x2
+	evEnable  = 0x4
+	evDisable = 0x8
+	evOneshot = 0x10
+
+	// Units and clocks of a timer.
+	noteSeconds  = 0x1
+	noteUseconds = 0x2
+	noteNseconds = 0x4
+	noteAbsolute = 0x8
+	noteMachTime = 0x100
+
+	noteTrigger = 0x01000000 // makes a user event happen
+
+	// What a workloop event asks for.
+	noteThreadRequest = 0x1
+	noteSyncWait      = 0x4
+	noteSyncWake      = 0x8
+
+	keventWorkq = 0x20 // KEVENT_FLAG_WORKQ: the changes are for the work queue's kqueue
+)
+
+func (p *Process) readKevents(addr, n uint64) []kevent {
+	out := make([]kevent, min(n, 64))
+	for i := range out {
+		b := p.read(addr+uint64(i)*keventSize, keventSize)
+		out[i] = kevent{ident: le.Uint64(b), filter: int16(le.Uint16(b[8:])), flags: le.Uint16(b[10:]), qos: le.Uint32(b[12:]),
+			udata: le.Uint64(b[16:]), fflags: le.Uint32(b[24:]), xflags: le.Uint32(b[28:]), data: int64(le.Uint64(b[32:])),
+			ext: [4]uint64{le.Uint64(b[40:]), le.Uint64(b[48:]), le.Uint64(b[56:]), le.Uint64(b[64:])}}
+	}
+	return out
+}
+
+func (p *Process) writeKevents(addr uint64, events []kevent) {
+	for i, event := range events {
+		p.write(addr+uint64(i)*keventSize, event.bytes())
+	}
+}
+
+func (k kevent) bytes() []byte {
+	b := le64(k.ident, 0, k.udata, 0, uint64(k.data), k.ext[0], k.ext[1], k.ext[2], k.ext[3])
+	le.PutUint16(b[8:], uint16(k.filter))
+	le.PutUint16(b[10:], k.flags)
+	le.PutUint32(b[12:], k.qos)
+	le.PutUint32(b[24:], k.fflags)
+	le.PutUint32(b[28:], k.xflags)
+	return b
+}
+
+// kqueue is the work queue's kqueue (id 0) or a workloop's.
+type kqueue struct {
+	id     uint64
+	timers map[uint64]*timer
+	users  map[uint64]kevent // events that happen when the guest says so
+	ready  []kevent          // events that happened and have not been handed to a thread yet
+
+	// Of a workloop: its request for a thread, whether that is waiting to be answered, the thread
+	// that answered the last one, and the turns given to threads that had not asked yet.
+	request   *kevent
+	requested bool
+	servicer  *thread
+	woken     map[uint64]bool
+}
+
+type timer struct {
+	event    kevent
+	deadline time.Time
+	armed    bool
+}
+
+func (p *Process) kqueue(id uint64) *kqueue {
+	q := p.kqueues[id]
+	if q == nil {
+		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, woken: map[uint64]bool{}}
+		p.kqueues[id] = q
+	}
+	return q
+}
+
+// sysKeventQos takes changes for the work queue's kqueue. Other kqueues are not emulated: their
+// changes are accepted, and nothing ever happens on them.
+func sysKeventQos(p *Process, a []uint64) int64 {
+	if int32(a[0]) != -1 || a[7]&keventWorkq == 0 {
+		return 0
+	}
+	return p.kevents(p.kqueue(0), a)
+}
+
+func sysKeventID(p *Process, a []uint64) int64 { return p.kevents(p.kqueue(a[0]), a) }
+
+// kevents applies the changes at a[1], then gives the caller what is ready, if it asked.
+func (p *Process) kevents(q *kqueue, a []uint64) int64 {
+	p.change(q, p.readKevents(a[1], a[2]))
+	if p.current.state != runnable || a[3] == 0 || int32(a[4]) <= 0 || q.servicer != p.current {
+		return 0
+	}
+	n := min(len(q.ready), int(int32(a[4])))
+	p.writeKevents(a[3], q.ready[:n])
+	q.ready = q.ready[n:]
+	return int64(n)
+}
+
+func (p *Process) change(q *kqueue, changes []kevent) {
+	for _, c := range changes {
+		p.note("  kevent on %#x: filter %d ident %#x flags %#x qos %#x fflags %#x data %#x", q.id, c.filter, c.ident, c.flags, c.qos, c.fflags, uint64(c.data))
+		switch c.filter {
+		case filterTimer:
+			p.changeTimer(q, c)
+		case filterWorkloop:
+			p.changeWorkloop(q, c)
+		case filterUser:
+			registered, ok := q.users[c.ident]
+			switch {
+			case c.flags&evDelete != 0:
+				delete(q.users, c.ident)
+			case c.flags&evAdd != 0:
+				q.users[c.ident], registered, ok = c, c, true
+			}
+			if ok && c.fflags&noteTrigger != 0 {
+				q.ready = append(q.ready, registered)
+			}
+		case filterMemory:
+		default:
+			p.ignored[int(c.filter)]++
+		}
+	}
+}
+
+func (p *Process) changeTimer(q *kqueue, c kevent) {
+	t := q.timers[c.ident]
+	switch {
+	case c.flags&evDelete != 0:
+		delete(q.timers, c.ident)
+	case c.flags&evAdd != 0:
+		q.timers[c.ident] = &timer{event: c, deadline: p.timerDeadline(c), armed: c.flags&evDisable == 0}
+	case t != nil && c.flags&evEnable != 0:
+		t.armed = true
+	case t != nil && c.flags&evDisable != 0:
+		t.armed = false
+	}
+}
+
+// timerDeadline is when a timer is due, from its data in the unit and on the clock its flags name.
+func (p *Process) timerDeadline(c kevent) time.Time {
+	var unit time.Duration
+	switch {
+	case c.fflags&noteMachTime != 0:
+	case c.fflags&noteSeconds != 0:
+		unit = time.Second
+	case c.fflags&noteUseconds != 0:
+		unit = time.Microsecond
+	case c.fflags&noteNseconds != 0:
+		unit = time.Nanosecond
+	default:
+		unit = time.Millisecond
+	}
+	switch {
+	case c.fflags&noteAbsolute == 0 && unit == 0:
+		return time.Now().Add(time.Duration(c.data * tickNanos))
+	case c.fflags&noteAbsolute == 0:
+		return time.Now().Add(time.Duration(c.data) * unit)
+	case unit != 0:
+		return time.Unix(0, c.data*int64(unit)) // the wall clock
+	}
+	return tickTime(uint64(c.data)) // either Mach clock: no time is spent asleep to tell them apart
+}
+
+func (p *Process) changeWorkloop(q *kqueue, c kevent) {
+	switch {
+	case c.fflags&noteThreadRequest != 0 && c.flags&evDelete != 0:
+		q.request, q.requested = nil, false
+	case c.fflags&noteThreadRequest != 0:
+		request := c
+		q.request, q.requested = &request, true
+	case c.fflags&noteSyncWake != 0:
+		// The thread given the workloop may not have asked for it yet.
+		for _, t := range p.waiters(waitWorkloop, q.id) {
+			if uint64(t.port) == c.ident {
+				t.wake()
+				return
+			}
+		}
+		q.woken[c.ident] = true
+	case c.fflags&noteSyncWait != 0:
+		if q.woken[c.ident] {
+			delete(q.woken, c.ident)
+		} else {
+			p.wait(waitWorkloop, q.id, time.Time{}, result{})
+		}
+	}
+}
+
+// serve starts work queue threads for the kqueues that have something for one, and reports when
+// the next timer is due (zero: none is armed).
+func (p *Process) serve(now time.Time) (next time.Time) {
+	ids := make([]uint64, 0, len(p.kqueues))
+	for id := range p.kqueues {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		q := p.kqueues[id]
+		for ident, t := range q.timers {
+			if !t.armed {
+				continue
+			}
+			if t.deadline.After(now) {
+				if next.IsZero() || t.deadline.Before(next) {
+					next = t.deadline
+				}
+				continue
+			}
+			fired := t.event
+			fired.data = 1 // how many times it fired
+			q.ready = append(q.ready, fired)
+			switch {
+			case t.event.flags&evOneshot != 0:
+				delete(q.timers, ident)
+			case t.event.fflags&noteAbsolute != 0:
+				t.armed = false
+			default:
+				t.deadline = p.timerDeadline(t.event)
+			}
+		}
+		if q.servicer != nil || !q.requested && len(q.ready) == 0 {
+			continue
+		}
+		events, priority := q.ready, uint64(0)
+		if q.requested {
+			events = append([]kevent{*q.request}, events...)
+		}
+		for _, event := range events {
+			priority = max(priority, uint64(event.qos))
+		}
+		if t := p.startWorker(priority, q, events); t != nil {
+			q.ready, q.requested = nil, false
+			if q.id != 0 {
+				q.servicer = t
+			}
+		}
+	}
+	return next
+}
+
+// finish is a work queue thread saying it is done with what it was started for, with the changes
+// it has for the kqueue it served.
+func (p *Process) finish(t *thread, changes, n uint64) {
+	q := t.serving
+	if q == nil {
+		q = p.kqueue(0)
+	}
+	p.change(q, p.readKevents(changes, n))
+	if q.servicer == t {
+		q.servicer = nil
+	}
+	t.serving = nil
+	if t.state == runnable { // unless one of the changes was to wait
+		t.state = parked
+	}
+}

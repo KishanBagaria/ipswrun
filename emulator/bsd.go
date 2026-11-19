@@ -46,15 +46,19 @@ func init() {
 		"geteuid": {0, constant(guestUID)}, "getgid": {0, constant(guestGID)}, "getegid": {0, constant(guestGID)}, "gettid": {2, constant(-eSRCH)},
 		"issetugid": {0, constant(0)}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
 		"__pthread_sigmask": {3, sysSigprocmask}, "__pthread_kill": {2, sysPthreadKill}, "kill": {3, sysKill},
-		"sigaltstack": {2, constant(0)}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, constant(0x4242)},
-		"bsdthread_register": {6, constant(0x400000FF)}, "bsdthread_ctl": {4, constant(0)}, "workq_open": {0, constant(0)},
+		"sigaltstack": {2, constant(0)}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
+		"bsdthread_register": {6, sysBsdthreadRegister}, "bsdthread_create": {5, sysBsdthreadCreate},
+		"bsdthread_terminate": {4, sysBsdthreadTerminate}, "__semwait_signal": {6, sysSemwaitSignal},
+		"sigsuspend": {1, sysSigsuspend}, "__sigwait": {2, sysSigsuspend}, "kevent_qos": {8, sysKeventQos}, "kevent_id": {8, sysKeventID}, "psynch_mutexwait": {5, sysPsynchMutexwait}, "psynch_mutexdrop": {5, sysPsynchMutexdrop}, "psynch_cvwait": {8, sysPsynchCvwait},
+		"psynch_cvsignal": {8, sysPsynchCvsignal}, "psynch_cvbroad": {7, sysPsynchCvbroad}, "psynch_cvclrprepost": {7, constant(0)},
+		"psynch_rw_rdlock": {5, sysPsynchRWRdlock}, "psynch_rw_wrlock": {5, sysPsynchRWWrlock}, "psynch_rw_unlock": {5, sysPsynchRWUnlock}, "bsdthread_ctl": {4, constant(0)}, "workq_open": {0, constant(0)},
 		"workq_kernreturn": {4, sysWorkqKernreturn}, "kdebug_trace64": {0, constant(0)}, "kdebug_trace": {0, constant(0)},
 		"kdebug_trace_string": {0, constant(0)}, "kdebug_typefilter": {2, constant(-ePERM)}, "getentropy": {2, sysGetentropy},
 		"csops": {4, sysCsops}, "csops_audittoken": {4, sysCsops}, "csrctl": {3, constant(-ePERM)}, "getrlimit": {2, sysGetrlimit},
 		"setrlimit": {2, constant(0)}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
-		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait},
-		"ulock_wake": {3, constant(-eNOENT)}, "proc_info": {6, sysProcInfo}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
+		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
 	}
 	for name, v := range trivial {
 		bsdHandlers[name] = handler{4, constant(v)}
@@ -64,7 +68,7 @@ func init() {
 // trivial are more calls answered with a constant (negative: errno) and no side effects.
 var trivial = map[string]int64{
 	"objc_bp_assist_cfg_np": 0, "iopolicysys": 0, "work_interval_ctl": -eNOTSUP, "memorystatus_control": 0, "proc_rlimit_control": 0,
-	"thread_selfusage": 0, "crossarch_trap": -eNOTSUP, "__semwait_signal": 0, "kevent_qos": 0, "kevent_id": 0, "kevent64": 0, "kevent": 0,
+	"thread_selfusage": 0, "crossarch_trap": -eNOTSUP, "kevent64": 0, "kevent": 0,
 	"guarded_kqueue_np": 100, "kqueue": 100, "kqueue_workloop_ctl": 0, "necp_open": -eNOSYS, "socket": -eACCES, "umask": 0o22,
 	"audit_session_self": 0, "getaudit_addr": -eNOSYS, "coalition_info": -eNOSYS, "persona": -eNOSYS,
 	"debug_syscall_reject_config": 0, "debug_syscall_reject": 0, "setattrlist": 0, "fsetattrlist": 0, "chmod": 0, "fchmod": 0,
@@ -101,6 +105,7 @@ func (p *Process) bsd(n int64) {
 	r := p.call(h, args, -eFAULT)
 	p.setX(0, uint64(max(r, -r)))
 	p.carry(r < 0)
+	p.deliver()
 	result := fmt.Sprintf("%#x", uint64(r))
 	if r < 0 {
 		result = fmt.Sprintf("errno %d", -r)
@@ -252,10 +257,7 @@ func sysKill(p *Process, a []uint64) int64 {
 	return 0
 }
 
-func sysWorkqKernreturn(p *Process, a []uint64) int64 {
-	p.note("  workq_kernreturn options %#x", a[0])
-	return 0
-}
+func sysThreadSelfid(p *Process, a []uint64) int64 { return 0x4242 + int64(p.current.id) }
 
 // sysGetentropy is reproducible, but never repeats: corecrypto's health checks reject identical
 // blocks.
@@ -297,7 +299,7 @@ func sysGettimeofday(p *Process, a []uint64) int64 {
 		p.write(a[0], le64(uint64(now.Unix()), uint64(now.Nanosecond()/1000)))
 	}
 	if a[2] != 0 {
-		p.write(a[2], le64(uptimeNanos()*3/125))
+		p.write(a[2], le64(machTicks()))
 	}
 	return 0
 }
@@ -334,11 +336,6 @@ func sysTerminateWithPayload(p *Process, a []uint64) int64 {
 
 func sysOSFaultWithPayload(p *Process, a []uint64) int64 {
 	p.note("  os_fault: %s", p.reason(a[4]))
-	return 0
-}
-
-func sysUlockWait(p *Process, a []uint64) int64 { // also ulock_wait2
-	p.note("  ulock_wait op %#x addr %#x", a[0], a[1])
 	return 0
 }
 

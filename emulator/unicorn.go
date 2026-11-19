@@ -59,6 +59,14 @@ var api struct {
 	emuStop  func(uc uintptr) int32
 	hookAdd  func(uc uintptr, hook *uintptr, kind int32, callback, user uintptr, begin, end uint64) int32
 
+	// A context is a copy of the CPU's registers: what a thread that is not running keeps.
+	contextAlloc    func(uc uintptr, context *uintptr) int32
+	contextSave     func(uc, context uintptr) int32
+	contextRestore  func(uc, context uintptr) int32
+	contextRegRead  func(context uintptr, id int32, value unsafe.Pointer) int32
+	contextRegWrite func(context uintptr, id int32, value unsafe.Pointer) int32
+	contextFree     func(context uintptr) int32
+
 	// C entry points of the hook callbacks; user is a key of targets.
 	onInterrupt, onUnmapped, onInvalid uintptr
 }
@@ -98,6 +106,9 @@ func loadUnicorn(path string) error {
 		{library, "uc_mem_read", &api.memRead}, {library, "uc_mem_write", &api.memWrite},
 		{library, "uc_emu_start", &api.emuStart}, {library, "uc_emu_stop", &api.emuStop},
 		{library, "uc_hook_add", &api.hookAdd},
+		{library, "uc_context_alloc", &api.contextAlloc}, {library, "uc_context_save", &api.contextSave},
+		{library, "uc_context_restore", &api.contextRestore}, {library, "uc_context_reg_read", &api.contextRegRead},
+		{library, "uc_context_reg_write", &api.contextRegWrite}, {library, "uc_context_free", &api.contextFree},
 	}, hostSymbols()...) {
 		address, err := purego.Dlsym(symbol.library, symbol.name)
 		if err != nil {
@@ -228,6 +239,26 @@ func (e *engine) reg(id int) uint64 {
 
 func (e *engine) setReg(id int, v uint64) {
 	must(api.regWrite(e.uc, int32(id), unsafe.Pointer(&v)), "reg_write")
+}
+
+func (e *engine) newContext() uintptr {
+	var context uintptr
+	must(api.contextAlloc(e.uc, &context), "context_alloc")
+	return context
+}
+
+func (e *engine) save(context uintptr)        { must(api.contextSave(e.uc, context), "context_save") }
+func (e *engine) restore(context uintptr)     { must(api.contextRestore(e.uc, context), "context_restore") }
+func (e *engine) freeContext(context uintptr) { api.contextFree(context) }
+
+func (e *engine) contextReg(context uintptr, id int) uint64 {
+	var v uint64
+	must(api.contextRegRead(context, int32(id), unsafe.Pointer(&v)), "context_reg_read")
+	return v
+}
+
+func (e *engine) setContextReg(context uintptr, id int, v uint64) {
+	must(api.contextRegWrite(context, int32(id), unsafe.Pointer(&v)), "context_reg_write")
 }
 
 func (e *engine) setCPReg(crn, crm, op0, op1, op2 uint32, v uint64) {

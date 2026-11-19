@@ -1,0 +1,7 @@
+{
+  "build": "25A354",
+  "cache_uuid": "52E4EEC0-379E-31C7-AC62-BFED14D90F52",
+  "exit_code": 0,
+  "output": "group    100 tasks: squares 338350 actor 5050\nlet      884\nsleep    at least 50 ms false, under 5 s true\nresume   7\ndetached 81\ncancel   true\n",
+  "version": "26.0"
+}

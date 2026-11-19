@@ -1,0 +1,7 @@
+{
+  "build": "24G90",
+  "cache_uuid": "4C1223E5-CACE-3982-A003-6110A7A8A25C",
+  "exit_code": 0,
+  "output": "group    100 tasks: squares 338350 actor 5050\nlet      884\nsleep    at least 50 ms true, under 5 s true\nresume   7\ndetached 81\ncancel   true\n",
+  "version": "15.6.1"
+}

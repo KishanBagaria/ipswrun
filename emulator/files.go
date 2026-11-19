@@ -13,21 +13,23 @@ import (
 
 // Guest errno values (Darwin's).
 const (
-	ePERM   = 1
-	eNOENT  = 2
-	eSRCH   = 3
-	eBADF   = 9
-	eNOMEM  = 12
-	eACCES  = 13
-	eFAULT  = 14
-	eNOTDIR = 20
-	eISDIR  = 21
-	eINVAL  = 22
-	eNOTTY  = 25
-	eSPIPE  = 29
-	eNOTSUP = 45
-	eNOSYS  = 78
-	eNOATTR = 93
+	ePERM     = 1
+	eNOENT    = 2
+	eSRCH     = 3
+	eBADF     = 9
+	eNOMEM    = 12
+	eACCES    = 13
+	eFAULT    = 14
+	eNOTDIR   = 20
+	eISDIR    = 21
+	eINVAL    = 22
+	eNOTTY    = 25
+	eSPIPE    = 29
+	eAGAIN    = 35
+	eNOTSUP   = 45
+	eTIMEDOUT = 60
+	eNOSYS    = 78
+	eNOATTR   = 93
 )
 
 type fdKind uint8
