@@ -132,11 +132,16 @@ func sysMmap(p *Process, a []uint64) int64 {
 	if f.path != "" {
 		name = f.path
 	}
-	data, errno := f.pread(off, length)
-	if errno != 0 {
-		return errno
+	what := allocation{addr: addr, fixed: fixed, kind: fileRegion, name: "mmap:" + name}
+	if f.kind == cacheFD { // fetched by range, so only the pages the guest touches
+		what.file, what.off = f.cache, off
+	} else {
+		var errno int64
+		if what.data, errno = f.pread(off, length); errno != 0 {
+			return errno
+		}
 	}
-	start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, kind: fileRegion, data: data, name: "mmap:" + name})
+	start, ok := p.alloc(length, what)
 	if !ok {
 		return -eNOMEM
 	}
@@ -342,7 +347,7 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 	case callnum == 15: // PROC_INFO_CALL_SET_DYLD_IMAGES
 		return 0
 	case callnum == 2 && flavor == 11: // PROC_PIDPATHINFO
-		p.write(buf, append([]byte(GuestExe), 0))
+		p.write(buf, str(GuestExe))
 		return 0
 	case callnum == 2 && flavor == 17 && size >= 56: // PROC_PIDUNIQIDENTIFIERINFO
 		p.write(buf, append(make([]byte, 16), le64(guestPID, 1, 0, 0, 0)...))
@@ -456,7 +461,7 @@ func (p *Process) sysctlOut(name string, oldp, oldlenp uint64) int64 {
 	var data []byte
 	switch v := v.(type) {
 	case string:
-		data = append([]byte(v), 0)
+		data = str(v)
 	case uint64:
 		want := uint64(8)
 		if oldlenp != 0 {

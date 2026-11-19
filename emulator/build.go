@@ -114,13 +114,9 @@ func RunBuild(image *rangefs.Image, run Run) (*Process, *dyldcache.Cache, error)
 		var f SystemFile
 		switch entry.Kind {
 		case rangefs.Directory:
-			f = SystemFile{Dir: true, Found: true}
+			f = SystemFile{Dir: true}
 		case rangefs.Regular:
-			data, err := entry.File.ReadAll()
-			if err != nil {
-				return SystemFile{}, err
-			}
-			f = SystemFile{Data: data, Found: true}
+			f = SystemFile{File: entry.File}
 		}
 		known[path] = f
 		return f, nil

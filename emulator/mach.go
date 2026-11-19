@@ -76,13 +76,15 @@ func (p *Process) newPort() uint32 {
 	return p.nextPort
 }
 
-// vmMap reserves memory as the VM_FLAGS of vm_allocate and vm_map ask; false when it cannot.
-func (p *Process) vmMap(addr, size, mask, flags uint64, name string) (uint64, bool) {
-	return p.alloc(size, allocation{addr: addr, fixed: flags&1 == 0, mask: mask, name: name, keepOther: flags&0x4000 == 0})
+// vmMap reserves memory for what, placed as the VM_FLAGS of vm_allocate, vm_map and vm_remap ask;
+// false when it cannot.
+func (p *Process) vmMap(addr, size, mask, flags uint64, what allocation) (uint64, bool) {
+	what.addr, what.mask, what.fixed, what.keepOther = addr, mask, flags&1 == 0, flags&0x4000 == 0
+	return p.alloc(size, what)
 }
 
 func (p *Process) vmAllocate(addrp, size, mask, flags uint64, name string) int64 {
-	start, ok := p.vmMap(p.u64(addrp), size, mask, flags, name)
+	start, ok := p.vmMap(p.u64(addrp), size, mask, flags, allocation{name: name})
 	if !ok {
 		return kernNoSpace
 	}
@@ -245,7 +247,7 @@ func migTaskGetSpecialPort(p *Process, body []byte) migReply {
 
 func migVMMap(p *Process, body []byte) migReply { // mach_vm_map
 	addr, size, mask, flags := le.Uint64(body[48:]), le.Uint64(body[56:]), le.Uint64(body[64:]), uint64(le.Uint32(body[72:]))
-	start, ok := p.vmMap(addr, size, mask, flags, "vm_map")
+	start, ok := p.vmMap(addr, size, mask, flags, allocation{name: "vm_map"})
 	if !ok {
 		return migCode(kernNoSpace)
 	}
@@ -264,8 +266,7 @@ func migVMRemap(p *Process, body []byte) migReply {
 		p.note("  mach_vm_remap of %#x size %#x: not file-backed memory", source, size)
 		return migCode(kernInvalidArg)
 	}
-	start, ok := p.alloc(size, allocation{addr: addr, fixed: flags&1 == 0, mask: mask, kind: fileRegion, data: p.read(source, size),
-		name: "vm_remap:" + r.name, keepOther: flags&0x4000 == 0})
+	start, ok := p.vmMap(addr, size, mask, flags, allocation{kind: fileRegion, data: p.read(source, size), name: "vm_remap:" + r.name})
 	if !ok {
 		return migCode(kernNoSpace)
 	}

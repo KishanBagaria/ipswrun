@@ -65,6 +65,9 @@ var le = binary.LittleEndian
 
 func align(n, a uint64) uint64 { return (n + a - 1) &^ (a - 1) }
 
+// str is a C string.
+func str(s string) []byte { return append([]byte(s), 0) }
+
 func le32(values ...uint32) []byte {
 	out := make([]byte, 0, 4*len(values))
 	for _, v := range values {
@@ -103,7 +106,7 @@ type regionKind uint8
 
 const (
 	zeroRegion  regionKind = iota // anonymous memory
-	fileRegion                    // a private copy of data
+	fileRegion                    // a private copy of data, or of file from off, read on first touch
 	cacheRegion                   // dyld shared cache pages, rebased on first touch
 )
 
@@ -112,6 +115,7 @@ type region struct {
 	start, end uint64
 	kind       regionKind
 	data       []byte
+	file       dyldcache.File
 	off        uint64
 	name       string
 }
@@ -135,9 +139,8 @@ func (e *StopError) Error() string { return e.Message }
 
 // SystemFile is what Config.System knows about a guest path.
 type SystemFile struct {
-	Data  []byte
-	Dir   bool
-	Found bool
+	File dyldcache.File // a regular file, read as the guest reads or touches it
+	Dir  bool
 }
 
 // Config describes one guest process.
@@ -239,6 +242,9 @@ func New(cfg Config) (p *Process, err error) {
 		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]struct{}{},
 		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
+	for _, v := range volumes { // their roots, for fsgetpath
+		p.seen[fileID{v.dev, rootInode}] = v.mount
+	}
 	for suffix, f := range cfg.Cache.Files {
 		p.cachePaths[cfg.CacheDir+"/"+CacheName+suffix] = f
 	}
@@ -324,10 +330,14 @@ func (p *Process) unmap(start, end uint64) {
 		i := slices.Index(p.regions, r)
 		p.regions = slices.Delete(p.regions, i, i+1)
 		if r.start < start {
-			p.addRegion(&region{r.start, start, r.kind, r.data, r.off, r.name})
+			head := *r
+			head.end = start
+			p.addRegion(&head)
 		}
 		if r.end > end {
-			p.addRegion(&region{end, r.end, r.kind, r.data, r.off + (end - r.start), r.name})
+			tail := *r
+			tail.start, tail.off = end, r.off+(end-r.start)
+			p.addRegion(&tail)
 		}
 	}
 	for a := start; a < end; {
@@ -350,6 +360,8 @@ type allocation struct {
 	mask      uint64
 	kind      regionKind
 	data      []byte
+	file      dyldcache.File // instead of data: read from off as pages are touched
+	off       uint64
 	name      string
 	keepOther bool // a fixed request fails instead of replacing what is there
 }
@@ -371,7 +383,7 @@ func (p *Process) alloc(size uint64, a allocation) (uint64, bool) {
 		start = align(p.brk, max(a.mask+1, pageSize))
 		p.brk = start + size + pageSize
 	}
-	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, name: a.name})
+	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, file: a.file, off: a.off, name: a.name})
 	return start, true
 }
 
@@ -401,7 +413,13 @@ func (p *Process) materialize(addr uint64) bool {
 			}
 			p.uc.memWrite(a, data)
 		case fileRegion:
-			if o := r.off + (a - r.start); o < uint64(len(r.data)) {
+			if o := r.off + (a - r.start); r.file != nil {
+				data, err := r.file.Pread(int64(o), int64(b-a))
+				if err != nil {
+					stopf("page in %s: %v", r.name, err)
+				}
+				p.uc.memWrite(a, data)
+			} else if o < uint64(len(r.data)) {
 				p.uc.memWrite(a, r.data[o:min(o+(b-a), uint64(len(r.data)))])
 			}
 		}
@@ -716,8 +734,8 @@ func (p *Process) Start(argv, env []string, timeout time.Duration) (err error) {
 	p.loadMachO(runner, "runner", 0)
 	apple := []string{"executable_path=" + GuestExe, "", "", "", "ptr_munge=0x7a3c5e9b1d2f4a68",
 		fmt.Sprintf("main_stack=%#x,%#x,%#x,%#x", uint64(stackTop), uint64(stackSize), uint64(stackTop), uint64(stackSize)),
-		fmt.Sprintf("executable_file=%#x,%#x", uint64(0x1A<<32|deviceID), uint64(exeInode)),
-		fmt.Sprintf("dyld_file=%#x,%#x", uint64(0x1A<<32|deviceID), uint64(dyldInode)),
+		fmt.Sprintf("executable_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(exeInode)),
+		fmt.Sprintf("dyld_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(dyldInode)),
 		"executable_cdhash=" + strings.Repeat("11", 20), "executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", "th_port=0x103",
 		"ptrauth_disabled=1", "dyld_flags=0x0", "stack_guard=0x5a17c0de5a17c000", "malloc_entropy=0x1122334455667788,0x8877665544332211"}
 	var text []byte

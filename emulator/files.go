@@ -36,7 +36,7 @@ const (
 	hostFD  fdKind = iota // a real descriptor: stdio, or a file under the temporary home
 	dirFD                 // a directory that exists only as a name
 	dataFD                // read-only bytes
-	cacheFD               // a file of the dyld shared cache
+	cacheFD               // a file of the build read by range: of the dyld shared cache or the system volume
 )
 
 type fd struct {
@@ -81,11 +81,12 @@ func (f *fd) pread(off, n uint64) ([]byte, int64) {
 
 // target is what a guest path resolves to.
 type target struct {
-	kind  fdKind
-	path  string // canonical
-	host  string
-	data  []byte
-	cache dyldcache.File
+	kind     fdKind
+	path     string // canonical
+	host     string
+	writable bool // under the home: the guest may create, change, rename and remove it
+	data     []byte
+	cache    dyldcache.File
 }
 
 // fd is the descriptor for a target that is not a host file.
@@ -135,7 +136,7 @@ func (p *Process) lookup(path string) (target, bool) {
 	}
 	switch {
 	case path == GuestHome || strings.HasPrefix(path, GuestHome+"/"):
-		return target{kind: hostFD, host: p.home + path[len(GuestHome):]}, true
+		return target{kind: hostFD, host: p.home + path[len(GuestHome):], writable: true}, true
 	case path == "/dev/null" || path == "/dev/urandom" || path == "/dev/random":
 		return target{kind: hostFD, host: path}, true
 	case path == p.cacheDir || strings.HasPrefix(p.cacheDir, path+"/"):
@@ -153,28 +154,28 @@ func (p *Process) lookup(path string) (target, bool) {
 		if f.Dir {
 			return target{kind: dirFD}, true
 		}
-		if f.Found {
-			return target{kind: dataFD, data: f.Data}, true
+		if f.File != nil {
+			return target{kind: cacheFD, cache: f.File}, true
 		}
 	}
 	return target{}, false
 }
 
 // statBuf is a struct stat64.
-func statBuf(dev uint32, mode uint16, size int64, ino uint64, mtime int64) []byte {
+func statBuf(i fileInfo) []byte {
 	b := make([]byte, 144)
-	le.PutUint32(b[0:], dev)
-	le.PutUint16(b[4:], mode)
+	le.PutUint32(b[0:], i.dev)
+	le.PutUint16(b[4:], i.mode)
 	le.PutUint16(b[6:], 1)
-	le.PutUint64(b[8:], ino)
+	le.PutUint64(b[8:], i.ino)
 	le.PutUint32(b[16:], guestUID)
 	le.PutUint32(b[20:], guestGID)
-	for i := 32; i < 96; i += 16 { // access, modification, change and birth times
-		le.PutUint64(b[i:], uint64(mtime))
+	for at := 32; at < 96; at += 16 { // access, modification, change and birth times
+		le.PutUint64(b[at:], uint64(i.mtime))
 	}
-	le.PutUint64(b[96:], uint64(size))
-	le.PutUint64(b[104:], align(uint64(size), 4096)/512)
-	le.PutUint32(b[112:], 4096)
+	le.PutUint64(b[96:], uint64(i.size))
+	le.PutUint64(b[104:], align(uint64(i.size), volumeBlockSize)/512)
+	le.PutUint32(b[112:], volumeBlockSize)
 	return b
 }
 
@@ -184,28 +185,17 @@ const (
 	modeFile   = syscall.S_IFREG | 0o755
 )
 
-// stat writes the struct stat64 of a resolved path or an open descriptor.
-func (p *Process) stat(buf uint64, kind fdKind, path string, size int64, hostStat func(*syscall.Stat_t) error) int64 {
-	i, errno := p.describe(kind, path, size, hostStat)
-	if errno != 0 {
-		return errno
+// putStat writes the struct stat64 of a file that was described without an error.
+func (p *Process) putStat(buf uint64, info fileInfo, errno int64) int64 {
+	if errno == 0 {
+		p.write(buf, statBuf(info))
 	}
-	p.write(buf, statBuf(volumeOf(path).dev, i.mode, i.size, i.ino, i.mtime))
-	return 0
+	return errno
 }
 
 func (p *Process) doStat(path string, buf uint64, follow bool) int64 {
-	t, ok := p.resolve(path)
-	if !ok {
-		p.note("  ENOENT stat %s", path)
-		return -eNOENT
-	}
-	return p.stat(buf, t.kind, t.path, t.fd().size(), func(st *syscall.Stat_t) error {
-		if follow {
-			return syscall.Stat(t.host, st)
-		}
-		return syscall.Lstat(t.host, st)
-	})
+	_, info, errno := p.describePath("stat", path, follow)
+	return p.putStat(buf, info, errno)
 }
 
 func sysStat64(p *Process, a []uint64) int64  { return p.doStat(p.cstr(a[0]), a[1], true) }
@@ -220,7 +210,8 @@ func sysFstat64(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	return p.stat(a[1], f.kind, f.path, f.size(), func(st *syscall.Stat_t) error { return syscall.Fstat(f.host, st) })
+	info, errno := p.describeFD(f)
+	return p.putStat(a[1], info, errno)
 }
 
 func (p *Process) doOpen(path string, flags, mode uint64) int64 {
@@ -232,6 +223,9 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 	n := p.nextFD
 	switch t.kind {
 	case hostFD:
+		if t.path == GuestExe && flags&(3|0x200|0x400) != 0 { // the user's file: not written, created or truncated
+			return -eACCES
+		}
 		hostFlags := int(flags & 3)
 		for _, m := range []struct {
 			guest uint64
@@ -387,14 +381,14 @@ func sysLseek(p *Process, a []uint64) int64 {
 			return hostErrno(err)
 		}
 		return pos
-	case dataFD:
+	case dataFD, cacheFD:
 		switch a[2] {
 		case 0:
 			f.pos = off
 		case 1:
 			f.pos += off
 		default:
-			f.pos = int64(len(f.data)) + off
+			f.pos = f.size() + off
 		}
 		return f.pos
 	}
@@ -406,10 +400,7 @@ func sysFtruncate(p *Process, a []uint64) int64 {
 	if f == nil || f.kind != hostFD {
 		return -eBADF
 	}
-	if err := syscall.Ftruncate(f.host, int64(a[1])); err != nil {
-		return hostErrno(err)
-	}
-	return 0
+	return hostCall(syscall.Ftruncate(f.host, int64(a[1])))
 }
 
 func (p *Process) doAccess(path string) int64 {
@@ -428,10 +419,11 @@ func (p *Process) doAccess(path string) int64 {
 func sysAccess(p *Process, a []uint64) int64    { return p.doAccess(p.cstr(a[0])) }
 func sysFaccessat(p *Process, a []uint64) int64 { return p.doAccess(p.at(a[0], a[1])) }
 
-// hostPath resolves a guest path that must name a host file: only those can be changed.
-func (p *Process) hostPath(path string) (string, bool) {
-	t, ok := p.resolve(path)
-	return t.host, ok && t.kind == hostFD
+// hostPath resolves a guest path to the host file behind it. ok says that it is under the home:
+// only those can be changed, never the runner or a device.
+func (p *Process) hostPath(path string) (host string, ok bool) {
+	t, _ := p.resolve(path)
+	return t.host, t.writable
 }
 
 // hostCall reports the result of a host file operation the way a system call does.
@@ -523,7 +515,9 @@ func (p *Process) list(f *fd) int64 {
 		return 0
 	}
 	names := []string{".", ".."}
-	if host, ok := p.hostPath(f.path); ok && f.kind == hostFD {
+	switch f.kind {
+	case hostFD:
+		host, _ := p.hostPath(f.path)
 		entries, err := os.ReadDir(host)
 		if err != nil {
 			return -eNOTDIR
@@ -531,7 +525,8 @@ func (p *Process) list(f *fd) int64 {
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-	} else if f.kind != dirFD {
+	case dirFD:
+	default:
 		return -eNOTDIR
 	}
 	f.names = names
@@ -596,7 +591,7 @@ func sysFcntl(p *Process, a []uint64) int64 {
 		if f.path != "" {
 			path = f.path
 		}
-		p.write(arg, append([]byte(path), 0))
+		p.write(arg, str(path))
 	case 0, 67: // F_DUPFD, F_DUPFD_CLOEXEC
 		n := p.nextFD
 		p.nextFD++
@@ -634,18 +629,23 @@ type volume struct {
 
 const preboot = "/System/Volumes/Preboot"
 
+// volumes are the mounts, the root last.
+var volumes = []volume{{deviceID + 1, preboot, "/dev/disk1s2"}, {deviceID, "/", "/dev/disk1"}}
+
 // volumeOf is the volume a canonical guest path is on.
 func volumeOf(path string) volume {
-	if path == preboot || strings.HasPrefix(path, preboot+"/") {
-		return volume{deviceID + 1, preboot, "/dev/disk1s2"}
+	for _, v := range volumes {
+		if path == v.mount || strings.HasPrefix(path, v.mount+"/") {
+			return v
+		}
 	}
-	return volume{deviceID, "/", "/dev/disk1"}
+	return volumes[len(volumes)-1]
 }
 
 func (p *Process) statfs(path string, buf uint64) int64 {
 	v := volumeOf(path)
 	b := make([]byte, 2168)
-	le.PutUint32(b[0:], 4096)             // f_bsize
+	le.PutUint32(b[0:], volumeBlockSize)  // f_bsize
 	le.PutUint32(b[4:], 1<<20)            // f_iosize
 	le.PutUint64(b[8:], volumeBlocks)     // f_blocks
 	le.PutUint64(b[16:], volumeFree)      // f_bfree
@@ -693,13 +693,7 @@ func sysPathconf(p *Process, a []uint64) int64 {
 // sysFsgetpath turns a volume and an inode number back into a path: of a volume's root, or of a
 // file the guest has looked at before.
 func sysFsgetpath(p *Process, a []uint64) int64 {
-	id := fileID{le.Uint32(p.read(a[2], 8)), a[3]}
-	path, ok := p.seen[id]
-	for _, v := range []volume{volumeOf("/"), volumeOf(preboot)} {
-		if id == (fileID{v.dev, rootInode}) {
-			path, ok = v.mount, true
-		}
-	}
+	path, ok := p.seen[fileID{le.Uint32(p.read(a[2], 8)), a[3]}]
 	if !ok || uint64(len(path)) >= a[1] {
 		return -eNOENT
 	}

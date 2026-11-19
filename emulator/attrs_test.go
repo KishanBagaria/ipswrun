@@ -2,6 +2,8 @@ package emulator
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 )
@@ -98,5 +100,37 @@ func TestVolumes(t *testing.T) {
 	root, pre := volumeOf("/Users/emu"), volumeOf(preboot+"/Cryptexes/OS")
 	if root.dev == pre.dev || root.mount != "/" || pre.mount != preboot || volumeOf(preboot+"x").dev != root.dev {
 		t.Fatalf("volumes %+v %+v", root, pre)
+	}
+}
+
+// The guest can change what is under its home and nothing else that a host file backs.
+func TestOnlyTheHomeCanBeChanged(t *testing.T) {
+	runner := filepath.Join(t.TempDir(), "runner")
+	if err := os.WriteFile(runner, []byte("not run"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	p := &Process{home: t.TempDir(), runnerPath: runner, fds: map[uint64]*fd{}, nextFD: 3}
+	if n := p.doOpen(GuestHome+"/file", 0x201, 0o644); n != 3 { // O_WRONLY|O_CREAT
+		t.Fatalf("creating a file under the home: %d", n)
+	}
+	for name, errno := range map[string]int64{
+		"open to truncate": p.doOpen(GuestExe, 0x401, 0), // O_WRONLY|O_TRUNC
+		"unlink":           p.doUnlink(GuestExe, false),
+		"rename over":      p.doRename(GuestHome+"/file", GuestExe),
+		"rename away":      p.doRename(GuestExe, GuestHome+"/exe"),
+		"unlink a device":  p.doUnlink("/dev/null", false),
+	} {
+		if errno >= 0 {
+			t.Errorf("%s: %d, want an errno", name, errno)
+		}
+	}
+	if data, err := os.ReadFile(runner); err != nil || string(data) != "not run" {
+		t.Errorf("the runner is now %q (%v)", data, err)
+	}
+	if n := p.doOpen(GuestExe, 0, 0); n != 4 {
+		t.Errorf("opening the runner to read: %d", n)
+	}
+	if errno := p.doRename(GuestHome+"/file", GuestHome+"/renamed"); errno != 0 {
+		t.Errorf("rename under the home: %d", errno)
 	}
 }

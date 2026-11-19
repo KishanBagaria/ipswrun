@@ -1,11 +1,10 @@
 #!/bin/bash
 # Runs a guest against every restore image in examples/builds.txt and diffs what each run reported
-# against what is recorded for it: examples/expected/<build>.json for examples/guest.c, and
-# examples/expected/<guest>/<build>.json for the others.
+# against what is recorded for it in examples/expected/<guest>/<build>.json.
 #
 #   examples/matrix.sh [--guest=NAME] [--stream-compressed] [--update] [version prefix...]
 #
-#   --guest=NAME         foundation, swiftrt, objcinfo or crypto (see examples/Makefile) instead of guest.c
+#   --guest=NAME         one of GUESTS in examples/Makefile instead of guest
 #   --stream-compressed  also run macOS 13 and 14, which download a 3.6–4.5 GB member each
 #   --update             write the results to examples/expected instead of diffing against it
 #   version prefix       only the builds whose version starts with one of these (e.g. 15. 27.2)
@@ -22,7 +21,7 @@ for arg; do
 	--guest=*) guest=${arg#--guest=} ;;
 	--stream-compressed) stream=1 ;;
 	--update) update=1 ;;
-	-*) sed -n '2,15s/^# \{0,1\}//p' "$0"; exit 2 ;;
+	-*) sed -n '2,14s/^# \{0,1\}//p' "$0"; exit 2 ;;
 	*) prefixes+=("$arg") ;;
 	esac
 done
@@ -31,15 +30,10 @@ cache=${IPSWRUN_CACHE:-$HOME/Library/Caches/ipswrun/matrix}
 results=${RESULTS:-$(mktemp -d -t ipswrun-matrix)}
 mkdir -p "$results/bin" || exit
 go build -o "$results/bin/ipswrun" ./cmd/ipswrun || exit
-expected=examples/expected args=()
-if [ "$guest" = guest ]; then
-	clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains -o "$results/bin/guest" examples/guest.c -lsqlite3 || exit
-else
-	make -s -C examples "bin/$guest" && cp "examples/bin/$guest" "$results/bin/guest" || exit
-	expected=examples/expected/$guest
-	# objcinfo describes the frameworks it is given: one that only exists as a private framework.
-	[ "$guest" != objcinfo ] || args=(/System/Library/PrivateFrameworks/IMCore.framework/IMCore)
-fi
+make -s -C examples "bin/$guest" && cp "examples/bin/$guest" "$results/bin/guest" || exit
+expected=examples/expected/$guest args=()
+# objcinfo describes the frameworks it is given: one that only exists as a private framework.
+[ "$guest" != objcinfo ] || args=(/System/Library/PrivateFrameworks/IMCore.framework/IMCore)
 
 failed=0
 while IFS=$'\t' read -r version build url; do
