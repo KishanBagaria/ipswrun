@@ -93,8 +93,10 @@ func (p *Process) bsd(n int64) {
 	}
 	args := p.args()
 	h, ok := bsdHandlers[strings.ReplaceAll(name, "_nocancel", "")]
-	if !ok {
-		stopKind(StopUnimplemented, "unimplemented syscall %d %s(%s) from %s", n, name, hexArgs(args[:6]), p.where(p.uc.reg(regLR)))
+	if !ok && p.unimplemented(fmt.Sprintf("syscall %d %s", n, name), args) {
+		p.setX(0, eNOSYS)
+		p.carry(true)
+		return
 	}
 	r := p.call(h, args, -eFAULT)
 	p.setX(0, uint64(max(r, -r)))

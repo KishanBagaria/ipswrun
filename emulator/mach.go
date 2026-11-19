@@ -1,6 +1,7 @@
 package emulator
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -63,8 +64,9 @@ func (p *Process) machTrap(n int64) {
 	}
 	args := p.args()
 	h, ok := machHandlers[name]
-	if !ok {
-		stopKind(StopUnimplemented, "unimplemented mach trap %d %s(%s) from %s", n, name, hexArgs(args[:6]), p.where(p.uc.reg(regLR)))
+	if !ok && p.unimplemented(fmt.Sprintf("mach trap %d %s", n, name), args) {
+		p.setX(0, kernInvalidArg) // what the kernel's own table gives a trap it does not have
+		return
 	}
 	r := p.call(h, args, 1)
 	p.setX(0, uint64(r))
@@ -177,7 +179,7 @@ func (p *Process) doMsg(m message) int64 {
 	}
 	p.note("  mach_msg id %d to port %#x send %d rcv %d%s", m.id, m.remote, m.sendSize, m.rcvSize, unhandled)
 	if routine == nil {
-		p.unknown[unknownMIG{m.id, m.remote, p.uc.reg(regLR)}] = struct{}{} // symbolized only if the run fails
+		p.unknown[unknownMIG{m.id, m.remote, p.uc.reg(regLR)}]++ // symbolized only if the run fails
 		return sendInvalidDest
 	}
 	reply := routine(p, body)

@@ -272,6 +272,25 @@ func TestDispatch(t *testing.T) {
 				t.Errorf("trap %d stopped as kind %d, not as unimplemented", number, p.faultKind)
 			}
 		}
+		// A survey answers them with an error instead, and keeps count.
+		p.survey = true
+		for i := 0; i < 2; i++ {
+			if x0, carry, stopped := p.trap(2); x0 != eNOSYS || !carry || stopped != "" {
+				t.Errorf("fork under a survey: x0 %d carry %v stopped %q", x0, carry, stopped)
+			}
+		}
+		if x0, _, stopped := p.trap(-90); x0 != kernInvalidArg || stopped != "" {
+			t.Errorf("mach_wait_until under a survey: x0 %d stopped %q", x0, stopped)
+		}
+		p.unknown[unknownMIG{id: 3400, port: 0x707}] = 5
+		list := strings.Split(p.Unimplemented(), "\n")
+		for i, want := range []string{"2× syscall 2 fork, first from ", "1× mach trap 90 mach_wait_until, first from ", "5× mach message 3400 to port 0x707 from "} {
+			if i >= len(list) || !strings.Contains(list[i], want) {
+				t.Errorf("survey line %d: want %q in %q", i, want, list)
+			}
+		}
+		p.survey = false
+
 		if _, _, stopped := p.trap(0x80000000, 0, 0, 0, 7); stopped != "machdep call 7" {
 			t.Errorf("machdep call 7 stopped with %q", stopped)
 		}

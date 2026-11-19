@@ -98,6 +98,7 @@ What the guest gets:
 | `--report <file>` | write a JSON summary: version, build, shared cache UUID, exit code, pages mapped, requests, bytes and seconds. `{build}` and `{version}` as in `--home` |
 | `--timeout <seconds>` | how long the guest may run on each release, counted from when it starts (default 900) |
 | `--trace` | print every emulated system call |
+| `--missing` | answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all, with how often each was made and from where, when the guest ends |
 | `--device <product>` | Mac model the disk images and `latest` are picked for (default `Macmini9,1`) |
 | `--unicorn <dir>` | where the pinned `libunicorn` is kept (default: the user cache directory) |
 | `--releases` | print the releases known by name (version, build, URL), then exit |
@@ -118,7 +119,7 @@ What the guest gets:
 - **macOS 13 and 14 by range.** Their images keep the shared cache in a deflate-compressed ZIP member, which cannot be read by range. `--stream-compressed` downloads that one member (3.6–4.5 GB).
 - **Shared memory through `mach_vm_remap`.** It copies instead of sharing, and only file-backed memory: enough for code (the Objective-C block trampolines), wrong for memory that is written afterwards.
 - **Some CPU features.** The emulated core has a 44-bit address space and reports no DIT, SHA-3 or SHA-512 instructions.
-- **System calls nobody has needed yet.** An unimplemented call stops the run with a message and a guest backtrace instead of guessing.
+- **System calls nobody has needed yet.** An unimplemented call stops the run with a message and a guest backtrace instead of guessing. `--missing` carries on past them, to find in one run everything a guest needs.
 
 ## What is tested
 

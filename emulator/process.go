@@ -176,6 +176,9 @@ type Config struct {
 	System func(path string) (SystemFile, error)
 	OS     map[string]string // "version", "build", "release" (and "ios") reported by sysctl
 	Trace  bool              // print every system call to stderr
+	// Survey answers a system call or Mach trap nothing implements with an error (ENOSYS,
+	// KERN_INVALID_ARGUMENT) instead of stopping the run, so that one run finds them all.
+	Survey bool
 }
 
 // Process is one emulated process.
@@ -189,6 +192,7 @@ type Process struct {
 	system     func(path string) (SystemFile, error)
 	os         map[string]string
 	trace      bool
+	survey     bool
 
 	regions []*region // sorted by start
 	mapped  map[uint64]struct{}
@@ -206,7 +210,8 @@ type Process struct {
 	deadline  time.Time
 
 	log     []string
-	unknown map[unknownMIG]struct{}
+	unknown map[unknownMIG]int // how often each was sent
+	missing []*missingCall     // in the order first made
 	tsd     uint64
 	oids    []string
 	sysctls map[string]any
@@ -228,6 +233,47 @@ type Process struct {
 type unknownMIG struct {
 	id, port uint32
 	lr       uint64
+}
+
+// missingCall is a system call or Mach trap with no handler that a survey let the guest carry on
+// from: how often it was made, and the return address of the first caller.
+type missingCall struct {
+	name  string // "syscall 2 fork", "mach trap 90 mach_wait_until"
+	count int
+	lr    uint64
+}
+
+// unimplemented is what a call with no handler comes to: the end of the run, or under a survey
+// a count, and true for the caller to answer the guest with an error.
+func (p *Process) unimplemented(name string, args []uint64) bool {
+	lr := p.uc.reg(regLR)
+	if !p.survey {
+		stopKind(StopUnimplemented, "unimplemented %s(%s) from %s", name, hexArgs(args[:6]), p.where(lr))
+	}
+	i := slices.IndexFunc(p.missing, func(m *missingCall) bool { return m.name == name })
+	if i < 0 {
+		i = len(p.missing)
+		p.missing = append(p.missing, &missingCall{name: name, lr: lr})
+	}
+	p.missing[i].count++
+	p.note("%s(%s) is not implemented", name, hexArgs(args[:6]))
+	return true
+}
+
+// Unimplemented lists what the guest asked for that the emulator does not implement and answered
+// with an error: system calls and Mach traps (only a survey gets past those) and Mach messages.
+// It is empty when there were none.
+func (p *Process) Unimplemented() string {
+	var out []string
+	for _, m := range p.missing {
+		out = append(out, fmt.Sprintf("  %4d× %s, first from %s", m.count, m.name, p.where(m.lr)))
+	}
+	var messages []string
+	for u, count := range p.unknown {
+		messages = append(messages, fmt.Sprintf("  %4d× mach message %d to port %#x from %s", count, u.id, u.port, p.where(u.lr)))
+	}
+	slices.Sort(messages)
+	return strings.Join(append(out, messages...), "\n")
 }
 
 // guard turns the panics the emulator uses for control flow into an error.
@@ -260,8 +306,8 @@ func New(cfg Config) (p *Process, err error) {
 	if err != nil {
 		return nil, err
 	}
-	p = &Process{cache: cfg.Cache, dyld: dyld, home: home, runner: runner, runnerPath: cfg.Runner, system: cfg.System, os: cfg.OS, trace: cfg.Trace,
-		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]struct{}{},
+	p = &Process{cache: cfg.Cache, dyld: dyld, home: home, runner: runner, runnerPath: cfg.Runner, system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
+		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{},
 		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
 	for _, v := range volumes { // their roots, for fsgetpath

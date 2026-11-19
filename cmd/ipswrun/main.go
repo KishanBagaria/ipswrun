@@ -193,6 +193,7 @@ type options struct {
 	guest                     string
 	args, env, system         []string
 	stream, trace, showStatus bool
+	missing                   bool
 	timeout                   float64
 }
 
@@ -200,6 +201,7 @@ type options struct {
 type outcome struct {
 	name           string // "macOS 15.6.1 (24G90)", or the URL of an image that never opened
 	stdout, stderr string
+	missing        string // under --missing, the calls the guest made that are not implemented
 	code           int
 	err            error
 }
@@ -240,13 +242,19 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	}
 	status.set(label+out.name, image.Stats)
 	process, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Executable: o.guest, Args: o.args,
-		Env: o.env, System: o.system, Timeout: time.Duration(o.timeout * float64(time.Second)), Trace: o.trace, Notes: status})
+		Env: o.env, System: o.system, Timeout: time.Duration(o.timeout * float64(time.Second)), Trace: o.trace, Survey: o.missing, Notes: status})
 	status.stop()
 	if process != nil {
 		defer process.Close()
 		out.stdout = process.Stdout()
 		if !o.trace { // tracing already echoed it
 			out.stderr = process.Stderr()
+		}
+		if o.missing {
+			out.missing = "ipswrun: " + out.name + ": every call the guest made is implemented\n"
+			if list := process.Unimplemented(); list != "" {
+				out.missing = "ipswrun: " + out.name + ": not implemented, and answered with an error:\n" + list + "\n"
+			}
 		}
 	}
 	if err != nil {
@@ -319,7 +327,7 @@ func (o *options) runAll(releases []release) (int, error) {
 	if len(releases) == 1 && len(skipped) == 0 {
 		out := o.runOne(releases[0], "")
 		os.Stdout.WriteString(out.stdout)
-		os.Stderr.WriteString(out.stderr)
+		os.Stderr.WriteString(out.stderr + out.missing)
 		return out.code, out.err
 	}
 	var shown *outcome
@@ -327,7 +335,7 @@ func (o *options) runAll(releases []release) (int, error) {
 	for i, r := range releases {
 		out := o.runOne(r, fmt.Sprintf("%d/%d ", i+1, len(releases)))
 		os.Stdout.WriteString(section(out, shown))
-		os.Stderr.WriteString(out.stderr)
+		os.Stderr.WriteString(out.stderr + out.missing)
 		switch {
 		case out.err != nil:
 			fmt.Fprintf(os.Stderr, "ipswrun: %s: %v\n", out.name, out.err)
@@ -361,6 +369,7 @@ all, the https URL of any restore image, or several of these separated by commas
 	stream := flag.Bool("stream-compressed", false, "download a compressed disk image member front to back when it cannot be read by range")
 	timeout := flag.Float64("timeout", 900, "seconds the guest may run on each release, counted from when it starts (opening the image is not counted)")
 	trace := flag.Bool("trace", false, "print every emulated system call")
+	missing := flag.Bool("missing", false, "answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all when the guest ends")
 	reportPath := flag.String("report", "", "write a JSON summary of the run (build, cache UUID, exit code, transfer) to this file; {build} and {version} in it become the release's")
 	unicornDir := flag.String("unicorn", "", "directory the pinned libunicorn is kept in (default: the user cache directory)")
 	setup := flag.Bool("setup", false, "only fetch and verify libunicorn")
@@ -422,7 +431,7 @@ all, the https URL of any restore image, or several of these separated by commas
 		}
 	}
 	o := &options{unicorn: unicorn, cache: *cache, device: *device, home: *home, report: *reportPath, guest: flag.Arg(1), args: flag.Args()[2:],
-		env: env, system: system, stream: *stream, trace: *trace, showStatus: showStatus, timeout: *timeout}
+		env: env, system: system, stream: *stream, trace: *trace, missing: *missing, showStatus: showStatus, timeout: *timeout}
 	return o.runAll(releases)
 }
 
