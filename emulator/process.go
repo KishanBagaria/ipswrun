@@ -182,6 +182,7 @@ type Config struct {
 	Home     string           // host directory behind GuestHome
 	Mounts   []Mount          // more host directories the guests may change (see CheckMounts)
 	Dyld     []byte           // the build's /usr/lib/dyld
+	Drivers  []Driver         // the kernel's services, which guests reach through IOKit: none unless given
 	// System serves read-only files from the build's system volume; a lookup failure stops the run.
 	System func(path string) (SystemFile, error)
 	OS     map[string]string // "version", "build" and "release" reported by sysctl

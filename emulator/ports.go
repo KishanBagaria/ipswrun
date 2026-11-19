@@ -28,6 +28,7 @@ type port struct {
 	context uint64        // what it was made or guarded with, which its owner reads back
 	dead    bool          // its receive right is gone
 	memory  []byte        // of a port that names memory (see migMakeMemoryEntry): a copy of it
+	object  kernelObject  // of a port the kernel receives on: what it stands for (see iokit.go)
 
 	sends     int    // send rights there are, in every process and in messages not yet received
 	made      uint32 // send rights ever made from the receive right
@@ -270,6 +271,10 @@ func notify(q *port, id uint32, body []byte) {
 func release(q *port) {
 	if q.sends > 0 {
 		q.sends--
+	}
+	if q.sends == 0 && q.object != nil && !q.dead {
+		q.dead = true
+		q.object.released()
 	}
 	if q.sends == 0 && q.noSenders != nil {
 		to := q.noSenders
