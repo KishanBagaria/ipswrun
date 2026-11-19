@@ -311,6 +311,7 @@ func init() {
 		200:  migHostInfo,
 		202:  func(*Process, []byte) migReply { return migData(le64(pageSize)) }, // host_page_size
 		205:  migHostGetIOMain,
+		217:  ok,        // host_request_notification: of the calendar changing, which it does not
 		206:  freshPort, // host_get_clock_service
 		412:  migHostGetSpecialPort,
 		1000: migClockGetTime,
