@@ -23,6 +23,10 @@ const (
 	SystemOS   = "sys" // the SystemOS cryptex
 )
 
+// ErrNoSystemOS is in the error of a SystemOS read on a restore image that has no SystemOS cryptex:
+// every release before macOS 13, which keeps everything in the system volume.
+var ErrNoSystemOS = info.ErrorCryptexNotFound
+
 // Image is a remote restore image whose volumes are opened on first use.
 type Image struct {
 	// OpenMember turns a ZIP member into random-access bytes; OpenStoredMember unless replaced.

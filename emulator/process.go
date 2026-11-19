@@ -2,9 +2,9 @@
 //
 // It starts a macOS build's own /usr/lib/dyld the way XNU would, lets it map that build's dyld
 // shared cache, and pages cache contents in on first touch. System calls and Mach traps are
-// implemented just far enough for libSystem, CoreFoundation and SQLite to run single-threaded
-// with no daemons around; anything unimplemented stops the run with a message rather than
-// guessing.
+// implemented just far enough for libSystem, CoreFoundation, Foundation, the Objective-C and
+// Swift runtimes, Security and SQLite to run single-threaded with no daemons around; anything
+// unimplemented stops the run with a message rather than guessing.
 package emulator
 
 import (
@@ -124,18 +124,39 @@ type region struct {
 // from. fault is the panic value for a system call touching unmapped guest memory, which the
 // call reports to the guest as EFAULT.
 type (
-	stop  struct{ message string }
+	stop struct {
+		message string
+		kind    StopKind
+	}
 	fault struct{ message string }
 )
 
-func stopf(format string, args ...any) { panic(stop{fmt.Sprintf(format, args...)}) }
+func stopf(format string, args ...any) { panic(stop{message: fmt.Sprintf(format, args...)}) }
+
+// stopKind is stopf for a stop whose remedy differs from the rest.
+func stopKind(kind StopKind, format string, args ...any) {
+	panic(stop{fmt.Sprintf(format, args...), kind})
+}
+
+// StopKind tells apart the stops a caller can do something about.
+type StopKind int
+
+const (
+	StopOther         StopKind = iota
+	StopUnimplemented          // a system call or Mach trap the emulator has no handler for
+	StopTimeout                // the run's deadline passed while the guest was still executing
+	StopNoCache                // the restore image gave no dyld shared cache; Cause says why
+)
 
 // StopError reports why a guest could not run to completion.
 type StopError struct {
 	Message string
+	Kind    StopKind
+	Cause   error // what led to it, when something else did
 }
 
 func (e *StopError) Error() string { return e.Message }
+func (e *StopError) Unwrap() error { return e.Cause }
 
 // SystemFile is what Config.System knows about a guest path.
 type SystemFile struct {
@@ -177,11 +198,12 @@ type Process struct {
 	nextFD   uint64
 	nextPort uint32
 
-	exited   bool
-	exitCode int
-	fault    string
-	resume   bool
-	deadline time.Time
+	exited    bool
+	exitCode  int
+	fault     string
+	faultKind StopKind // of the stop that set fault, carried out of the hook it happened in
+	resume    bool
+	deadline  time.Time
 
 	log     []string
 	unknown map[unknownMIG]struct{}
@@ -213,9 +235,9 @@ func guard(err *error) {
 	switch r := recover().(type) {
 	case nil:
 	case stop:
-		*err = &StopError{r.message}
+		*err = &StopError{Message: r.message, Kind: r.kind}
 	case fault:
-		*err = &StopError{r.message}
+		*err = &StopError{Message: r.message}
 	default:
 		panic(r)
 	}
@@ -456,7 +478,7 @@ func (p *Process) hookGuard(after func()) {
 	}
 	switch r := r.(type) {
 	case stop:
-		p.fault = r.message
+		p.fault, p.faultKind = r.message, r.kind
 	case fault:
 		p.fault = r.message
 	default:
@@ -791,10 +813,10 @@ func (p *Process) run(pc uint64) {
 		}
 		pc = p.uc.reg(regPC)
 		if timedOut {
-			stopf("timed out at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
+			stopKind(StopTimeout, "timed out at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
 		}
 		if p.fault != "" {
-			stopf("%s", p.fault)
+			stopKind(p.faultKind, "%s", p.fault)
 		}
 		if !p.exited && !p.resume {
 			stopf("emulation stopped without a cause at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))

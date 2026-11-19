@@ -3,6 +3,7 @@ package rangefs
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -234,5 +235,40 @@ func TestStreamedMemberResumes(t *testing.T) {
 	// The member's local header, then its data in four pieces.
 	if len(o.ranges) != 5 || o.ranges[2][0] != o.ranges[1][0]+50000 || o.ranges[4] != [2]int64{o.ranges[1][0] + 150000, o.ranges[1][1] - 150000} {
 		t.Fatalf("requested %v", o.ranges)
+	}
+}
+
+// A URL that does not answer with the image's size fails with the URL and the status it gave.
+func TestRefusedURLIsNamed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	_, err := Open(server.URL+"/x.ipsw", "", "Macmini9,1")
+	var status *StatusError
+	if !errors.As(err, &status) || status.URL != server.URL+"/x.ipsw" || status.Status != "403 Forbidden" {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(err.Error(), server.URL+"/x.ipsw answered 403 Forbidden") {
+		t.Fatalf("message %q does not name the URL", err)
+	}
+}
+
+func TestCompressedMemberIsRecognisable(t *testing.T) {
+	var archive bytes.Buffer
+	w := zip.NewWriter(&archive)
+	member, err := w.Create("disk.dmg") // deflated
+	if err != nil {
+		t.Fatal(err)
+	}
+	member.Write(bytes.Repeat([]byte("apfs"), 4096))
+	w.Close()
+	r, err := zip.NewReader(bytes.NewReader(archive.Bytes()), int64(archive.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = OpenStoredMember(bytes.NewReader(archive.Bytes()), r.File[0])
+	if !errors.Is(err, ErrCompressedMember) || !strings.Contains(err.Error(), "disk.dmg is a compressed ZIP member") {
+		t.Fatalf("got %v", err)
 	}
 }

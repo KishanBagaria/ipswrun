@@ -268,6 +268,9 @@ func TestDispatch(t *testing.T) {
 			if _, _, stopped := p.trap(number, 1, 2); !strings.HasPrefix(stopped, want) || !strings.Contains(stopped, "0x1, 0x2, 0x0") {
 				t.Errorf("trap %d stopped with %q, want %q and its arguments", number, stopped, want)
 			}
+			if p.faultKind != StopUnimplemented {
+				t.Errorf("trap %d stopped as kind %d, not as unimplemented", number, p.faultKind)
+			}
 		}
 		if _, _, stopped := p.trap(0x80000000, 0, 0, 0, 7); stopped != "machdep call 7" {
 			t.Errorf("machdep call 7 stopped with %q", stopped)

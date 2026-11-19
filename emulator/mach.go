@@ -64,7 +64,7 @@ func (p *Process) machTrap(n int64) {
 	args := p.args()
 	h, ok := machHandlers[name]
 	if !ok {
-		stopf("unimplemented mach trap %d %s(%s) from %s", n, name, hexArgs(args[:6]), p.where(p.uc.reg(regLR)))
+		stopKind(StopUnimplemented, "unimplemented mach trap %d %s(%s) from %s", n, name, hexArgs(args[:6]), p.where(p.uc.reg(regLR)))
 	}
 	r := p.call(h, args, 1)
 	p.setX(0, uint64(r))

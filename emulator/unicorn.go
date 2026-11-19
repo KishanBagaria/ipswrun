@@ -169,7 +169,7 @@ func check(err int32) error {
 // must is for calls whose failure means the emulator itself is wrong, not the guest.
 func must(err int32, what string) {
 	if err != 0 {
-		panic(stop{fmt.Sprintf("unicorn %s: %v", what, ucError(err))})
+		panic(stop{message: fmt.Sprintf("unicorn %s: %v", what, ucError(err))})
 	}
 }
 

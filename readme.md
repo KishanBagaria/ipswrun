@@ -2,12 +2,41 @@
 
 Run an arm64 Mach-O inside the userland of any macOS build, taken straight from that build's restore image (IPSW) over HTTP range requests. No Mac running that release, no VM, and no download of the 13–26 GB image.
 
+## Try it
+
+On an Apple silicon Mac with Go 1.27 or later and the Xcode command line tools, from a clone of this repository:
+
 ```sh
 go build -o ipswrun ./cmd/ipswrun
-./ipswrun 'https://…/UniversalMac_15.6.1_24G90_Restore.ipsw' ./guest arg1 arg2
+make -C examples bin/guest
+
+./ipswrun 'https://updates.cdn-apple.com/2020FallFCS/fullrestores/001-79706/93A4C43C-2B45-47AF-84EA-794F8886B85C/UniversalMac_11.0.1_20B29_Restore.ipsw' examples/bin/guest
+./ipswrun 'https://updates.cdn-apple.com/2026FallFCS/c202a724-db7e-4d56-917b-110aa0226507/UniversalMac_27.2.1_26B131_Restore.ipsw' examples/bin/guest
 ```
 
-The guest is an ordinary executable built on a Mac (`clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains …`). It is loaded by the build's own dyld against the build's own dyld shared cache, so `dlopen` of any system framework gets that release's code. Its stdout and stderr are passed through and its exit status becomes ipswrun's (70 means the run itself failed).
+The same executable, [`examples/guest.c`](examples/guest.c), reports the system it found itself in, six years apart:
+
+```
+macOS 11.0.1 (20B29)
+loaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking
+sqlite 3.32.3: 1 row(s) in /Users/emu/guest.sqlite
+```
+
+```
+macOS 27.2.1 (26B131)
+loaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking
+sqlite 3.54.0: 1 row(s) in /Users/emu/guest.sqlite
+```
+
+The first `go build` downloads the modules it depends on, which can take several minutes; each run then fetches what it needs of the image and shows its progress while a terminal is watching. [`examples/builds.txt`](examples/builds.txt) has the URL of the first and last release of every major version, and https://api.ipsw.me lists the rest.
+
+## Usage
+
+```sh
+ipswrun [flags] <https IPSW url> <guest executable> [guest arguments...]
+```
+
+The guest is an ordinary executable built on a Mac (`clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains …`; [`examples/Makefile`](examples/Makefile) has the flags for C, Objective-C and Swift). It is loaded by the build's own dyld against the build's own dyld shared cache, so `dlopen` of any system framework gets that release's code. Its stdout and stderr are passed through and its exit status becomes ipswrun's. ipswrun's own statuses are 2 for a command line it cannot run (nothing is fetched for one) and 70 for a run that failed, whose message ends with what to do about it where that is known.
 
 Runs on macOS on Apple silicon and on Linux (arm64 or x86-64, glibc). Building needs Go and a C compiler (the Xcode command line tools, or gcc): the image-format libraries it builds on (`go-apfs` and `ipsw`, for their LZFSE and disassembler code) use cgo, so `CGO_ENABLED=0` does not build. ipswrun's own code has no C; Unicorn is bound at run time through [purego](https://github.com/ebitengine/purego). The first run downloads a pinned, hash-verified `libunicorn` into the user cache directory. On Linux there is no Apple toolchain to build a guest with, so bring one built on a Mac; and since Linux has no commpage, the guest is given a recorded one from an Apple silicon Mac. macOS 15 and later images also need Apple's image key service.
 
@@ -21,7 +50,8 @@ Runs on macOS on Apple silicon and on Linux (arm64 or x86-64, glibc). Building n
 | `--cache <dir>` | where downloads are kept between runs (default: `ipswrun-<uid>` in the system temporary directory, which is cleared on reboot) |
 | `--stream-compressed` | allow downloading one compressed disk image member front to back (see below) |
 | `--report <file>` | JSON summary: version, build, shared cache UUID, exit code, transfer |
-| `--device`, `--timeout`, `--trace`, `--unicorn`, `--setup` | see `--help` |
+| `--timeout <seconds>` | how long the guest may run, counted from when it starts (default 900) |
+| `--device`, `--trace`, `--unicorn`, `--setup` | see `--help` |
 
 A run typically fetches 150–600 MB and takes from twenty seconds to a few minutes, nearly all of it download.
 

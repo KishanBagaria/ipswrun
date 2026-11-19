@@ -3,6 +3,7 @@ package emulator
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -37,6 +38,7 @@ type Run struct {
 	System     []string      // system-volume files and directory prefixes (ending in "/") the guest may read; DefaultSystem if empty
 	Timeout    time.Duration // for the whole run
 	Trace      bool          // print every system call to stderr
+	Notes      io.Writer     // told about a cache location that could not be read, unless the release has none there; os.Stderr if nil
 }
 
 var leadingDigits = regexp.MustCompile(`^\d+`)
@@ -51,12 +53,21 @@ func RunBuild(image *rangefs.Image, run Run) (*Process, *dyldcache.Cache, error)
 	if len(allowed) == 0 {
 		allowed = DefaultSystem
 	}
+	notes := run.Notes
+	if notes == nil {
+		notes = os.Stderr
+	}
 	var main *rangefs.File
 	var volume, guestDir string
+	var skipped []error
 	for _, candidate := range [][2]string{{rangefs.SystemOS, cryptex + "/System/Library/dyld"}, {rangefs.FileSystem, "/System/Library/dyld"}} {
 		f, err := image.Open(candidate[0], "/System/Library/dyld/"+CacheName)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "note: %v\n", err)
+			// A release from before the cryptex has nothing to say about lacking one.
+			if candidate[0] != rangefs.SystemOS || !errors.Is(err, rangefs.ErrNoSystemOS) {
+				fmt.Fprintf(notes, "note: %v\n", err)
+			}
+			skipped = append(skipped, err)
 			continue
 		}
 		if f != nil {
@@ -65,7 +76,8 @@ func RunBuild(image *rangefs.Image, run Run) (*Process, *dyldcache.Cache, error)
 		}
 	}
 	if main == nil {
-		return nil, nil, &StopError{"no arm64e dyld shared cache readable by range in this restore image"}
+		return nil, nil, &StopError{Message: "no arm64e dyld shared cache readable by range in this restore image", Kind: StopNoCache,
+			Cause: errors.Join(skipped...)}
 	}
 	cache, err := dyldcache.Open(func(suffix string) (dyldcache.File, error) {
 		if suffix == "" {

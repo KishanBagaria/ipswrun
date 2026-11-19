@@ -59,6 +59,15 @@ type rangeReader struct {
 	requests, bytes atomic.Int64
 }
 
+// StatusError is a restore image URL that did not answer the opening request with its size.
+type StatusError struct {
+	URL, Status string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("remote size unavailable: %s answered %s", e.URL, e.Status)
+}
+
 func newRangeReader(url, cacheDir string) (*rangeReader, error) {
 	r := &rangeReader{client: &http.Client{Timeout: 5 * time.Minute}, url: url, lastEnd: -1}
 	req, err := http.NewRequest(http.MethodHead, url, nil)
@@ -72,7 +81,7 @@ func newRangeReader(url, cacheDir string) (*rangeReader, error) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || resp.ContentLength <= 0 {
-		return nil, fmt.Errorf("remote size unavailable: %s", resp.Status)
+		return nil, &StatusError{URL: url, Status: resp.Status}
 	}
 	if resp.Header.Get("Accept-Ranges") != "bytes" {
 		return nil, errors.New("server does not advertise byte ranges")
