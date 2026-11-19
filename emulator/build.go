@@ -28,15 +28,23 @@ var BaseEnv = []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "Ma
 var DefaultSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/CoreServices/SystemVersion.plist", "/usr/share/icu/",
 	"/usr/lib/libobjc-trampolines.dylib"}
 
+// Daemon is a guest that runs beside the main one, to provide Mach services to it.
+type Daemon struct {
+	Services   []string // the names it may check in with launchd
+	Executable string   // host path of its Mach-O
+	Args       []string // after argv[0]
+}
+
 // Run describes one guest execution against a build.
 type Run struct {
 	Unicorn    string        // path of the verified libunicorn (see EnsureUnicorn)
 	Home       string        // host directory behind GuestHome
-	Mounts     []Mount       // more host directories the guest may change (see CheckMounts)
+	Mounts     []Mount       // more host directories the guests may change (see CheckMounts)
 	Services   []string      // the Mach services the guest provides: the names it may check in with launchd
 	Executable string        // host path of the guest Mach-O (arm64, linked against the cache)
 	Args       []string      // guest arguments after argv[0]
-	Env        []string      // added to BaseEnv
+	Daemons    []Daemon      // more guests, started with it, that provide services
+	Env        []string      // added to BaseEnv, for every guest
 	System     []string      // system-volume files and directory prefixes (ending in "/") the guest may read; DefaultSystem if empty
 	Timeout    time.Duration // for the whole run
 	Trace      bool          // print every system call to stderr
@@ -46,9 +54,10 @@ type Run struct {
 
 var leadingDigits = regexp.MustCompile(`^\d+`)
 
-// RunBuild starts the guest inside the userland of the build in image and runs it to completion.
-// The process is returned even when the run fails, for its diagnostics; the caller closes it.
-func RunBuild(image *rangefs.Image, run Run) (*Process, *dyldcache.Cache, error) {
+// RunBuild starts the guest, and the daemons beside it, inside the userland of the build in image
+// and runs them until the guest exits. The machine is returned even when the run fails, for its
+// diagnostics; the caller closes it.
+func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error) {
 	if err := os.MkdirAll(filepath.Join(run.Home, "tmp"), 0o777); err != nil { // BaseEnv's TMPDIR
 		return nil, nil, err
 	}
@@ -138,11 +147,20 @@ func RunBuild(image *rangefs.Image, run Run) (*Process, *dyldcache.Cache, error)
 	}
 
 	build := image.Build()
-	p, err := New(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Services: run.Services, Executable: run.Executable, Dyld: dyld, System: system, Trace: run.Trace, Survey: run.Survey,
+	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, System: system, Trace: run.Trace, Survey: run.Survey,
 		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0"}})
 	if err != nil {
 		return nil, cache, err
 	}
 	env := append(append([]string{}, BaseEnv...), run.Env...)
-	return p, cache, p.Start(append([]string{GuestExe}, run.Args...), env, run.Timeout)
+	guests := []Guest{{Executable: run.Executable, Args: run.Args, Env: env, Services: run.Services}}
+	for _, d := range run.Daemons {
+		guests = append(guests, Guest{Executable: d.Executable, Args: d.Args, Env: env, Services: d.Services})
+	}
+	for _, g := range guests {
+		if _, err := m.Spawn(g); err != nil {
+			return m, cache, fmt.Errorf("%s: %w", g.Executable, err)
+		}
+	}
+	return m, cache, m.Run(run.Timeout)
 }

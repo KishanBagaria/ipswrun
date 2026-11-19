@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// Threads share the one engine and take turns on it. A thread runs until it makes a call that
+// The threads of a process share its engine, and the threads of every process take turns: one
+// runs at a time (see Machine.schedule). A thread runs until it makes a call that
 // waits for something (a lock, a condition, a semaphore, a deadline), offers its turn, or ends;
 // nothing takes the engine away from it in between. Code that only makes progress when another
 // thread runs while it spins without a system call therefore never does.
@@ -171,63 +172,17 @@ func (p *Process) deliver() {
 // has ended, or it offered its turn.
 func (p *Process) reschedule() bool { return p.current.state != runnable || p.yield }
 
-// schedule is called between stretches of emulation once a thread gave up the engine: it puts the
-// running thread's registers away and brings in those of the next thread that can run, sleeping
-// until the nearest deadline if none can. It returns where to resume.
-func (p *Process) schedule(pc uint64) uint64 {
-	p.yield = false
-	cur := p.current
-	cur.pc = pc
-	for {
-		now := time.Now()
-		timer := p.serve(now)
-		var soonest *thread
-		for _, t := range p.threads {
-			if t.state != waiting || t.deadline.IsZero() {
-				continue
-			}
-			if !t.deadline.After(now) {
-				late := t.late
-				t.answer = &late
-				t.wake()
-			} else if soonest == nil || t.deadline.Before(soonest.deadline) {
-				soonest = t
-			}
+// switchTo gives a thread of the process the engine: the registers of the one that had it are
+// put away, unless they are still its own, and the answer the thread was waiting for is delivered.
+func (p *Process) switchTo(t *thread) {
+	if cur := p.current; t != cur || t.relaunched {
+		if t != cur && cur.state != dead && !cur.relaunched {
+			p.uc.save(cur.ctx)
 		}
-		// The next runnable thread after the current one, so that every thread gets its turn.
-		at := slices.Index(p.threads, cur)
-		for i := range p.threads {
-			t := p.threads[(at+1+i)%len(p.threads)]
-			if t.state != runnable {
-				continue
-			}
-			if t != cur || t.relaunched {
-				if t != cur && cur.state != dead && !cur.relaunched {
-					p.uc.save(cur.ctx)
-				}
-				p.uc.restore(t.ctx)
-				p.current, t.relaunched = t, false
-			}
-			p.deliver()
-			return t.pc
-		}
-		until := timer
-		if soonest != nil && (until.IsZero() || soonest.deadline.Before(until)) {
-			until = soonest.deadline
-		}
-		switch {
-		case !slices.ContainsFunc(p.threads, func(t *thread) bool { return t.state != dead }):
-			p.exited = true // the last thread ended: the process does, as if main had returned 0
-			return pc
-		case until.IsZero() && !slices.ContainsFunc(p.threads, func(t *thread) bool { return t.state == waiting && t.kind != waitPort }):
-			stopKind(StopIdle, "nothing left to run: every thread waits for a Mach message or for work, and nothing here will send one. A service waiting for a client ends this way")
-		case until.IsZero():
-			stopf("deadlock: no thread can run, and nothing is due that would let one")
-		case !until.Before(p.deadline):
-			stopKind(StopTimeout, "timed out with every thread waiting")
-		}
-		time.Sleep(time.Until(until))
+		p.uc.restore(t.ctx)
+		p.current, t.relaunched = t, false
 	}
+	p.deliver()
 }
 
 // threadList describes every thread that has not ended, one per line.
@@ -353,8 +308,12 @@ func sysYield(p *Process, a []uint64) int64 {
 			p.yield = true
 		}
 	}
-	for _, q := range p.ports {
+	for _, q := range p.ownedPorts() {
 		p.yield = p.yield || !q.due.IsZero()
+	}
+	// Another process may be able to run, and this one may be waiting for what it does.
+	for _, other := range p.m.live() {
+		p.yield = p.yield || other != p && slices.ContainsFunc(other.threads, func(t *thread) bool { return t.state == runnable })
 	}
 	return 0
 }

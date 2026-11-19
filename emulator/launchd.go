@@ -1,9 +1,10 @@
 package emulator
 
 // launchd is what a process asks for the port of a service by its name, and what a service gets
-// its own port from. There is none here, and one process: these are launchd's answers for the
-// services the guest was started as the provider of (Config.Services), which it can check in and
-// then look up like any client. Every other name is a service that does not exist.
+// its own port from. There is none here: these are launchd's answers for the services the guests
+// were started as the providers of (Guest.Services). The guest that provides a service can check
+// it in, and any guest can look it up, the provider among them. Every other name is a service
+// that does not exist.
 
 // xpcBody splits a Mach message carrying an XPC object into the names in its port descriptors and
 // the serialized object; false if it is not laid out as its header says.
@@ -35,20 +36,17 @@ const (
 	launchdPID    = 1
 )
 
-// service is the port of a service the guest provides, made when it is first asked for: launchd
-// holds a service's port, and what is sent to it, until the service checks in.
-func (p *Process) service(name string) (q *port, declared bool) {
-	q, declared = p.services[name]
-	if declared && q == nil {
-		q = p.newReceive()
-		p.services[name] = q
-	}
-	return q, declared
+// service is a service launchd knows: the guest that provides it, and its port, which is made
+// when it is first asked for. launchd holds the port, and what is sent to it, until the provider
+// checks in.
+type service struct {
+	provider *Process
+	port     *port
 }
 
-// launchd answers a message to the bootstrap port; false if it has no answer.
-func (p *Process) launchd(m message, raw []byte) bool {
-	ports, payload, ok := xpcBody(m.bits, raw)
+// launchd answers a message a process sent to its bootstrap port; false if it has no answer.
+func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
+	ports, payload, ok := xpcBody(msg.bits, raw)
 	if !ok {
 		return false
 	}
@@ -57,28 +55,32 @@ func (p *Process) launchd(m message, raw []byte) bool {
 		p.note("  to launchd: %v", err)
 		return false
 	}
-	routine := uint64(m.id & 0xFFFF)
+	routine := uint64(msg.id & 0xFFFF)
 	if r := request.uint("routine"); r != 0 {
 		routine = r
 	}
 	reply := &xpcDictionary{}
-	q, provided := p.service(request.string("name"))
+	s := m.services[request.string("name")]
+	if s != nil && s.port == nil {
+		s.port = &port{m: m}
+	}
 	checkIn := routine == routineCheckIn || routine == routineCheckInMach
 	switch {
 	case !checkIn && routine != routineLookUp && routine != routineLookUpLegacy:
 		p.note("  to launchd, routine %d: %v", routine, request)
 		return false
-	case !provided:
+	case s == nil || s.port.dead || checkIn && s.provider != p:
 		reply.set("error", int64(noSuchService))
 	case checkIn:
-		reply.set("port", xpcPort{xpcReceive, q.name})
+		reply.set("port", xpcPort{xpcReceive, p.giveOut(carried{port: s.port, disposition: moveReceive}, nil)})
 	default:
-		p.transfer(q.name, makeSend)
-		reply.set("port", xpcPort{xpcSend, q.name})
+		s.port.sends++
+		s.port.made++
+		reply.set("port", xpcPort{xpcSend, p.giveOut(carried{port: s.port, disposition: moveSend}, nil)})
 	}
 	// libxpc takes an answer only from launchd (root, pid 1, as the message's trailer says) and
 	// only if it names the process that asked and which of its executions.
-	reply.set("req_pid", uint64(guestPID)).set("rec_execcnt", uint64(guestExecution))
+	reply.set("req_pid", uint64(p.pid)).set("rec_execcnt", uint64(guestExecution))
 	p.note("  to launchd, routine %d: %v, answered %v", routine, request, reply)
 	body, rights := xpcEncode(reply)
 	if len(rights) > 0 {
@@ -92,6 +94,6 @@ func (p *Process) launchd(m message, raw []byte) bool {
 		}
 		body = append(descriptors, body...)
 	}
-	p.answer(m, xpcReply, migReply{body: body, port: len(rights) > 0}, launchdPID)
+	p.answer(msg, xpcReply, migReply{body: body, port: len(rights) > 0}, launchdPID)
 	return true
 }

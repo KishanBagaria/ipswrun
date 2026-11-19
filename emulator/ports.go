@@ -7,33 +7,71 @@ import (
 	"time"
 )
 
-// Ports the guest holds the receive right of are real: a message sent to one waits in its queue
-// until a thread receives it, and a thread that receives from an empty one waits for a message.
-// There is one process and so one name space, as for a task that talks to itself: a port's
-// receive right and its send rights share a name, the send rights are counted, and each right to
-// send once has a name of its own. Everything else a message can be sent to is the kernel's (the
-// task, the host, a clock) and is answered at once, as a MIG routine.
+// Ports are real. A port is the kernel's: a queue of messages, with one process holding the right
+// to receive from it. A process names the rights it holds, and a name means nothing in another
+// process: a right sent in a message leaves its sender's names when the message is sent, and is
+// given a name by whoever receives the message, which may be another process. As in Mach, a
+// process has one name for a port's receive right and its send rights together, with a count of
+// the send rights, and a name of its own for each right to send once. Everything else a message
+// can be sent to is the kernel's (the task, the host, a clock) and is answered at once, as a MIG
+// routine.
 
-// port is a receive right, or a port set.
+// port is a port, or a port set.
 type port struct {
-	name    uint32
+	m       *Machine
+	owner   *Process      // who holds its receive right: nobody while a message carries it, or launchd holds it
+	name    uint32        // what the owner calls it
 	set     bool
-	in      uint32        // the set it is a member of, if any
-	queue   []machMessage // as their receiver will see them
+	in      *port         // the set it is a member of, if any
+	queue   []machMessage // as they were sent
 	due     time.Time     // of a timer (mk_timer) that is armed: when; zero otherwise
 	context uint64        // what it was made or guarded with, which its owner reads back
+	dead    bool          // its receive right is gone
+	memory  []byte        // of a port that names memory (see migMakeMemoryEntry): a copy of it
 
-	sends     int    // send rights there are, those in messages not yet received among them
+	sends     int    // send rights there are, in every process and in messages not yet received
 	made      uint32 // send rights ever made from the receive right
 	noSenders *port  // told when the last send right goes, if anyone asked
-	deadName  *port  // told when the receive right goes while send rights remain
 }
 
-// machMessage is a queued message, and who sent it: the guest, the kernel (pid 0) or launchd (1).
+// right is what a name stands for in one process.
+type right struct {
+	port     *port
+	receive  bool  // the receive right, or the set itself
+	sends    int   // the send rights under this name
+	once     bool  // a right to send once
+	deadName *port // told when the port loses its receive right, if the process asked
+}
+
+// carried is a right in a message on its way: the port, how the receiver gets it, and where in
+// the message (or in the array of names sent beside it, memory[in]) its name goes.
+type carried struct {
+	port        *port
+	disposition uint32
+	at, in      int
+	// name is what the sender called it, for a name that is no right the kernel keeps (a task, a
+	// thread, a semaphore): it stays what it was inside one process, and is nothing in another.
+	name uint32
+}
+
+// outOfLine is memory a message carries beside itself: what it holds, and where in the message
+// its address goes once the receiver has it.
+type outOfLine struct {
+	at   int
+	data []byte
+}
+
+// machMessage is a queued message, and who sent it: a guest, the kernel (pid 0) or launchd (1).
+// A guest's message has its rights and memory still to be given to whoever receives it. What
+// the kernel and launchd send is written for the process that holds the port already.
 type machMessage struct {
 	data   []byte
+	reply  carried // the right to answer it with, if it came with one
+	rights []carried
+	memory []outOfLine
 	aux    []byte // what was sent beside it, if anything
 	sender uint32
+	from   *Process
 	moved  bool // the send right it was sent with was given up for it, and ends when it is received
 }
 
@@ -51,6 +89,7 @@ const (
 	rcvPortDied    = 0x10004009
 
 	bitsComplex = 0x80000000
+	portDead    = 0xFFFFFFFF // MACH_PORT_DEAD: the name of a right to a port that is gone
 
 	// How a right is named in a message: what the sender does with its own, and what arrives.
 	moveReceive  = 16
@@ -72,11 +111,42 @@ const (
 	insertSendRight = 0x10 // MPO_INSERT_SEND_RIGHT
 )
 
-// newReceive makes a port the guest can receive from.
+// newReceive makes a port the process can receive from.
 func (p *Process) newReceive() *port {
-	q := &port{name: p.newPort()}
-	p.ports[q.name] = q
+	q := &port{m: p.m, owner: p, name: p.newPort()}
+	p.names[q.name] = &right{port: q, receive: true}
+	p.named[q] = q.name
 	return q
+}
+
+// owned is the port or set the process holds the receive right of under a name.
+func (p *Process) owned(name uint32) *port {
+	if r := p.names[name]; r != nil && r.receive {
+		return r.port
+	}
+	return nil
+}
+
+// ownedPorts are the ports and sets the process can receive from, lowest name first.
+func (p *Process) ownedPorts() []*port {
+	var out []*port
+	for _, r := range p.names {
+		if r.receive {
+			out = append(out, r.port)
+		}
+	}
+	slices.SortFunc(out, func(a, b *port) int { return cmp.Compare(a.name, b.name) })
+	return out
+}
+
+// forget drops a name that no right is left under.
+func (p *Process) forget(name uint32) {
+	if r := p.names[name]; r != nil && !r.receive && r.sends == 0 && !r.once {
+		delete(p.names, name)
+		if p.named[r.port] == name {
+			delete(p.named, r.port)
+		}
+	}
 }
 
 // readable is the port with the next message for a receive from q: itself, or for a set the
@@ -88,102 +158,213 @@ func (p *Process) readable(q *port) *port {
 		}
 		return nil
 	}
-	var first *port
-	for _, member := range p.ports {
-		if member.in == q.name && len(member.queue) > 0 && (first == nil || member.name < first.name) {
-			first = member
+	for _, member := range p.ownedPorts() {
+		if member.in == q && len(member.queue) > 0 {
+			return member
 		}
-	}
-	return first
-}
-
-// destination is the port a message to name goes to: one of the guest's own by its name, or by
-// the name of a right to send to it once, which is then used up.
-func (p *Process) destination(name uint32) *port {
-	if q := p.once[name]; q != nil {
-		delete(p.once, name)
-		return q
-	}
-	if q := p.ports[name]; q != nil && !q.set {
-		return q
 	}
 	return nil
 }
 
-// sendOnce names a new right to send to q once.
-func (p *Process) sendOnce(q *port) uint32 {
-	name := p.newPort()
-	p.once[name] = q
+// destination is the port a message to name goes to, if the process has a right to send there.
+// A right to send once is used up.
+func (p *Process) destination(name uint32) *port {
+	r := p.names[name]
+	switch {
+	case r == nil:
+		return nil
+	case r.once:
+		delete(p.names, name)
+	}
+	if r.port.set || r.port.dead {
+		return nil
+	}
+	return r.port
+}
+
+// takeIn accounts for a right a process names in a message it sends, and returns it as it
+// travels: what was moved is no longer the sender's.
+func (p *Process) takeIn(name, disposition uint32) carried {
+	c := carried{disposition: arriving(disposition), name: name, in: -1}
+	r := p.names[name]
+	if r == nil {
+		return c
+	}
+	q := r.port
+	switch {
+	case disposition == moveSendOnce && r.once:
+		delete(p.names, name)
+	case disposition == makeSendOnce && r.receive:
+	case disposition == makeSend && r.receive:
+		q.sends++
+		q.made++
+	case disposition == copySend && (r.sends > 0 || r.receive):
+		q.sends++
+	case disposition == moveSend && r.sends > 0:
+		r.sends--
+		p.forget(name)
+	case disposition == moveReceive && r.receive && !q.set:
+		r.receive = false
+		p.forget(name)
+		q.owner, q.in = nil, nil
+		for _, t := range p.waiters(waitPort, uint64(name)) {
+			t.answer = &result{x0: rcvPortDied}
+			t.wake()
+		}
+	default:
+		return c // not a right the process has to give
+	}
+	c.port = q
+	return c
+}
+
+// giveOut gives the process a right that arrived for it, and returns the name it has there.
+func (p *Process) giveOut(c carried, from *Process) uint32 {
+	q := c.port
+	switch {
+	case q == nil && from == p:
+		return c.name
+	case q == nil:
+		if c.name != 0 {
+			p.note("  a right that is no port (%#x in the sender) arrives as nothing", c.name)
+		}
+		return 0
+	case q.dead && c.disposition != moveReceive:
+		return portDead
+	case c.disposition == moveSendOnce:
+		name := p.newPort()
+		p.names[name] = &right{port: q, once: true}
+		return name
+	}
+	name, ok := p.named[q]
+	if !ok {
+		name = p.newPort()
+		p.names[name], p.named[q] = &right{port: q}, name
+	}
+	if r := p.names[name]; c.disposition == moveReceive {
+		r.receive, q.owner, q.name = true, p, name
+	} else {
+		r.sends++
+	}
 	return name
 }
 
-// enqueue queues on q a message that is not the guest's own: the kernel's (sender 0) or launchd's.
-func (p *Process) enqueue(q *port, bits, id uint32, body []byte, sender uint32) {
-	p.post(q, machMessage{data: append(header(bits, uint32(24+len(body)), q.name, id), body...), sender: sender})
+// sendOnce names, for the process, a new right to send to q once.
+func (p *Process) sendOnce(q *port) uint32 {
+	return p.giveOut(carried{port: q, disposition: moveSendOnce}, nil)
+}
+
+// enqueue queues on q a message that is not a guest's own: the kernel's (sender 0) or launchd's.
+func enqueue(q *port, bits, id uint32, body []byte, sender uint32) {
+	post(q, machMessage{data: append(header(bits, uint32(24+len(body)), 0, id), body...), sender: sender})
 }
 
 // notify sends q one of the kernel's notifications, if it is still there to be told.
-func (p *Process) notify(q *port, id uint32, body []byte) {
-	if p.ports[q.name] == q {
-		p.enqueue(q, moveSendOnce<<8, id, body, 0)
+func notify(q *port, id uint32, body []byte) {
+	if q != nil && !q.dead {
+		enqueue(q, moveSendOnce<<8, id, body, 0)
 	}
 }
 
 // release ends one send right to q, and tells who asked to know when the last one has gone.
-func (p *Process) release(q *port) {
+func release(q *port) {
 	if q.sends > 0 {
 		q.sends--
 	}
 	if q.sends == 0 && q.noSenders != nil {
 		to := q.noSenders
 		q.noSenders = nil
-		p.notify(to, notifyNoSenders, migCode(q.made).body)
+		notify(to, notifyNoSenders, migCode(q.made).body)
 	}
 }
 
-// transfer accounts for a right named in a message that is being sent, and returns the name it
-// arrives under: its own, but for a right to send once, which is always a new one.
-func (p *Process) transfer(name, disposition uint32) uint32 {
-	switch q := p.ports[name]; {
-	case disposition == moveSendOnce && p.once[name] != nil:
-		return p.sendOnce(p.destination(name))
-	case q == nil || q.set:
-	case disposition == makeSendOnce:
-		return p.sendOnce(q)
-	case disposition == makeSend:
-		q.sends++
-		q.made++
-	case disposition == copySend:
-		q.sends++
+// releaseSend gives up one of the send rights the process has under a name.
+func (p *Process) releaseSend(name uint32) {
+	if r := p.names[name]; r != nil && r.sends > 0 {
+		r.sends--
+		p.forget(name)
+		release(r.port)
 	}
-	return name
 }
 
-// destroy ends a receive right: what was queued is gone, whoever waits on it is told, and so is
-// whoever asked to know that its send rights now name nothing.
-func (p *Process) destroy(name uint32) {
-	q := p.ports[name]
-	if q == nil {
+// discard ends the rights a message carries that nobody will receive.
+func discard(m machMessage) {
+	for _, c := range append([]carried{m.reply}, m.rights...) {
+		switch {
+		case c.port == nil:
+		case c.disposition == moveSend:
+			release(c.port)
+		case c.disposition == moveSendOnce:
+			notify(c.port, notifySendOnce, nil)
+		case c.disposition == moveReceive:
+			destroy(c.port)
+		}
+	}
+}
+
+// destroy ends a port's receive right: what was queued is gone, whoever waits on it is told, and
+// so is every process that asked to know that its send rights now name nothing.
+func destroy(q *port) {
+	if q == nil || q.dead {
 		return
 	}
-	delete(p.ports, name)
-	for once, to := range p.once {
-		if to == q {
-			delete(p.once, once)
+	q.dead = true
+	queue := q.queue
+	q.queue = nil
+	if owner := q.owner; owner != nil {
+		for _, member := range owner.ownedPorts() {
+			if member.in == q {
+				member.in = nil
+			}
+		}
+		for _, t := range owner.waiters(waitPort, uint64(q.name)) {
+			t.answer = &result{x0: rcvPortDied}
+			t.wake()
+		}
+		if r := owner.names[q.name]; r != nil && r.port == q {
+			r.receive = false
+			owner.forget(q.name)
 		}
 	}
-	if q.deadName != nil && q.sends > 0 {
-		p.notify(q.deadName, notifyDeadName, migCode(name).body)
-	}
-	for _, member := range p.ports {
-		if member.in == name {
-			member.in = 0
+	for _, other := range q.m.procs {
+		for _, name := range slices.Sorted(maps.Keys(other.names)) {
+			switch r := other.names[name]; {
+			case r.port != q:
+			case r.once:
+				delete(other.names, name)
+			case r.deadName != nil:
+				to := r.deadName
+				r.deadName = nil
+				notify(to, notifyDeadName, migCode(name).body)
+			}
 		}
 	}
-	for _, t := range p.waiters(waitPort, uint64(name)) {
-		t.answer = &result{x0: rcvPortDied}
-		t.wake()
+	q.owner, q.in = nil, nil
+	for _, m := range queue {
+		discard(m)
 	}
+}
+
+// reap ends every right of a process that has exited: its ports die, and the ports it could
+// send to lose those senders.
+func (p *Process) reap() {
+	for _, name := range slices.Sorted(maps.Keys(p.names)) {
+		r := p.names[name]
+		if r == nil {
+			continue
+		}
+		q := r.port
+		if r.once {
+			notify(q, notifySendOnce, nil)
+		}
+		for ; r.sends > 0; r.sends-- {
+			release(q)
+		}
+		if r.receive {
+			destroy(q)
+		}
+	}
+	p.names, p.named = map[uint32]*right{}, map[*port]uint32{}
 }
 
 // ---- traps ----
@@ -208,7 +389,7 @@ func machPortConstruct(p *Process, a []uint64) int64 {
 	q := p.newReceive()
 	q.context = a[2]
 	if p.u32(a[1])&insertSendRight != 0 {
-		p.transfer(q.name, makeSend)
+		p.giveOut(p.takeIn(q.name, makeSend), p)
 	}
 	p.write(a[3], le32(q.name))
 	return 0
@@ -216,7 +397,7 @@ func machPortConstruct(p *Process, a []uint64) int64 {
 
 // machPortGuard guards a port with a value, which is also its context.
 func machPortGuard(p *Process, a []uint64) int64 {
-	if q := p.ports[uint32(a[1])]; q != nil {
+	if q := p.owned(uint32(a[1])); q != nil {
 		q.context = a[2]
 	}
 	return 0
@@ -224,7 +405,7 @@ func machPortGuard(p *Process, a []uint64) int64 {
 
 func migPortGetContext(p *Process, body []byte) migReply {
 	var context uint64
-	if q := p.ports[le.Uint32(body[32:])]; q != nil {
+	if q := p.owned(le.Uint32(body[32:])); q != nil {
 		context = q.context
 	}
 	return migData(le64(context))
@@ -232,34 +413,40 @@ func migPortGetContext(p *Process, body []byte) migReply {
 
 // machPortDestruct ends a receive right, and with it some of the send rights that share its name.
 func machPortDestruct(p *Process, a []uint64) int64 {
-	if q := p.ports[uint32(a[1])]; q != nil {
-		q.sends = max(q.sends+int(int32(a[2])), 0)
+	name := uint32(a[1])
+	q := p.owned(name)
+	if q == nil {
+		return 0
 	}
-	p.destroy(uint32(a[1]))
+	for delta := int32(a[2]); delta < 0; delta++ {
+		p.releaseSend(name)
+	}
+	destroy(q)
 	return 0
 }
 
 // machPortInsertRight is how the holder of a receive right makes itself a send right.
 func machPortInsertRight(p *Process, a []uint64) int64 {
-	p.transfer(uint32(a[2]), uint32(a[3]))
+	p.giveOut(p.takeIn(uint32(a[2]), uint32(a[3])), p)
 	return 0
 }
 
 // machPortModRefs adds or takes away references to one kind of right under a name.
 func machPortModRefs(p *Process, a []uint64) int64 {
 	name, delta := uint32(a[1]), int32(a[3])
-	q := p.ports[name]
+	r := p.names[name]
 	switch {
 	case a[2] == rightSendOnce && delta < 0:
 		p.dropOnce(name)
-	case q == nil:
-	case a[2] == rightReceive && delta < 0:
-		p.destroy(name)
+	case r == nil:
+	case a[2] == rightReceive && delta < 0 && r.receive:
+		destroy(r.port)
 	case a[2] == rightSend && delta > 0:
-		q.sends += int(delta)
+		r.sends += int(delta)
+		r.port.sends += int(delta)
 	case a[2] == rightSend:
 		for ; delta < 0; delta++ {
-			p.release(q)
+			p.releaseSend(name)
 		}
 	}
 	return 0
@@ -267,21 +454,19 @@ func machPortModRefs(p *Process, a []uint64) int64 {
 
 // dropOnce ends a right to send once that was never used, which its port is told.
 func (p *Process) dropOnce(name uint32) bool {
-	q := p.once[name]
-	if q == nil {
+	r := p.names[name]
+	if r == nil || !r.once {
 		return false
 	}
-	delete(p.once, name)
-	p.notify(q, notifySendOnce, nil)
+	delete(p.names, name)
+	notify(r.port, notifySendOnce, nil)
 	return true
 }
 
 // machPortDeallocate gives up one send right, or a right to send once.
 func machPortDeallocate(p *Process, a []uint64) int64 {
 	if name := uint32(a[1]); !p.dropOnce(name) {
-		if q := p.ports[name]; q != nil {
-			p.release(q)
-		}
+		p.releaseSend(name)
 	}
 	return 0
 }
@@ -289,22 +474,23 @@ func machPortDeallocate(p *Process, a []uint64) int64 {
 // machPortRequestNotification asks for a message to notify when name loses its last send right or
 // its receive right. Other notifications are accepted and never sent.
 func machPortRequestNotification(p *Process, a []uint64) int64 {
-	q, to := p.ports[uint32(a[1])], p.ports[uint32(a[4])]
+	r, to := p.names[uint32(a[1])], p.owned(uint32(a[4]))
 	if a[6] != 0 {
 		p.write(a[6], le32(0)) // no earlier request to hand back
 	}
-	if q == nil {
+	if r == nil {
 		return 0
 	}
-	switch a[2] {
-	case notifyNoSenders:
+	switch q := r.port; {
+	case a[2] == notifyNoSenders && r.receive:
 		q.noSenders = to
 		if to != nil && q.sends == 0 && uint64(q.made) >= a[3] {
-			q.sends = 1
-			p.release(q) // there are none already
+			release(q) // there are none already
 		}
-	case notifyDeadName:
-		q.deadName = to
+	case a[2] == notifyDeadName && q.dead:
+		notify(to, notifyDeadName, migCode(uint32(a[1])).body)
+	case a[2] == notifyDeadName:
+		r.deadName = to
 	}
 	return 0
 }
@@ -321,9 +507,9 @@ func machSpecialReplyPort(p *Process, a []uint64) int64 {
 }
 
 // setMember puts a port in a set, or with none takes it out of the one it is in.
-func (p *Process) setMember(name, set uint32) int64 {
-	q := p.ports[name]
-	if q == nil || q.set || set != 0 && (p.ports[set] == nil || !p.ports[set].set) {
+func (p *Process) setMember(name, setName uint32) int64 {
+	q, set := p.owned(name), p.owned(setName)
+	if q == nil || q.set || setName != 0 && (set == nil || !set.set) {
 		return kernInvalidArg
 	}
 	q.in = set
@@ -338,12 +524,12 @@ func machPortExtractMember(p *Process, a []uint64) int64 { return p.setMember(ui
 // ---- timers that send a message when they are due (mk_timer), which is how a run loop sleeps ----
 
 func machTimerDestroy(p *Process, a []uint64) int64 {
-	p.destroy(uint32(a[0]))
+	destroy(p.owned(uint32(a[0])))
 	return 0
 }
 
 func (p *Process) armTimer(name uint32, ticks uint64) int64 {
-	q := p.ports[name]
+	q := p.owned(name)
 	if q == nil {
 		return kernInvalidArg
 	}
@@ -355,7 +541,7 @@ func machTimerArm(p *Process, a []uint64) int64       { return p.armTimer(uint32
 func machTimerArmLeeway(p *Process, a []uint64) int64 { return p.armTimer(uint32(a[0]), a[2]) }
 
 func machTimerCancel(p *Process, a []uint64) int64 {
-	q := p.ports[uint32(a[0])]
+	q := p.owned(uint32(a[0]))
 	if q == nil {
 		return kernInvalidArg
 	}
@@ -369,7 +555,7 @@ func machTimerCancel(p *Process, a []uint64) int64 {
 // fireTimers sends the message of every timer that is due, and reports when the next one is.
 func (p *Process) fireTimers(now time.Time) (next time.Time) {
 	var due []*port
-	for _, q := range p.ports {
+	for _, q := range p.ownedPorts() {
 		switch {
 		case q.due.IsZero():
 		case !q.due.After(now):
@@ -381,7 +567,7 @@ func (p *Process) fireTimers(now time.Time) (next time.Time) {
 	slices.SortFunc(due, func(a, b *port) int { return a.due.Compare(b.due) })
 	for _, q := range due {
 		q.due = time.Time{}
-		p.enqueue(q, moveSend<<8, 0, make([]byte, 24), 0)
+		enqueue(q, moveSend<<8, 0, make([]byte, 24), 0)
 	}
 	return next
 }
@@ -429,67 +615,82 @@ func descriptors(raw []byte, visit func(at int, kind byte)) (int, bool) {
 	return at, true
 }
 
-// carried turns a message as it was sent into what its receiver gets: the header turned around,
-// the rights named as they arrive, and the memory sent out of line in a place of its own. False
-// for one that is not what its header says.
-func (p *Process) carried(m message, out []byte) ([]byte, bool) {
+// outgoing turns a message as it was sent into what waits in the queue: the header turned around,
+// and the rights and the memory it names taken from the sender, to be given to whoever receives
+// it. False for a message that is not what its header says.
+func (p *Process) outgoing(m message, out []byte) (machMessage, bool) {
 	bits := m.bits&bitsComplex | arriving(m.bits>>8&0x1F) | arriving(m.bits&0x1F)<<8
 	if m.local == 0 {
 		bits &^= 0x1F
 	}
-	copy(out, header(bits, uint32(len(out)), m.remote, m.id))
-	le.PutUint32(out[8:], p.transfer(m.local, m.bits>>8&0x1F))
+	copy(out, header(bits, uint32(len(out)), 0, m.id))
+	sent := machMessage{data: out, sender: p.pid, from: p, moved: m.bits&0x1F == moveSend}
+	if m.bits&bitsComplex != 0 {
+		if _, ok := descriptors(out, func(int, byte) {}); !ok {
+			return sent, false // before anything is taken from the sender
+		}
+	}
+	sent.reply = p.takeIn(m.local, m.bits>>8&0x1F)
 	if m.bits&bitsComplex == 0 {
-		return out, true
+		return sent, true
 	}
-	// right renames the right whose name and disposition are at these places in b.
-	right := func(b []byte, name, disposition int) {
-		le.PutUint32(b[name:], p.transfer(le.Uint32(b[name:]), uint32(out[disposition])))
+	// right takes the right whose name is at a place in the message, or in memory sent beside it.
+	right := func(name uint32, disposition byte, at, in int) {
+		c := p.takeIn(name, uint32(disposition))
+		c.at, c.in = at, in
+		sent.rights = append(sent.rights, c)
 	}
-	_, ok := descriptors(out, func(at int, kind byte) {
+	descriptors(out, func(at int, kind byte) {
 		switch kind {
 		case 0:
-			right(out, at, at+10)
+			right(le.Uint32(out[at:]), out[at+10], at, -1)
 		case 3:
-			right(out, at+12, at+10)
+			right(le.Uint32(out[at+12:]), out[at+10], at+12, -1)
 		default:
 			addr, n := le.Uint64(out[at:]), uint64(le.Uint32(out[at+12:]))
 			if kind == 2 {
 				n *= 4 // names
 			}
-			var copied uint64
 			if n > 0 {
 				data := p.read(addr, n)
 				for i := 0; kind == 2 && i < len(data); i += 4 {
-					right(data, i, at+10)
+					right(le.Uint32(data[i:]), out[at+10], i, len(sent.memory))
 				}
-				copied, _ = p.alloc(n, allocation{kind: fileRegion, data: data, name: "out-of-line"})
+				sent.memory = append(sent.memory, outOfLine{at, data})
 				if out[at+8] != 0 { // the sender gives its own away
 					p.unmap(addr&^(pageSize-1), align(addr+n, pageSize))
 				}
 			}
-			le.PutUint64(out[at:], copied)
+			le.PutUint64(out[at:], 0)
 			out[at+8] = 0
 		}
 		if kind != 1 {
 			out[at+10] = byte(arriving(uint32(out[at+10])))
 		}
 	})
-	return out, ok
+	return sent, true
 }
 
 // post queues a message on a port, and hands it to a thread that is waiting for one there.
-func (p *Process) post(q *port, m machMessage) {
+func post(q *port, m machMessage) {
+	if q.dead {
+		discard(m)
+		return
+	}
 	q.queue = append(q.queue, m)
-	for _, name := range []uint32{q.name, q.in} {
-		if name == 0 {
+	owner := q.owner
+	if owner == nil {
+		return // it waits for whoever gets the port
+	}
+	for _, at := range []*port{q, q.in} {
+		if at == nil {
 			continue
 		}
-		if w := p.waiters(waitPort, uint64(name)); len(w) > 0 {
+		if w := owner.waiters(waitPort, uint64(at.name)); len(w) > 0 {
 			t := w[0]
 			// The room it gave may not be memory it has: that is its receive failing, not this send.
 			into := handler{fn: func(p *Process, _ []uint64) int64 { return p.hand(q, *t.receiving) }}
-			t.answer = &result{x0: uint64(p.call(into, nil, rcvInvalidData))}
+			t.answer = &result{x0: uint64(owner.call(into, nil, rcvInvalidData))}
 			t.wake()
 			return
 		}
@@ -509,13 +710,15 @@ func trailerSize(option uint64) int {
 	return 68
 }
 
-// hand gives the first message of q to a receive, if it has the room.
+// hand gives the first message of q to a receive of the process, if it has the room: the rights
+// it carries get their names here, and the memory a place.
 func (p *Process) hand(q *port, m message) int64 {
 	next := q.queue[0]
 	trailer := trailerSize(m.option)
 	if uint64(len(next.data)+trailer) > m.rcvSize {
 		if m.option&machRcvLarge == 0 {
 			q.queue = q.queue[1:] // lost, as the kernel loses it
+			discard(next)
 			return rcvTooLarge
 		}
 		// Told how large it is, and from which port of a set, to come back for it.
@@ -527,18 +730,32 @@ func (p *Process) hand(q *port, m message) int64 {
 		}
 		return rcvTooLarge
 	}
+	p.ensure(m.rcvMsg, uint64(len(next.data)+trailer)) // before anything is given that could not be taken back
 	q.queue = q.queue[1:]
 	if next.moved {
-		defer p.release(q)
+		defer release(q)
 	}
-	var uid, gid uint32 // the kernel and launchd are root
-	if next.sender == guestPID {
-		uid, gid = guestUID, guestGID
+	data := slices.Clone(next.data)
+	le.PutUint32(data[12:], q.name)
+	if next.from != nil {
+		le.PutUint32(data[8:], p.giveOut(next.reply, next.from))
 	}
+	for _, c := range next.rights {
+		if c.in < 0 {
+			le.PutUint32(data[c.at:], p.giveOut(c, next.from))
+		} else {
+			le.PutUint32(next.memory[c.in].data[c.at:], p.giveOut(c, next.from))
+		}
+	}
+	for _, memory := range next.memory {
+		addr, _ := p.alloc(uint64(len(memory.data)), allocation{kind: fileRegion, data: memory.data, name: "out-of-line"})
+		le.PutUint64(data[memory.at:], addr)
+	}
+	uid, gid := p.m.user(next.sender)
 	// The format (0) and size; a sequence number; the sender's user and group; its audit token;
 	// the port's context; and nothing of the access checks the last words are for.
 	tail := append(le32(0, uint32(trailer), 0, uid, gid, 0, uid, gid, uid, gid, next.sender, 100000, guestExecution), le64(q.context, 0)...)
-	p.write(m.rcvMsg, append(next.data, tail[:trailer]...))
+	p.write(m.rcvMsg, append(data, tail[:trailer]...))
 	switch {
 	case uint64(len(next.aux)) <= m.auxRcvSize && len(next.aux) > 0:
 		p.write(m.auxRcv, next.aux)
@@ -551,7 +768,7 @@ func (p *Process) hand(q *port, m message) int64 {
 
 // receive takes the next message of a port or set, waiting for one if the caller will.
 func (p *Process) receive(m message) int64 {
-	q := p.ports[m.rcvName]
+	q := p.owned(m.rcvName)
 	if q == nil {
 		return rcvInvalidName
 	}
@@ -600,7 +817,7 @@ func (p *Process) changeMachport(q *kqueue, c kevent) {
 func (p *Process) watched(q *kqueue) {
 	for _, key := range slices.SortedFunc(maps.Keys(q.ports), func(a, b watchKey) int { return cmp.Compare(a.ident, b.ident) }) {
 		w := q.ports[key]
-		target := p.ports[uint32(key.ident)]
+		target := p.owned(uint32(key.ident))
 		if w.flags&evDisable != 0 || target == nil {
 			continue
 		}

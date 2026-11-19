@@ -125,7 +125,7 @@ func TestSystemCallNumbersMatchSDK(t *testing.T) {
 
 func TestConstantHandlers(t *testing.T) {
 	// These answer without looking at the process or the arguments.
-	for name, want := range map[string]int64{"getpid": guestPID, "getppid": 1, "getuid": guestUID, "geteuid": guestUID,
+	for name, want := range map[string]int64{"getppid": 1, "getuid": guestUID, "geteuid": guestUID,
 		"getgid": guestGID, "getegid": guestGID, "issetugid": 0, "ioctl": -eNOTTY, "csrctl": -ePERM} {
 		if got := bsdHandlers[name].fn(nil, nil); got != want {
 			t.Errorf("%s() = %d, want %d", name, got, want)
@@ -171,14 +171,17 @@ func newProcess(t *testing.T) *Process {
 	}
 	var p *Process
 	onMain(func() { // New runs the engine to turn the MMU on
-		p, err = New(Config{Unicorn: unicorn, Cache: &dyldcache.Cache{}, Home: t.TempDir(), Executable: exe, Dyld: le32(0xFEEDFACF, cpuARM64, 0, 0, 0, 0, 0, 0),
-			OS: map[string]string{"build": "24G90", "version": "15.6.1"}})
+		var m *Machine
+		if m, err = NewMachine(Config{Unicorn: unicorn, Cache: &dyldcache.Cache{}, Home: t.TempDir(), Dyld: le32(0xFEEDFACF, cpuARM64, 0, 0, 0, 0, 0, 0),
+			OS: map[string]string{"build": "24G90", "version": "15.6.1"}}); err == nil {
+			p, err = m.newProcess(exe)
+		}
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { onMain(p.Close) })
-	p.deadline = time.Now().Add(time.Minute)
+	p.m.deadline = time.Now().Add(time.Minute)
 	return p
 }
 

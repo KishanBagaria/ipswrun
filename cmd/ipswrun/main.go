@@ -104,6 +104,25 @@ func parseMounts(releases int, values []string) (mounts []emulator.Mount, err er
 	return mounts, nil
 }
 
+// parseDaemons reads each --daemon as <service>[,<service>...]=<executable>[ <argument>...].
+func parseDaemons(values []string) (daemons []emulator.Daemon, err error) {
+	for _, value := range values {
+		names, command, ok := strings.Cut(value, "=")
+		words := strings.Fields(command)
+		if !ok || names == "" || len(words) == 0 {
+			return nil, fmt.Errorf("--daemon %s is not <service>[,<service>...]=<executable> [arguments], as in --daemon 'com.example.echo=bin/echod --verbose'", value)
+		}
+		switch st, err := os.Stat(words[0]); {
+		case err != nil:
+			return nil, fmt.Errorf("--daemon %s: %w", value, err)
+		case st.IsDir():
+			return nil, fmt.Errorf("--daemon %s: %s is a directory", value, words[0])
+		}
+		daemons = append(daemons, emulator.Daemon{Services: strings.Split(names, ","), Executable: words[0], Args: words[1:]})
+	}
+	return daemons, nil
+}
+
 // fix is the last line of a failure: what to do about it, for the failures where that is known.
 func fix(err error, timeout float64, stream bool) string {
 	var status *rangefs.StatusError
@@ -212,6 +231,7 @@ type options struct {
 	guest                     string
 	args, env, system         []string
 	services                  []string
+	daemons                   []emulator.Daemon
 	mounts                    []emulator.Mount // the host side may contain {build} and {version}
 	stream, trace, showStatus bool
 	missing                   bool
@@ -269,39 +289,65 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		}
 	}
 	status.set(label+out.name, image.Stats)
-	process, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Mounts: mounts, Services: o.services, Executable: o.guest, Args: o.args,
-		Env: o.env, System: o.system, Timeout: time.Duration(o.timeout * float64(time.Second)), Trace: o.trace, Survey: o.missing, Notes: status})
+	machine, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Mounts: mounts, Services: o.services, Executable: o.guest, Args: o.args,
+		Daemons: o.daemons, Env: o.env, System: o.system, Timeout: time.Duration(o.timeout * float64(time.Second)), Trace: o.trace, Survey: o.missing, Notes: status})
 	status.stop()
-	if process != nil {
-		defer process.Close()
-		out.stdout = process.Stdout()
-		if !o.trace { // tracing already echoed it
-			out.stderr = process.Stderr()
-		}
-		if o.missing {
-			out.missing = "ipswrun: " + out.name + ": every call the guest made is implemented\n"
-			if list := process.Unimplemented(); list != "" {
-				out.missing = "ipswrun: " + out.name + ": not implemented, and answered with an error:\n" + list + "\n"
+	pages := 0
+	if machine != nil {
+		defer machine.Close()
+		for i, process := range machine.Processes() {
+			pages += process.MappedPages()
+			// Of the guest, what it wrote where it wrote it. A daemon has nobody to write to: what
+			// it wrote is shown on standard error, under its name.
+			who, stderr := "the guest", process.Stderr()
+			if i == 0 {
+				out.stdout = process.Stdout()
+			} else {
+				who = process.Label()
+				stderr = labelled(who, process.Stdout()+stderr)
+				if code, exited := process.ExitCode(); exited {
+					stderr += fmt.Sprintf("ipswrun: %s exited with status %d\n", who, code)
+				}
 			}
+			if !o.trace { // tracing already echoed it
+				out.stderr += stderr
+			}
+			if o.missing {
+				if list := process.Unimplemented(); list != "" {
+					out.missing += "ipswrun: " + out.name + ": not implemented, and answered " + who + " with an error:\n" + list + "\n"
+				}
+			}
+		}
+		if o.missing && out.missing == "" {
+			out.missing = "ipswrun: " + out.name + ": every call made is implemented\n"
 		}
 	}
 	if err != nil {
 		var stopped *emulator.StopError
-		if process != nil && errors.As(err, &stopped) {
-			err = fmt.Errorf("%w\n%s", err, process.Diagnostics())
+		if machine != nil && errors.As(err, &stopped) {
+			err = fmt.Errorf("%w\n%s", err, machine.Diagnostics())
 		}
 		return failed(err)
 	}
-	out.code, _ = process.ExitCode()
+	out.code, _ = machine.Main().ExitCode()
 	if o.report != "" {
 		requests, fetched := image.Stats()
 		data, _ := json.MarshalIndent(report{Version: image.Version(), Build: image.Build(), CacheUUID: formatUUID(dyldCache.UUID), ExitCode: out.code,
-			Pages: process.MappedPages(), Requests: requests, Bytes: fetched, Seconds: int(time.Since(started).Seconds())}, "", "  ")
+			Pages: pages, Requests: requests, Bytes: fetched, Seconds: int(time.Since(started).Seconds())}, "", "  ")
 		if err := os.WriteFile(perRelease.Replace(o.report), append(data, '\n'), 0o666); err != nil {
 			return failed(err)
 		}
 	}
 	return out
+}
+
+// labelled is what a daemon wrote, each line under its name.
+func labelled(name, text string) string {
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	return name + ": " + strings.Join(lines, "\n"+name+": ") + "\n"
 }
 
 // repeats reports whether a run printed and exited as the earlier one did.
@@ -390,7 +436,8 @@ URL of any restore image, or several of these separated by commas.`)
 		flag.PrintDefaults()
 	}
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
-	var env, system, mountValues, services list
+	var env, system, mountValues, services, daemonValues list
+	flag.Var(&daemonValues, "daemon", "<service>[,<service>...]=<executable> [arguments]: another guest, started beside the first, that provides these Mach services to it (repeatable)")
 	flag.Var(&services, "service", "name of a Mach service the guest provides, as a daemon does: it can check that name in, and look it up (repeatable)")
 	flag.Var(&mountValues, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
 	flag.Var(&env, "env", "KEY=VALUE added to the guest environment (repeatable)")
@@ -421,6 +468,7 @@ URL of any restore image, or several of these separated by commas.`)
 	// Nothing is fetched for a command line that cannot run. --setup takes no arguments.
 	var releases []release
 	var mounts []emulator.Mount
+	var daemons []emulator.Daemon
 	if !*setup {
 		if flag.NArg() == 0 {
 			flag.Usage()
@@ -431,6 +479,9 @@ URL of any restore image, or several of these separated by commas.`)
 			feedNote(note)
 			if err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath)); err == nil {
 				mounts, err = parseMounts(len(releases), mountValues)
+			}
+			if err == nil {
+				daemons, err = parseDaemons(daemonValues)
 			}
 		}
 		if errors.Is(err, errSource) {
@@ -466,7 +517,7 @@ URL of any restore image, or several of these separated by commas.`)
 		}
 	}
 	o := &options{unicorn: unicorn, cache: *cache, device: *device, home: *home, report: *reportPath, guest: flag.Arg(1), args: flag.Args()[2:],
-		env: env, system: system, mounts: mounts, services: services, stream: *stream, trace: *trace, missing: *missing, showStatus: showStatus, timeout: *timeout}
+		env: env, system: system, mounts: mounts, services: services, daemons: daemons, stream: *stream, trace: *trace, missing: *missing, showStatus: showStatus, timeout: *timeout}
 	return o.runAll(releases)
 }
 
