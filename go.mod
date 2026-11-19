@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/blacktop/go-apfs v1.0.31
-	github.com/blacktop/go-macho v1.1.296
+	github.com/blacktop/go-macho v1.1.298
 	github.com/blacktop/go-plist v1.0.2
 	github.com/blacktop/ipsw v0.0.0-20261117074031-5d96e8d73a66
 	github.com/ebitengine/purego v0.11.3
@@ -124,5 +124,3 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	modernc.org/sqlite v1.55.0 // indirect
 )
-
-replace github.com/blacktop/go-macho => github.com/KishanBagaria/go-macho v1.1.298-0.20261118165826-cf67542039c9
