@@ -219,8 +219,8 @@ func (p *Process) schedule(pc uint64) uint64 {
 		case !slices.ContainsFunc(p.threads, func(t *thread) bool { return t.state != dead }):
 			p.exited = true // the last thread ended: the process does, as if main had returned 0
 			return pc
-		case until.IsZero() && slices.ContainsFunc(p.threads, func(t *thread) bool { return t.state == waiting && t.kind == waitPort }):
-			stopf("nothing left to run: every thread waits, at least one for a Mach message, and nothing is due that would send it one. A service waiting for a client ends this way")
+		case until.IsZero() && !slices.ContainsFunc(p.threads, func(t *thread) bool { return t.state == waiting && t.kind != waitPort }):
+			stopKind(StopIdle, "nothing left to run: every thread waits for a Mach message or for work, and nothing here will send one. A service waiting for a client ends this way")
 		case until.IsZero():
 			stopf("deadlock: no thread can run, and nothing is due that would let one")
 		case !until.Before(p.deadline):
@@ -354,7 +354,7 @@ func sysYield(p *Process, a []uint64) int64 {
 		}
 	}
 	for _, q := range p.ports {
-		p.yield = p.yield || q.armed
+		p.yield = p.yield || !q.due.IsZero()
 	}
 	return 0
 }

@@ -1,6 +1,8 @@
 package emulator
 
 import (
+	"cmp"
+	"maps"
 	"slices"
 	"time"
 )
@@ -18,9 +20,8 @@ type port struct {
 	set     bool
 	in      uint32        // the set it is a member of, if any
 	queue   []machMessage // as their receiver will see them
-	armed   bool          // of a timer (mk_timer): due at
-	due     time.Time
-	context uint64 // what it was made or guarded with, which its owner reads back
+	due     time.Time     // of a timer (mk_timer) that is armed: when; zero otherwise
+	context uint64        // what it was made or guarded with, which its owner reads back
 
 	sends     int    // send rights there are, those in messages not yet received among them
 	made      uint32 // send rights ever made from the receive right
@@ -44,6 +45,7 @@ const (
 	machRcvTimeout       = 0x100
 	msgVector            = 1 << 32 // MACH64_MSG_VECTOR: the message is given as a vector of two
 
+	rcvInvalidName = 0x10004002
 	rcvTooLarge    = 0x10004004
 	rcvInvalidData = 0x10004008
 	rcvPortDied    = 0x10004009
@@ -74,17 +76,6 @@ const (
 func (p *Process) newReceive() *port {
 	q := &port{name: p.newPort()}
 	p.ports[q.name] = q
-	return q
-}
-
-// receiver is the port or set a name the guest receives from stands for. A name nothing made is
-// taken to be a port of its own that nothing was sent to yet.
-func (p *Process) receiver(name uint32) *port {
-	q := p.ports[name]
-	if q == nil {
-		q = &port{name: name}
-		p.ports[name] = q
-	}
 	return q
 }
 
@@ -126,10 +117,15 @@ func (p *Process) sendOnce(q *port) uint32 {
 	return name
 }
 
-// notify sends q one of the kernel's notifications.
-func (p *Process) notify(q *port, id uint32, body ...byte) {
+// enqueue queues on q a message that is not the guest's own: the kernel's (sender 0) or launchd's.
+func (p *Process) enqueue(q *port, bits, id uint32, body []byte, sender uint32) {
+	p.post(q, machMessage{data: append(header(bits, uint32(24+len(body)), q.name, id), body...), sender: sender})
+}
+
+// notify sends q one of the kernel's notifications, if it is still there to be told.
+func (p *Process) notify(q *port, id uint32, body []byte) {
 	if p.ports[q.name] == q {
-		p.post(q, machMessage{data: append(header(moveSendOnce<<8, uint32(24+len(body)), q.name, id), body...)})
+		p.enqueue(q, moveSendOnce<<8, id, body, 0)
 	}
 }
 
@@ -141,7 +137,7 @@ func (p *Process) release(q *port) {
 	if q.sends == 0 && q.noSenders != nil {
 		to := q.noSenders
 		q.noSenders = nil
-		p.notify(to, notifyNoSenders, append(slices.Clone(ndr), le32(q.made)...)...)
+		p.notify(to, notifyNoSenders, migCode(q.made).body)
 	}
 }
 
@@ -177,7 +173,7 @@ func (p *Process) destroy(name uint32) {
 		}
 	}
 	if q.deadName != nil && q.sends > 0 {
-		p.notify(q.deadName, notifyDeadName, append(slices.Clone(ndr), le32(name)...)...)
+		p.notify(q.deadName, notifyDeadName, migCode(name).body)
 	}
 	for _, member := range p.ports {
 		if member.in == name {
@@ -212,7 +208,7 @@ func machPortConstruct(p *Process, a []uint64) int64 {
 	q := p.newReceive()
 	q.context = a[2]
 	if p.u32(a[1])&insertSendRight != 0 {
-		q.sends, q.made = 1, 1
+		p.transfer(q.name, makeSend)
 	}
 	p.write(a[3], le32(q.name))
 	return 0
@@ -220,7 +216,9 @@ func machPortConstruct(p *Process, a []uint64) int64 {
 
 // machPortGuard guards a port with a value, which is also its context.
 func machPortGuard(p *Process, a []uint64) int64 {
-	p.receiver(uint32(a[1])).context = a[2]
+	if q := p.ports[uint32(a[1])]; q != nil {
+		q.context = a[2]
+	}
 	return 0
 }
 
@@ -274,7 +272,7 @@ func (p *Process) dropOnce(name uint32) bool {
 		return false
 	}
 	delete(p.once, name)
-	p.notify(q, notifySendOnce)
+	p.notify(q, notifySendOnce, nil)
 	return true
 }
 
@@ -311,7 +309,8 @@ func machPortRequestNotification(p *Process, a []uint64) int64 {
 	return 0
 }
 
-func machReplyPort(p *Process, a []uint64) int64 { return int64(p.newReceive().name) }
+// machNewReceive is a new port with nothing asked of it: a reply port, or a timer's.
+func machNewReceive(p *Process, a []uint64) int64 { return int64(p.newReceive().name) }
 
 // machSpecialReplyPort is the one port a thread waits on for the answer to a synchronous message.
 func machSpecialReplyPort(p *Process, a []uint64) int64 {
@@ -338,8 +337,6 @@ func machPortExtractMember(p *Process, a []uint64) int64 { return p.setMember(ui
 
 // ---- timers that send a message when they are due (mk_timer), which is how a run loop sleeps ----
 
-func machTimerCreate(p *Process, a []uint64) int64 { return int64(p.newReceive().name) }
-
 func machTimerDestroy(p *Process, a []uint64) int64 {
 	p.destroy(uint32(a[0]))
 	return 0
@@ -350,7 +347,7 @@ func (p *Process) armTimer(name uint32, ticks uint64) int64 {
 	if q == nil {
 		return kernInvalidArg
 	}
-	q.armed, q.due = true, tickTime(ticks)
+	q.due = tickTime(ticks)
 	return 0
 }
 
@@ -362,7 +359,7 @@ func machTimerCancel(p *Process, a []uint64) int64 {
 	if q == nil {
 		return kernInvalidArg
 	}
-	q.armed = false
+	q.due = time.Time{}
 	if a[1] != 0 {
 		p.write(a[1], le64(0))
 	}
@@ -374,7 +371,7 @@ func (p *Process) fireTimers(now time.Time) (next time.Time) {
 	var due []*port
 	for _, q := range p.ports {
 		switch {
-		case !q.armed:
+		case q.due.IsZero():
 		case !q.due.After(now):
 			due = append(due, q)
 		case next.IsZero() || q.due.Before(next):
@@ -383,8 +380,8 @@ func (p *Process) fireTimers(now time.Time) (next time.Time) {
 	}
 	slices.SortFunc(due, func(a, b *port) int { return a.due.Compare(b.due) })
 	for _, q := range due {
-		q.armed = false
-		p.post(q, machMessage{data: append(header(moveSend<<8, 48, q.name, 0), make([]byte, 24)...)})
+		q.due = time.Time{}
+		p.enqueue(q, moveSend<<8, 0, make([]byte, 24), 0)
 	}
 	return next
 }
@@ -402,11 +399,40 @@ func arriving(disposition uint32) uint32 {
 	return disposition
 }
 
-// carried is a message as its receiver gets it: the header turned around, the rights named as
-// they arrive, and the memory sent out of line in a place of its own. False for one that is not
-// what its header says.
-func (p *Process) carried(m message, raw []byte) ([]byte, bool) {
-	out := slices.Clone(raw)
+// portDescriptor is a port right as a message carries it out of line.
+func portDescriptor(name uint32, disposition byte) []byte {
+	return append(le32(name, 0), 0, 0, disposition, 0)
+}
+
+// descriptors calls visit with the place and kind of each descriptor of a complex message: a port
+// (0), memory (1), an array of ports (2) or a guarded port (3). It returns where the body after
+// them starts; false for a message that ends before they do, or has one of another kind.
+func descriptors(raw []byte, visit func(at int, kind byte)) (int, bool) {
+	if len(raw) < 28 {
+		return 0, false
+	}
+	at := 28
+	for range le.Uint32(raw[24:]) {
+		if len(raw) < at+12 {
+			return 0, false
+		}
+		kind, size := raw[at+11], 16
+		if kind == 0 {
+			size = 12
+		}
+		if kind > 3 || len(raw) < at+size {
+			return 0, false
+		}
+		visit(at, kind)
+		at += size
+	}
+	return at, true
+}
+
+// carried turns a message as it was sent into what its receiver gets: the header turned around,
+// the rights named as they arrive, and the memory sent out of line in a place of its own. False
+// for one that is not what its header says.
+func (p *Process) carried(m message, out []byte) ([]byte, bool) {
 	bits := m.bits&bitsComplex | arriving(m.bits>>8&0x1F) | arriving(m.bits&0x1F)<<8
 	if m.local == 0 {
 		bits &^= 0x1F
@@ -416,40 +442,27 @@ func (p *Process) carried(m message, raw []byte) ([]byte, bool) {
 	if m.bits&bitsComplex == 0 {
 		return out, true
 	}
-	if len(out) < 28 {
-		return nil, false
+	// right renames the right whose name and disposition are at these places in b.
+	right := func(b []byte, name, disposition int) {
+		le.PutUint32(b[name:], p.transfer(le.Uint32(b[name:]), uint32(out[disposition])))
 	}
-	at := 28
-	for range le.Uint32(out[24:]) {
-		if len(out) < at+12 {
-			return nil, false
-		}
-		size := 16
-		switch kind := out[at+11]; kind {
-		case 0: // a port
-			size = 12
-			le.PutUint32(out[at:], p.transfer(le.Uint32(out[at:]), uint32(out[at+10])))
-			out[at+10] = byte(arriving(uint32(out[at+10])))
-		case 1, 2: // memory, or an array of ports
-			if len(out) < at+16 {
-				return nil, false
-			}
+	_, ok := descriptors(out, func(at int, kind byte) {
+		switch kind {
+		case 0:
+			right(out, at, at+10)
+		case 3:
+			right(out, at+12, at+10)
+		default:
 			addr, n := le.Uint64(out[at:]), uint64(le.Uint32(out[at+12:]))
-			var data []byte
 			if kind == 2 {
-				n *= 4
-			}
-			if n > 0 {
-				data = slices.Clone(p.read(addr, n))
-			}
-			if kind == 2 {
-				for i := 0; i < len(data); i += 4 {
-					le.PutUint32(data[i:], p.transfer(le.Uint32(data[i:]), uint32(out[at+10])))
-				}
-				out[at+10] = byte(arriving(uint32(out[at+10])))
+				n *= 4 // names
 			}
 			var copied uint64
 			if n > 0 {
+				data := p.read(addr, n)
+				for i := 0; kind == 2 && i < len(data); i += 4 {
+					right(data, i, at+10)
+				}
 				copied, _ = p.alloc(n, allocation{kind: fileRegion, data: data, name: "out-of-line"})
 				if out[at+8] != 0 { // the sender gives its own away
 					p.unmap(addr&^(pageSize-1), align(addr+n, pageSize))
@@ -457,25 +470,22 @@ func (p *Process) carried(m message, raw []byte) ([]byte, bool) {
 			}
 			le.PutUint64(out[at:], copied)
 			out[at+8] = 0
-		case 3: // a guarded port
-			if len(out) < at+16 {
-				return nil, false
-			}
-			le.PutUint32(out[at+12:], p.transfer(le.Uint32(out[at+12:]), uint32(out[at+10])))
-			out[at+10] = byte(arriving(uint32(out[at+10])))
-		default:
-			return nil, false
 		}
-		at += size
-	}
-	return out, true
+		if kind != 1 {
+			out[at+10] = byte(arriving(uint32(out[at+10])))
+		}
+	})
+	return out, ok
 }
 
 // post queues a message on a port, and hands it to a thread that is waiting for one there.
 func (p *Process) post(q *port, m machMessage) {
 	q.queue = append(q.queue, m)
 	for _, name := range []uint32{q.name, q.in} {
-		if w := p.waiters(waitPort, uint64(name)); name != 0 && len(w) > 0 {
+		if name == 0 {
+			continue
+		}
+		if w := p.waiters(waitPort, uint64(name)); len(w) > 0 {
 			t := w[0]
 			// The room it gave may not be memory it has: that is its receive failing, not this send.
 			into := handler{fn: func(p *Process, _ []uint64) int64 { return p.hand(q, *t.receiving) }}
@@ -488,21 +498,13 @@ func (p *Process) post(q *port, m machMessage) {
 
 // ---- receiving ----
 
-// trailerSize is how much the kernel adds after a message, by what the receiver asked to be told.
+// trailerSize is how much the kernel adds after a message, by how much the receiver asked to be
+// told: nothing, the sequence number, the sender's user and group, its audit token, the port's
+// context, or everything.
 func trailerSize(option uint64) int {
-	switch option >> 24 & 0xF {
-	case 0:
-		return 8
-	case 1: // the sequence number
-		return 12
-	case 2: // the sender's user and group
-		return 20
-	case 3: // its audit token
-		return 52
-	case 4: // the port's context
-		return 60
-	case 5:
-		return 64
+	sizes := [...]int{8, 12, 20, 52, 60, 64}
+	if asked := option >> 24 & 0xF; asked < uint64(len(sizes)) {
+		return sizes[asked]
 	}
 	return 68
 }
@@ -536,7 +538,7 @@ func (p *Process) hand(q *port, m message) int64 {
 	// The format (0) and size; a sequence number; the sender's user and group; its audit token;
 	// the port's context; and nothing of the access checks the last words are for.
 	tail := append(le32(0, uint32(trailer), 0, uid, gid, 0, uid, gid, uid, gid, next.sender, 100000, guestExecution), le64(q.context, 0)...)
-	p.write(m.rcvMsg, append(slices.Clone(next.data), tail[:trailer]...))
+	p.write(m.rcvMsg, append(next.data, tail[:trailer]...))
 	switch {
 	case uint64(len(next.aux)) <= m.auxRcvSize && len(next.aux) > 0:
 		p.write(m.auxRcv, next.aux)
@@ -549,7 +551,10 @@ func (p *Process) hand(q *port, m message) int64 {
 
 // receive takes the next message of a port or set, waiting for one if the caller will.
 func (p *Process) receive(m message) int64 {
-	q := p.receiver(m.rcvName)
+	q := p.ports[m.rcvName]
+	if q == nil {
+		return rcvInvalidName
+	}
 	if from := p.readable(q); from != nil {
 		return p.hand(from, m)
 	}
@@ -568,26 +573,24 @@ func (p *Process) receive(m message) int64 {
 
 // ---- telling libdispatch that a port has a message (EVFILT_MACHPORT) ----
 
-// watch is a kqueue's interest in a port or set.
-type watch struct {
-	event   kevent
-	enabled bool
-}
-
+// watchKey names a kqueue's interest in a port or set, which is kept as the event that asked for
+// it: disabled while that has EV_DISABLE.
 type watchKey struct{ ident, udata uint64 }
 
 func (p *Process) changeMachport(q *kqueue, c kevent) {
 	key := watchKey{c.ident, c.udata}
-	w := q.ports[key]
+	w, ok := q.ports[key]
 	switch {
 	case c.flags&evDelete != 0:
 		delete(q.ports, key)
 	case c.flags&evAdd != 0:
-		q.ports[key] = &watch{event: c, enabled: c.flags&evDisable == 0}
-	case w != nil && c.flags&evEnable != 0:
-		w.enabled = true
-	case w != nil && c.flags&evDisable != 0:
-		w.enabled = false
+		q.ports[key] = c
+	case ok && c.flags&evEnable != 0:
+		w.flags &^= evDisable
+		q.ports[key] = w
+	case ok && c.flags&evDisable != 0:
+		w.flags |= evDisable
+		q.ports[key] = w
 	}
 }
 
@@ -595,15 +598,10 @@ func (p *Process) changeMachport(q *kqueue, c kevent) {
 // directly. One that asked for the message itself is told it is too large for the room it gave,
 // which is none, and comes for it with a receive: libdispatch's own path for a large message.
 func (p *Process) watched(q *kqueue) {
-	keys := make([]watchKey, 0, len(q.ports))
-	for key := range q.ports {
-		keys = append(keys, key)
-	}
-	slices.SortFunc(keys, func(a, b watchKey) int { return int(a.ident) - int(b.ident) })
-	for _, key := range keys {
+	for _, key := range slices.SortedFunc(maps.Keys(q.ports), func(a, b watchKey) int { return cmp.Compare(a.ident, b.ident) }) {
 		w := q.ports[key]
 		target := p.ports[uint32(key.ident)]
-		if !w.enabled || target == nil {
+		if w.flags&evDisable != 0 || target == nil {
 			continue
 		}
 		from := p.readable(target)
@@ -613,23 +611,24 @@ func (p *Process) watched(q *kqueue) {
 		if slices.ContainsFunc(q.ready, func(e kevent) bool { return e.filter == filterMachport && e.ident == key.ident && e.udata == key.udata }) {
 			continue // told already, and not yet heard
 		}
-		event := w.event
+		event := w
 		event.flags &^= evAdd | evEnable | evVanished // what was asked for, not what happened
-		event.data = int64(from.name)
-		if event.fflags&machRcvMsg != 0 {
+		event.data, event.fflags = int64(from.name), 0
+		if w.fflags&machRcvMsg != 0 {
+			// Where the message would be is a page that is never written: the event only has to
+			// say that there is one.
 			if p.eventData == 0 {
 				p.eventData, _ = p.alloc(pageSize, allocation{name: "kevent data"})
 			}
 			event.fflags, event.ext = rcvTooLarge, [4]uint64{p.eventData, uint64(len(from.queue[0].data))}
-		} else {
-			event.fflags = 0
 		}
 		q.ready = append(q.ready, event)
 		switch {
-		case w.event.flags&evOneshot != 0:
+		case w.flags&evOneshot != 0:
 			delete(q.ports, key)
-		case w.event.flags&evDispatch != 0:
-			w.enabled = false
+		case w.flags&evDispatch != 0:
+			w.flags |= evDisable
+			q.ports[key] = w
 		}
 	}
 }

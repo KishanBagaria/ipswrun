@@ -150,6 +150,7 @@ const (
 	StopUnimplemented          // a system call or Mach trap the emulator has no handler for
 	StopTimeout                // the run's deadline passed while the guest was still executing
 	StopNoCache                // the restore image gave no dyld shared cache; Cause says why
+	StopIdle                   // every thread waits for a Mach message nothing in the process will send
 )
 
 // StopError reports why a guest could not run to completion.

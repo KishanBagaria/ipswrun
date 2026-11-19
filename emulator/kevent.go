@@ -89,9 +89,9 @@ func (k kevent) bytes() []byte {
 type kqueue struct {
 	id     uint64
 	timers map[uint64]*timer
-	users  map[uint64]kevent // events that happen when the guest says so
-	ports  map[watchKey]*watch
-	ready  []kevent // events that happened and have not been handed to a thread yet
+	users  map[uint64]kevent   // events that happen when the guest says so
+	ports  map[watchKey]kevent // the ports and sets it watches (see ports.go)
+	ready  []kevent            // events that happened and have not been handed to a thread yet
 
 	// Of a workloop: its request for a thread, whether that is waiting to be answered, the thread
 	// that answered the last one, and the turns given to threads that had not asked yet.
@@ -110,7 +110,7 @@ type timer struct {
 func (p *Process) kqueue(id uint64) *kqueue {
 	q := p.kqueues[id]
 	if q == nil {
-		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, ports: map[watchKey]*watch{}, woken: map[uint64]bool{}}
+		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, ports: map[watchKey]kevent{}, woken: map[uint64]bool{}}
 		p.kqueues[id] = q
 	}
 	return q

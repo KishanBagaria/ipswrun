@@ -292,34 +292,24 @@ func sysKqueue(p *Process, a []uint64) int64 {
 
 // selectNothing is select on descriptors nothing ever happens to: none is ready, once the time
 // the caller would wait has passed. It never passes for a caller that set none.
-func (p *Process) selectNothing(a []uint64, timed bool, timeout time.Duration) int64 {
+func (p *Process) selectNothing(a []uint64, nanoseconds uint64) int64 {
 	for _, set := range a[1:4] {
 		if set != 0 {
 			p.write(set, make([]byte, align(a[0], 32)/8))
 		}
 	}
-	switch {
-	case !timed:
-		p.wait(waitSignal, 0, time.Time{}, result{})
-	case timeout > 0:
-		p.wait(waitSleep, 0, time.Now().Add(timeout), result{})
+	if a[4] == 0 {
+		return sysSigsuspend(p, a)
+	}
+	if deadline := after(relative(p.u64(a[4]), p.u64(a[4]+8)*nanoseconds)); !deadline.IsZero() {
+		p.wait(waitSleep, 0, deadline, result{})
 	}
 	return 0
 }
 
-func sysSelect(p *Process, a []uint64) int64 { // the timeout is seconds and microseconds
-	if a[4] == 0 {
-		return p.selectNothing(a, false, 0)
-	}
-	return p.selectNothing(a, true, relative(p.u64(a[4]), uint64(p.u32(a[4]+8))*1000))
-}
-
-func sysPselect(p *Process, a []uint64) int64 { // and here nanoseconds
-	if a[4] == 0 {
-		return p.selectNothing(a, false, 0)
-	}
-	return p.selectNothing(a, true, relative(p.u64(a[4]), p.u64(a[4]+8)))
-}
+// The timeout of select is seconds and microseconds, that of pselect seconds and nanoseconds.
+func sysSelect(p *Process, a []uint64) int64  { return p.selectNothing(a, 1000) }
+func sysPselect(p *Process, a []uint64) int64 { return p.selectNothing(a, 1) }
 
 const ptDenyAttach = 31
 

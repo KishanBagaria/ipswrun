@@ -2,7 +2,6 @@ package emulator
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
 	"time"
 )
@@ -42,7 +41,7 @@ func init() {
 	}
 	machHandlers = map[string]handler{
 		"task_self": {0, constant(0x203)}, "thread_self": {0, machThreadSelf}, "host_self": {0, constant(hostPort)},
-		"reply_port": {0, machReplyPort}, "thread_get_special_reply_port": {0, machSpecialReplyPort},
+		"reply_port": {0, machNewReceive}, "thread_get_special_reply_port": {0, machSpecialReplyPort},
 		"vm_allocate": {4, machVMAllocate}, "vm_map": {6, machVMMap}, "vm_deallocate": {3, machVMDeallocate},
 		"vm_protect": {5, constant(0)}, "vm_purgable_control": {4, constant(0)},
 		"port_allocate": {3, machPortAllocate}, "port_construct": {4, machPortConstruct}, "port_deallocate": {2, machPortDeallocate},
@@ -53,7 +52,7 @@ func init() {
 		"task_dyld_process_info_notify_get": {2, constant(kernFailure)}, // nobody is watching
 		"timebase_info":                     {1, machTimebaseInfo}, "generate_activity_id": {3, machGenerateActivityID},
 		"host_create_mach_voucher": {4, portOut(3)}, "swtch_pri": {1, sysYield}, "swtch": {0, sysYield}, "thread_switch": {3, sysYield},
-		"mk_timer_create": {0, machTimerCreate}, "mk_timer_destroy": {1, machTimerDestroy}, "mk_timer_arm": {2, machTimerArm},
+		"mk_timer_create": {0, machNewReceive}, "mk_timer_destroy": {1, machTimerDestroy}, "mk_timer_arm": {2, machTimerArm},
 		"mk_timer_arm_leeway": {4, machTimerArmLeeway}, "mk_timer_cancel": {2, machTimerCancel}, "semaphore_signal": {1, machSemaphoreSignal},
 		"semaphore_signal_all": {1, machSemaphoreSignalAll}, "semaphore_wait": {1, machSemaphoreWait},
 		"semaphore_timedwait": {3, machSemaphoreTimedwait}, "semaphore_wait_signal": {2, machSemaphoreWaitSignal}, "pid_for_task": {2, machPidForTask},
@@ -176,8 +175,6 @@ func machMsg2(p *Process, a []uint64) int64 {
 		if count > 1 {
 			m.aux, m.auxRcv, m.auxSendSize, m.auxRcvSize = part(1)
 		}
-		p.note("  mach_msg2 vector of %d: message at %#x, %d to send, room for %d at %#x; beside it %d to send, room for %d at %#x",
-			count, m.msg, m.sendSize, m.rcvSize, m.rcvMsg, m.auxSendSize, m.auxRcvSize, m.auxRcv)
 	}
 	return p.doMsg(m)
 }
@@ -200,14 +197,13 @@ func (p *Process) doMsg(m message) int64 {
 // send delivers a message: to the queue of a port of the guest's own, or to the kernel, whose
 // answer is queued on the reply port at once.
 func (p *Process) send(m message) int64 {
-	if !m.inline {
-		h := p.read(m.msg, 24)
-		m.bits, m.remote, m.local, m.id = le.Uint32(h), le.Uint32(h[8:]), le.Uint32(h[12:]), le.Uint32(h[20:])
-	}
 	if m.sendSize < 24 || m.sendSize&3 != 0 {
 		return sendTooSmall // no header, or not a whole number of words
 	}
 	body := p.read(m.msg, m.sendSize)
+	if !m.inline {
+		m.bits, m.remote, m.local, m.id = le.Uint32(body), le.Uint32(body[8:]), le.Uint32(body[12:]), le.Uint32(body[20:])
+	}
 	if q := p.destination(m.remote); q != nil {
 		arrived, ok := p.carried(m, body)
 		if !ok {
@@ -238,15 +234,7 @@ func (p *Process) send(m message) int64 {
 		p.unknown[unknownMIG{m.id, m.remote, p.uc.reg(regLR)}]++ // symbolized only if the run fails
 		return sendInvalidDest
 	}
-	reply := routine(p, body)
-	if m.local == 0 {
-		return 0
-	}
-	bits := uint32(moveSendOnce << 8)
-	if reply.port {
-		bits |= bitsComplex // one port descriptor
-	}
-	p.post(p.receiver(m.local), machMessage{data: append(header(bits, uint32(24+len(reply.body)), m.local, m.id+100), reply.body...)})
+	p.answer(m, m.id+100, routine(p, body), 0)
 	return 0
 }
 
@@ -254,7 +242,7 @@ func (p *Process) send(m message) int64 {
 
 type migReply struct {
 	body []byte
-	port bool
+	port bool // it starts with port descriptors
 }
 
 var ndr = []byte{0, 0, 0, 0, 1, 0, 0, 0}
@@ -269,7 +257,23 @@ func migData(out []byte) migReply { return migReply{body: append(migCode(0).body
 
 // migPort is a reply moving one port right.
 func migPort(name uint32) migReply {
-	return migReply{body: append(le32(1, name, 0), 0, 0, 17, 0), port: true}
+	return migReply{body: append(le32(1), portDescriptor(name, moveSend)...), port: true}
+}
+
+// answer queues the reply to a message on the port its sender gave for one, if it gave one.
+func (p *Process) answer(m message, id uint32, reply migReply, sender uint32) {
+	to := p.ports[m.local]
+	if to == nil {
+		if m.local != 0 {
+			p.note("  no port %#x to answer on", m.local)
+		}
+		return
+	}
+	bits := uint32(moveSendOnce << 8)
+	if reply.port {
+		bits |= bitsComplex
+	}
+	p.enqueue(to, bits, id, reply.body, sender)
 }
 
 var migRoutines map[uint32]func(p *Process, body []byte) migReply
@@ -322,12 +326,13 @@ func migHostGetSpecialPort(p *Process, body []byte) migReply {
 
 // migMakeMemoryEntry (mach_make_memory_entry_64) names a stretch of memory with a port, by which
 // it can be mapped again: how large data is passed along without copying it into a message. The
-// entry is a copy made now, and a mapping of it a copy of that.
+// entry is a copy made now, and a mapping of it a copy of that. Rights to it are not counted, so
+// the copy is kept for as long as the process runs.
 func migMakeMemoryEntry(p *Process, body []byte) migReply {
 	size, offset := le.Uint64(body[48:]), le.Uint64(body[56:])
 	size = align(offset+size, pageSize) - offset&^(pageSize-1)
 	name := p.newPort()
-	p.entries[name] = slices.Clone(p.read(offset&^(pageSize-1), size))
+	p.entries[name] = p.read(offset&^(pageSize-1), size)
 	p.note("  mach_make_memory_entry(%#x, %#x) = %#x", offset, size, name)
 	return migReply{body: append(append(migPort(name).body, ndr...), le64(size)...), port: true}
 }

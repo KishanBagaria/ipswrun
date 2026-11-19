@@ -10,28 +10,16 @@ package emulator
 func xpcBody(bits uint32, raw []byte) (ports []uint32, payload []byte, ok bool) {
 	at := 24
 	if bits&bitsComplex != 0 {
-		if len(raw) < 28 {
+		at, ok = descriptors(raw, func(at int, kind byte) {
+			if kind == 0 {
+				ports = append(ports, le.Uint32(raw[at:]))
+			}
+		})
+		if !ok {
 			return nil, nil, false
 		}
-		count := le.Uint32(raw[24:])
-		at = 28
-		for range count {
-			if len(raw) < at+12 {
-				return nil, nil, false
-			}
-			switch raw[at+11] {
-			case 0:
-				ports = append(ports, le.Uint32(raw[at:]))
-				at += 12
-			default:
-				at += 16
-			}
-		}
 	}
-	if len(raw) < at {
-		return nil, nil, false
-	}
-	return ports, raw[at:], true
+	return ports, raw[at:], len(raw) >= 24
 }
 
 const (
@@ -83,31 +71,25 @@ func (p *Process) launchd(m message, raw []byte) bool {
 	case routine == routineCheckIn:
 		reply.set("port", xpcPort{xpcReceive, q.name})
 	default:
-		q.sends++
-		q.made++
+		p.transfer(q.name, makeSend)
 		reply.set("port", xpcPort{xpcSend, q.name})
 	}
 	// libxpc takes an answer only from launchd (root, pid 1, as the message's trailer says) and
 	// only if it names the process that asked and which of its executions.
 	reply.set("req_pid", uint64(guestPID)).set("rec_execcnt", uint64(guestExecution))
 	p.note("  to launchd, routine %d: %v, answered %v", routine, request, reply)
-	if m.local == 0 {
-		return true
-	}
 	body, rights := xpcEncode(reply)
-	bits := uint32(moveSendOnce << 8)
 	if len(rights) > 0 {
-		bits |= bitsComplex
 		descriptors := le32(uint32(len(rights)))
 		for _, right := range rights {
 			disposition := byte(moveSend)
 			if right.kind == xpcReceive {
 				disposition = moveReceive
 			}
-			descriptors = append(append(descriptors, le32(right.name, 0)...), 0, 0, disposition, 0)
+			descriptors = append(descriptors, portDescriptor(right.name, disposition)...)
 		}
 		body = append(descriptors, body...)
 	}
-	p.post(p.receiver(m.local), machMessage{data: append(header(bits, uint32(24+len(body)), m.local, xpcReply), body...), sender: launchdPID})
+	p.answer(m, xpcReply, migReply{body: body, port: len(rights) > 0}, launchdPID)
 	return true
 }
