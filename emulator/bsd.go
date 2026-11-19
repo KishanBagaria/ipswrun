@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"slices"
 	"strconv"
@@ -287,14 +288,63 @@ func sysGetentropy(p *Process, a []uint64) int64 {
 	return 0
 }
 
+// sysCsops is what the kernel knows of a process's code signature: its own, or that of another
+// process, which is how a daemon decides what a client may ask of it. Nothing here checks a
+// signature. What it says is taken at its word, as of code the kernel has found valid.
 func sysCsops(p *Process, a []uint64) int64 {
-	p.note("  csops op %d size %d", a[1], a[3])
-	if a[1] == 0 {
-		p.write(a[2], le32(0x20000005|2))
+	op, addr, size := a[1], a[2], a[3]
+	p.note("  csops pid %d op %d size %d", a[0], op, size)
+	about := p
+	if a[0] != 0 {
+		about = p.m.process(uint32(a[0]))
+	}
+	if about == nil {
+		return -eSRCH
+	}
+	// blob is how a string or a property list is returned: under a header of a magic number and
+	// the whole length, both big-endian. A caller with too little room gets the header, to come
+	// back with enough.
+	blob := func(magic uint32, data []byte) int64 {
+		header := binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, magic), uint32(8+len(data)))
+		if size < 8 {
+			return -eRANGE
+		}
+		if size < uint64(8+len(data)) {
+			p.write(addr, header)
+			return -eRANGE
+		}
+		p.write(addr, append(header, data...))
 		return 0
 	}
-	return -eINVAL // no entitlements, identity or cdhash to report
+	switch op {
+	case csOpsStatus:
+		p.write(addr, le32(0x20000005|2))
+		return 0
+	case csOpsEntitlements:
+		if about.entitlements == "" {
+			return 0
+		}
+		return blob(0xFADE7171, []byte(about.entitlements))
+	case csOpsEntitlementsDER:
+		if about.entitlementsDER == nil {
+			return -eNOENT
+		}
+		return blob(0xFADE7172, about.entitlementsDER)
+	case csOpsIdentity:
+		if about.identity == "" {
+			return -eNOENT
+		}
+		return blob(0, str(about.identity))
+	}
+	return -eINVAL // no hash or team to report
 }
+
+const (
+	csOpsStatus          = 0
+	csOpsEntitlements    = 7  // as a property list
+	csOpsIdentity        = 11 // the name the code was signed under
+	csOpsEntitlementsDER = 16 // as DER, which is what Security reads
+)
 
 // sysKqueue gives a descriptor that can be described and closed like any other. The events asked
 // of it never happen: only libdispatch's own kqueues, which have no descriptor, are emulated.

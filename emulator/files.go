@@ -27,6 +27,7 @@ const (
 	eINVAL    = 22
 	eNOTTY    = 25
 	eSPIPE    = 29
+	eRANGE    = 34
 	eAGAIN    = 35
 	eNOTSUP   = 45
 	eTIMEDOUT = 60
