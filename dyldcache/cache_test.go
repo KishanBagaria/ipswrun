@@ -92,8 +92,7 @@ func chained(version uint32, add uint64, starts ...uint16) []byte {
 	le.PutUint32(b[4:], PageSize)
 	le.PutUint32(b[8:], uint32(len(starts)))
 	le.PutUint64(b[16:], add)
-	b = append(b, u16s(starts...)...)
-	return append(b, make([]byte, 16)...) // the header is at least 40 bytes
+	return append(b, u16s(starts...)...)
 }
 
 type word struct {
@@ -230,7 +229,7 @@ func TestPageErrors(t *testing.T) {
 		"outside":   {nil, testBase + 3*PageSize, "outside cache"},
 		"version 1": {chained(1, 0, 0), testBase, "unsupported slide info v1"},
 		"version 4": {chained(4, 0, 0), testBase, "unsupported slide info v4"},
-		"short":     {chained(3, 0, 0)[:30], testBase, "truncated slide info"},
+		"short":     {chained(3, 0, 0)[:23], testBase, "truncated slide info"},
 		"starts":    {chained(3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)[:40], testBase, "truncated slide info"},
 		"page size": {func() []byte { b := chained(3, 0, 0); le.PutUint32(b[4:], 0); return b }(), testBase, "page size"},
 	} {

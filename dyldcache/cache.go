@@ -199,9 +199,10 @@ func (m *Mapping) slideInfo() (*slideInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	truncated := errors.New("truncated slide info")
 	u16s := func(off, n uint32) ([]uint16, error) {
 		if uint64(off)+uint64(n)*2 > uint64(len(d)) {
-			return nil, errors.New("truncated slide info")
+			return nil, truncated
 		}
 		out := make([]uint16, n)
 		for i := range out {
@@ -209,17 +210,25 @@ func (m *Mapping) slideInfo() (*slideInfo, error) {
 		}
 		return out, nil
 	}
-	if len(d) < 40 {
-		return nil, errors.New("truncated slide info")
+	if len(d) < 8 {
+		return nil, truncated
 	}
 	s := &slideInfo{version: le.Uint32(d), pageSize: le.Uint32(d[4:])}
+	// The header is 24 bytes in v3 and v5 and 40 in v2, and the info can end right after the
+	// starts it counts: a one-page v5 mapping's is 26 bytes.
 	switch s.version {
 	case 3, 5:
+		if len(d) < 24 {
+			return nil, truncated
+		}
 		s.add = le.Uint64(d[16:])
 		if s.starts, err = u16s(24, le.Uint32(d[8:])); err != nil {
 			return nil, err
 		}
 	case 2:
+		if len(d) < 40 {
+			return nil, truncated
+		}
 		s.mask, s.add = le.Uint64(d[24:]), le.Uint64(d[32:])
 		if s.starts, err = u16s(le.Uint32(d[8:]), le.Uint32(d[12:])); err != nil {
 			return nil, err
