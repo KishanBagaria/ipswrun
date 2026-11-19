@@ -53,24 +53,24 @@ const usage = "ipswrun [flags] <release> <guest executable> [guest arguments...]
 
 // checkArgs says what is wrong with the positional arguments, before anything is fetched for
 // them, or returns the releases the first one names.
-func checkArgs(known []release, args []string, current func() ([]release, error)) (selected []release, note error, err error) {
+func checkArgs(known []release, args []string, current, index func() ([]release, error)) (selected []release, note error, err error) {
 	if len(args) < 2 {
 		return nil, nil, fmt.Errorf("expected a release and a guest executable, got %d argument(s)", len(args))
 	}
-	// The guest first: a name may need Apple's feed, and a mistyped path needs nothing.
+	// The guest first: a name may need looking up, and a mistyped path needs nothing.
 	switch st, err := os.Stat(args[1]); {
 	case err != nil:
 		return nil, nil, fmt.Errorf("guest executable: %w", err)
 	case st.IsDir():
 		return nil, nil, fmt.Errorf("guest executable %s is a directory", args[1])
 	}
-	return selectReleases(known, args[0], current)
+	return selectReleases(known, args[0], current, index)
 }
 
 // feedNote says that Apple's feed could not be read, for a command that goes on without it.
 func feedNote(err error) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ipswrun: note: Apple's feed of the current release could not be read, so only the releases built in are known by name: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ipswrun: note: Apple's feed of the current release could not be read, so a release newer than those built in is not among the releases run: %v\n", err)
 	}
 }
 
@@ -356,8 +356,9 @@ func run() (int, error) {
 		fmt.Fprintln(os.Stderr, "usage: "+usage+`
        ipswrun --releases
        ipswrun --setup
-<release> is a macOS version (15.6.1, or 15 for every 15.x known by name), a build (24G90), latest,
-all, the https URL of any restore image, or several of these separated by commas.`)
+<release> is the version or build of any macOS release since 11 (15.2, 24C101), latest, all (the first
+and last release of each major version), a major version (15, for those of all under it), the https
+URL of any restore image, or several of these separated by commas.`)
 		flag.PrintDefaults()
 	}
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
@@ -373,11 +374,12 @@ all, the https URL of any restore image, or several of these separated by commas
 	reportPath := flag.String("report", "", "write a JSON summary of the run (build, cache UUID, exit code, transfer) to this file; {build} and {version} in it become the release's")
 	unicornDir := flag.String("unicorn", "", "directory the pinned libunicorn is kept in (default: the user cache directory)")
 	setup := flag.Bool("setup", false, "only fetch and verify libunicorn")
-	listReleases := flag.Bool("releases", false, "print the releases known by name (version, build, URL): those built in and the one Apple currently offers")
+	listReleases := flag.Bool("releases", false, "print the releases all stands for (version, build, URL): the first and last of each major version, and the one Apple currently offers")
 	flag.Parse()
 
 	known := parseReleases(releasesText)
 	current := func() ([]release, error) { return fetchCurrent(*device) }
+	index := func() ([]release, error) { return fetchIndex(*device) }
 	if *listReleases {
 		offered, err := current()
 		feedNote(err)
@@ -394,11 +396,11 @@ all, the https URL of any restore image, or several of these separated by commas
 			return 2, nil
 		}
 		var note, err error
-		if releases, note, err = checkArgs(known, flag.Args(), current); err == nil {
+		if releases, note, err = checkArgs(known, flag.Args(), current, index); err == nil {
 			feedNote(note)
 			err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath))
 		}
-		if errors.Is(err, errFeed) {
+		if errors.Is(err, errSource) {
 			return 0, err
 		}
 		if err != nil {
