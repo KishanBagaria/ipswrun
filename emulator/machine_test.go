@@ -15,15 +15,6 @@ func TestProcesses(t *testing.T) {
 			t.Fatal(err)
 		}
 		const out, msg, in_, far = dataAddr + 0x40, dataAddr + 0x100, dataAddr + 0x400, dataAddr + 0x4000
-		number := func(name string) int64 {
-			for n, candidate := range bsdNames {
-				if candidate == name {
-					return n
-				}
-			}
-			t.Fatalf("no system call named %s", name)
-			return 0
-		}
 		allocate := func(in *Process) uint32 {
 			in.trap(-16, 0x203, rightReceive, out)
 			return in.u32(out)
@@ -98,7 +89,7 @@ func TestProcesses(t *testing.T) {
 
 		// What a process's code signature says of it is told to whoever asks about it by pid: with
 		// too little room only how much is needed, as a length after a magic number.
-		csops := number("csops")
+		csops := number(t, "csops")
 		p.identity, p.entitlementsDER = "com.example.signed", []byte{0x70, 0x03, 0x02, 0x01, 0x01}
 		r, err := p.m.newProcess(p.exePath, p.exe)
 		if err != nil {
@@ -121,7 +112,7 @@ func TestProcesses(t *testing.T) {
 		}
 
 		// Memory with a name is one memory in every process that maps it.
-		open, truncate, mmap := number("shm_open"), number("ftruncate"), number("mmap")
+		open, truncate, mmap := number(t, "shm_open"), number(t, "ftruncate"), number(t, "mmap")
 		p.write(msg, str("com.example.shared"))
 		r.write(msg, str("com.example.shared"))
 		if _, carry, _ := r.trap(open, msg, 2); !carry {

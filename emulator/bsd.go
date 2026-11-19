@@ -349,10 +349,7 @@ const (
 // sysKqueue gives a descriptor that can be described and closed like any other. The events asked
 // of it never happen: only libdispatch's own kqueues, which have no descriptor, are emulated.
 func sysKqueue(p *Process, a []uint64) int64 {
-	n := p.nextFD
-	p.fds[n] = &fd{kind: dataFD}
-	p.nextFD++
-	return int64(n)
+	return int64(p.newFD(&fd{kind: dataFD}))
 }
 
 // selectNothing is select on descriptors nothing ever happens to: none is ready, once the time
@@ -470,7 +467,7 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 		// struct proc_bsdinfo: flags (64-bit), status (running), exit status, pid, parent; the
 		// user and group three times over; the name twice; then nothing until when it started.
 		info := le32(0x10, 2, 0, about.pid, launchdPID, about.uid, about.gid, about.uid, about.gid, about.uid, about.gid, 0)
-		info = append(append(info, fixed(about.label, 16)...), fixed(about.label, 32)...)
+		info = append(append(info, fixed(about.name, 16)...), fixed(about.name, 32)...)
 		info = append(info, le32(uint32(len(about.fds)), about.pid, 0, 0, 0, 0)...)
 		p.write(buf, append(info, le64(fixedMtime, 0)...))
 		return 136

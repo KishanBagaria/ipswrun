@@ -79,27 +79,26 @@ type kernelObject interface {
 
 // kernelRight gives the process a send right to a new port that stands for an object.
 func (p *Process) kernelRight(object kernelObject) uint32 {
-	return p.giveOut(carried{port: &port{m: p.m, object: object, sends: 1}, disposition: moveSend}, nil)
+	return p.sendRight(&port{m: p.m, object: object})
 }
 
 // migObject is a reply that hands over a right to a new object.
 func (p *Process) migObject(object kernelObject) migReply { return migPort(p.kernelRight(object)) }
 
-// ioMain is the port every search starts from.
-type ioMain struct{ m *Machine }
+// ioMain is what every search starts from.
+type ioMain struct{}
 
 func (ioMain) released() {}
 
 // migHostGetIOMain gives the process the port IOKit's searches are sent to.
 func migHostGetIOMain(p *Process, _ []byte) migReply {
-	if p.m.ioMain == nil {
-		p.m.ioMain = &port{m: p.m, object: ioMain{p.m}}
+	if p.m.ioMain == nil || p.m.ioMain.dead { // nobody has had it, or everybody has let go of it
+		p.m.ioMain = &port{m: p.m, object: ioMain{}}
 	}
-	p.m.ioMain.sends++
-	return migPort(p.giveOut(carried{port: p.m.ioMain, disposition: moveSend}, nil))
+	return migPort(p.sendRight(p.m.ioMain))
 }
 
-func (o ioMain) request(p *Process, id uint32, body []byte) (migReply, bool) {
+func (ioMain) request(p *Process, id uint32, body []byte) (migReply, bool) {
 	switch id {
 	case 2877: // io_server_version
 		return migData(le64(ioServerVersion)), true
@@ -109,7 +108,7 @@ func (o ioMain) request(p *Process, id uint32, body []byte) (migReply, bool) {
 		if r.failed {
 			return migCode(migBadArguments), true
 		}
-		found := o.m.matching(p, matching)
+		found := p.m.matching(p, matching)
 		if id == 2881 {
 			return p.migObject(&ioIterator{services: found}), true
 		}

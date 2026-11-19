@@ -6,6 +6,7 @@ import (
 	"hash/crc32"
 	"os"
 	pathpkg "path"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -136,8 +137,12 @@ func canonical(path string) string {
 const (
 	passwdFile       = "/private/etc/passwd"
 	masterPasswdFile = "/private/etc/master.passwd"
-	passwd           = "root:*:0:0:System Administrator:/var/root:/bin/sh\nemu:*:501:20:emu:" + GuestHome + ":/bin/zsh\n"
-	masterPasswd     = "root:*:0:0::0:0:System Administrator:/var/root:/bin/sh\nemu:*:501:20::0:0:emu:" + GuestHome + ":/bin/zsh\n"
+)
+
+var (
+	userID       = strconv.Itoa(guestUID) + ":" + strconv.Itoa(guestGID)
+	passwd       = "root:*:0:0:System Administrator:/var/root:/bin/sh\nemu:*:" + userID + ":emu:" + GuestHome + ":/bin/zsh\n"
+	masterPasswd = "root:*:0:0::0:0:System Administrator:/var/root:/bin/sh\nemu:*:" + userID + "::0:0:emu:" + GuestHome + ":/bin/zsh\n"
 )
 
 func crcInode(path string) uint64 { return uint64(crc32.ChecksumIEEE([]byte(path)) & 0xFFFFFF) }
@@ -286,7 +291,7 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 		p.note("  ENOENT open %s", path)
 		return -eNOENT
 	}
-	n := p.nextFD
+	opened := t.fd()
 	switch t.kind {
 	case hostFD:
 		if t.path == GuestExe && flags&(3|0x200|0x400) != 0 { // the user's file: not written, created or truncated
@@ -306,13 +311,19 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 			p.note("  open %s failed: %v", path, err)
 			return hostErrno(err)
 		}
-		p.fds[n] = &fd{kind: hostFD, host: h, path: t.path}
-	default:
-		p.fds[n] = t.fd()
+		opened = &fd{kind: hostFD, host: h, path: t.path}
 	}
-	p.nextFD++
+	n := p.newFD(opened)
 	p.note("  open %s -> %d", path, n)
 	return int64(n)
+}
+
+// newFD gives a descriptor the next number.
+func (p *Process) newFD(f *fd) uint64 {
+	n := p.nextFD
+	p.nextFD++
+	p.fds[n] = f
+	return n
 }
 
 // at resolves a path argument relative to a directory descriptor.

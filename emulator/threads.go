@@ -308,12 +308,12 @@ func sysYield(p *Process, a []uint64) int64 {
 			p.yield = true
 		}
 	}
-	for _, q := range p.ownedPorts() {
-		p.yield = p.yield || !q.due.IsZero()
+	for _, r := range p.names {
+		p.yield = p.yield || r.receive && !r.port.due.IsZero()
 	}
 	// Another process may be able to run, and this one may be waiting for what it does.
-	for _, other := range p.m.live() {
-		p.yield = p.yield || other != p && slices.ContainsFunc(other.threads, func(t *thread) bool { return t.state == runnable })
+	for _, other := range p.m.procs {
+		p.yield = p.yield || other != p && !other.exited && slices.ContainsFunc(other.threads, func(t *thread) bool { return t.state == runnable })
 	}
 	return 0
 }

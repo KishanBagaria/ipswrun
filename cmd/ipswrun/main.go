@@ -120,7 +120,7 @@ func parseMounts(releases int, values []string) (mounts []emulator.Mount, err er
 }
 
 // parseDaemons reads each --daemon or --agent as <service>[,<service>...]=<executable>[ <argument>...].
-func parseDaemons(flag string, values []string, root bool) (daemons []emulator.Daemon, err error) {
+func parseDaemons(flag string, values []string) (daemons []emulator.Guest, err error) {
 	for _, value := range values {
 		names, command, ok := strings.Cut(value, "=")
 		words := strings.Fields(command)
@@ -130,7 +130,7 @@ func parseDaemons(flag string, values []string, root bool) (daemons []emulator.D
 		if err := checkExecutable(words[0]); err != nil {
 			return nil, fmt.Errorf("--%s %s: %w", flag, value, err)
 		}
-		daemons = append(daemons, emulator.Daemon{Services: strings.Split(names, ","), Executable: words[0], Args: words[1:], Root: root})
+		daemons = append(daemons, emulator.Guest{Services: strings.Split(names, ","), Executable: words[0], Args: words[1:], Root: flag == "daemon"})
 	}
 	return daemons, nil
 }
@@ -243,7 +243,7 @@ type options struct {
 	guest                     string
 	args, env, system         []string
 	services                  []string
-	daemons                   []emulator.Daemon
+	daemons                   []emulator.Guest
 	mounts                    []emulator.Mount // the host side may contain {build} and {version}
 	stream, trace, showStatus bool
 	missing                   bool
@@ -481,7 +481,7 @@ URL of any restore image, or several of these separated by commas.`)
 	// Nothing is fetched for a command line that cannot run. --setup takes no arguments.
 	var releases []release
 	var mounts []emulator.Mount
-	var daemons []emulator.Daemon
+	var daemons []emulator.Guest
 	if !*setup {
 		if flag.NArg() == 0 {
 			flag.Usage()
@@ -493,13 +493,16 @@ URL of any restore image, or several of these separated by commas.`)
 			if err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath)); err == nil {
 				mounts, err = parseMounts(len(releases), mountValues)
 			}
-			if err == nil {
-				daemons, err = parseDaemons("agent", agentValues, false)
-			}
-			if err == nil {
-				var asRoot []emulator.Daemon
-				asRoot, err = parseDaemons("daemon", daemonValues, true)
-				daemons = append(daemons, asRoot...)
+			for _, given := range []struct {
+				flag   string
+				values list
+			}{{"agent", agentValues}, {"daemon", daemonValues}} {
+				if err != nil {
+					break
+				}
+				var more []emulator.Guest
+				more, err = parseDaemons(given.flag, given.values)
+				daemons = append(daemons, more...)
 			}
 		}
 		if errors.Is(err, errSource) {

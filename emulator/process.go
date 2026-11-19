@@ -19,6 +19,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -198,7 +199,8 @@ type Process struct {
 	pid     uint32
 	uid     uint32 // the user it runs as, and its group
 	gid     uint32
-	label   string // what it is called in traces and diagnostics: the name of its executable
+	name    string // of its executable, which is what the process is called
+	label   string // what it is called in traces and diagnostics: its name, with its pid if another has the name
 	uc      *engine
 	cache   *dyldcache.Cache
 	dyld    []byte
@@ -228,7 +230,6 @@ type Process struct {
 	fault     string
 	faultKind StopKind // of the stop that set fault, carried out of the hook it happened in
 	resume    bool
-	deadline  time.Time
 
 	// Threads: see threads.go.
 	threads     []*thread
@@ -336,7 +337,7 @@ func guard(err *error) {
 // load.
 func (m *Machine) newProcess(executable string, exe []byte) (p *Process, err error) {
 	cfg := m.cfg
-	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: guestUID, gid: guestGID, label: filepath.Base(executable), mounts: m.mounts, cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
+	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: guestUID, gid: guestGID, name: filepath.Base(executable), label: filepath.Base(executable), mounts: m.mounts, cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
 		system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
 		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},
@@ -935,14 +936,19 @@ func (p *Process) load(argv, env []string) error {
 }
 
 // step runs the thread that has the turn until it gives it up, the process exits, or the run
-// has to stop.
-func (p *Process) step() {
+// has to stop. False is a run that is over: the guest it was for has exited, and this process
+// used up the time the others had left.
+func (p *Process) step() bool {
 	// One uninterrupted emu_start per stretch: resuming after Unicorn's own timeout fires is not
 	// reliable, so the timeout is only ever the overall deadline and hitting it is fatal, whatever
 	// else happened in that stretch. Stops requested from inside a hook (exit, an emulated
 	// instruction) are safe to resume from.
 	p.resume = false
-	left := max(time.Until(p.m.deadline).Microseconds(), 1)
+	limit, settling := p.m.deadline, p.m.procs[0].exited
+	if settling && p.m.settling.Before(limit) {
+		limit = p.m.settling
+	}
+	left := max(time.Until(limit).Microseconds(), 1)
 	timedOut, err := p.uc.start(p.current.pc, 0, uint64(left))
 	pc := p.uc.reg(regPC)
 	if err != nil {
@@ -951,6 +957,9 @@ func (p *Process) step() {
 			reason = "no hook reported a cause"
 		}
 		stopf("%v: %s at %s lr %s", err, reason, p.where(pc), p.where(p.uc.reg(regLR)))
+	}
+	if timedOut && settling {
+		return false
 	}
 	if timedOut {
 		stopKind(StopTimeout, "timed out at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
@@ -962,6 +971,7 @@ func (p *Process) step() {
 		stopf("emulation stopped without a cause at %s lr %s", p.where(pc), p.where(p.uc.reg(regLR)))
 	}
 	p.current.pc = pc
+	return true
 }
 
 // ---- traps ----
@@ -1059,10 +1069,10 @@ func (p *Process) machdep() {
 func (p *Process) note(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	if len(p.threads) > 1 {
-		s = fmt.Sprintf("[%d] %s", p.current.id, s)
+		s = "[" + strconv.Itoa(p.current.id) + "] " + s
 	}
 	if p.m != nil && len(p.m.procs) > 1 {
-		s = fmt.Sprintf("[%s] %s", p.label, s)
+		s = "[" + p.label + "] " + s
 	}
 	p.log = append(p.log, s)
 	if len(p.log) > 400 {

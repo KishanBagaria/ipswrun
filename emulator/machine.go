@@ -26,12 +26,11 @@ type Machine struct {
 	ioMain   *port // what IOKit's searches are sent to, once a process has asked for it
 	deadline time.Time
 	settling time.Time // once the main guest has exited: when the daemons are no longer waited for
-	done     bool      // the run is over
 }
 
 // Guest is one program to run as a process.
 type Guest struct {
-	Executable string   // host path of the Mach-O (arm64, linked against the cache)
+	Executable string   // host path of the Mach-O (arm64, linked against the cache); for RunBuild, with SystemPrefix its path in the build
 	Image      []byte   // the Mach-O itself, if it is not a file of the host's: Executable is then only its name
 	Args       []string // after argv[0]
 	Env        []string // its whole environment
@@ -114,23 +113,30 @@ func (m *Machine) Close() {
 func (m *Machine) Run(timeout time.Duration) (err error) {
 	defer guard(&err)
 	m.deadline = time.Now().Add(timeout)
-	main := m.procs[0]
-	m.running = main
-	for !m.done {
+	m.running = m.procs[0]
+	for {
 		p := m.running
-		p.step()
-		if p.exited {
-			p.note("exited with status %d", p.exitCode)
-			p.reap()
-			if p == main {
-				m.settling = time.Now().Add(settleTime)
-			}
+		if !p.step() {
+			return nil
 		}
-		if p.exited || p.reschedule() {
-			m.schedule()
+		if p.exited {
+			m.exit(p, fmt.Sprintf("with status %d", p.exitCode))
+		}
+		if (p.exited || p.reschedule()) && !m.schedule() {
+			return nil
 		}
 	}
-	return nil
+}
+
+// exit is what follows a process's end, however it came to it: its rights end with it, and if
+// it is the guest the run is for, the others have only a while longer.
+func (m *Machine) exit(p *Process, how string) {
+	p.exited = true
+	p.note("exited %s", how)
+	p.reap()
+	if p == m.procs[0] {
+		m.settling = time.Now().Add(settleTime)
+	}
 }
 
 // settleTime is how long the daemons may go on after the guest has exited. What a daemon was
@@ -164,26 +170,28 @@ func (m *Machine) live() []*Process {
 // run in its process, else in the processes after it, and last itself again.
 func (m *Machine) next() (*Process, *thread) {
 	at := slices.Index(m.procs, m.running)
-	for k := 0; k <= len(m.procs); k++ {
+	for k := range m.procs {
 		p := m.procs[(at+k)%len(m.procs)]
 		if p.exited {
 			continue
 		}
 		current := slices.Index(p.threads, p.current)
 		for i := range p.threads {
-			t := p.threads[(current+1+i)%len(p.threads)]
-			// The running thread is the last to be asked, after every other process.
-			if t.state == runnable && (p == m.running && t == p.current) == (k == len(m.procs)) {
+			if t := p.threads[(current+1+i)%len(p.threads)]; t.state == runnable && (p != m.running || t != p.current) {
 				return p, t
 			}
 		}
+	}
+	if p := m.running; !p.exited && p.current.state == runnable {
+		return p, p.current
 	}
 	return nil, nil
 }
 
 // schedule is called between stretches of emulation once a thread gave up its turn: it brings in
 // the next thread that can run, of any process, sleeping until the nearest deadline if none can.
-func (m *Machine) schedule() {
+// False is the end of the run: the guest has exited, and the others are at rest or out of time.
+func (m *Machine) schedule() bool {
 	m.running.yield = false
 	main := m.procs[0]
 	for {
@@ -194,52 +202,47 @@ func (m *Machine) schedule() {
 				until = t
 			}
 		}
-		for _, p := range m.live() {
+		live, stuck := false, false
+		for _, p := range m.procs {
+			if p.exited {
+				continue
+			}
 			sooner(p.serve(now))
+			ended := true
 			for _, t := range p.threads {
-				if t.state != waiting || t.deadline.IsZero() {
+				ended = ended && t.state == dead
+				if t.state != waiting {
 					continue
 				}
-				if !t.deadline.After(now) {
+				switch {
+				case t.deadline.IsZero():
+					// A wait for a message or a signal may go on for good: that is a service with no
+					// client. Any other wait with no end is one that nothing can end.
+					stuck = stuck || t.kind != waitPort && t.kind != waitSignal
+				case !t.deadline.After(now):
 					late := t.late
 					t.answer = &late
 					t.wake()
-				} else {
+				default:
 					sooner(t.deadline)
 				}
 			}
-			if !slices.ContainsFunc(p.threads, func(t *thread) bool { return t.state != dead }) {
-				p.exited = true // the last thread ended: the process does, as if main had returned 0
-				p.note("exited with its last thread")
-				p.reap()
-				if p == main {
-					m.settling = now.Add(settleTime)
-				}
+			if ended {
+				m.exit(p, "with its last thread") // as if main had returned 0
 			}
+			live = live || !p.exited
 		}
-		// The guest has exited: the run is over once the daemons are at rest, or have had their time.
-		if main.exited && (len(m.live()) == 0 || !now.Before(m.settling)) {
-			m.done = true
-			return
+		if main.exited && (!live || !now.Before(m.settling)) {
+			return false
 		}
 		if p, t := m.next(); t != nil {
 			p.switchTo(t)
 			m.running = p
-			return
-		}
-		if main.exited && (until.IsZero() || until.After(m.settling)) {
-			m.done = true
-			return
-		}
-		// Nothing can run. A thread that waits for a message or a signal may wait for good: that
-		// is a service with no client. Any other wait with no end is one that nothing can end.
-		stuck := false
-		for _, p := range m.live() {
-			stuck = stuck || slices.ContainsFunc(p.threads, func(t *thread) bool {
-				return t.state == waiting && t.kind != waitPort && t.kind != waitSignal
-			})
+			return true
 		}
 		switch {
+		case main.exited && (until.IsZero() || until.After(m.settling)):
+			return false
 		case until.IsZero() && !stuck:
 			stopKind(StopIdle, "nothing left to run: every thread waits for a Mach message or for work, and nothing here will send one. A service waiting for a client ends this way")
 		case until.IsZero():
