@@ -1,0 +1,7 @@
+{
+  "build": "20B29",
+  "cache_uuid": "5B214DF8-6286-3F23-9467-D8050EA7AF75",
+  "exit_code": 0,
+  "output": "classes at start 2968, images 143\nNSObject: 251 methods, 96 class methods, 1 ivars, 14 properties, 1 protocols, depth 1, size 8, image libobjc.A.dylib\nNSString: 261 methods, 40 class methods, 0 ivars, 8 properties, 5 protocols, depth 2, size 8, image Foundation\nNSMutableDictionary: 39 methods, 2 class methods, 0 ivars, 0 properties, 0 protocols, depth 3, size 8, image CoreFoundation\nNSURLSession: 54 methods, 15 class methods, 17 ivars, 12 properties, 2 protocols, depth 2, size 136, image CFNetwork\nIMCore: loaded, 148 classes: IMTranscriptEffectHelper, IMCloudKitSyncState, IMItemsController\nIMTranscriptEffectHelper: 0 methods, 14 class methods, 0 ivars, 0 properties, 0 protocols, depth 2, size 8, image IMCore\nIMCloudKitSyncState: 31 methods, 1 class methods, 12 ivars, 21 properties, 0 protocols, depth 2, size 88, image IMCore\nclasses now 18478, images 399\nencoding @24@0:8@16\nsignature 4 args, returns {_NSRange=QQ}\ndynamic RUNTIME DynamicProbe\nhello invocation from runtime\nNSSecureCoding 1, NSString conforms 1\n",
+  "version": "11.0.1"
+}

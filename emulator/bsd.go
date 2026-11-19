@@ -30,10 +30,13 @@ func init() {
 		"guarded_write_np": {4, sysGuardedWrite}, "guarded_pwrite_np": {5, sysGuardedPwrite}, "close": {1, sysClose},
 		"read": {3, sysRead}, "pread": {4, sysPread}, "write": {3, sysWrite}, "pwrite": {4, sysPwrite}, "lseek": {3, sysLseek},
 		"ftruncate": {2, sysFtruncate}, "fsync": {1, constant(0)}, "access": {2, sysAccess}, "unlink": {1, sysUnlink},
-		"mkdir": {2, sysMkdir}, "rename": {2, sysRename}, "readlink": {3, constant(-eINVAL)}, "fcntl": {3, sysFcntl}, "dup": {1, sysDup},
-		"ioctl": {3, constant(-eNOTTY)}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysStatfs64},
-		"getattrlist": {5, sysGetattrlist}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen},
-		"getfsstat64": {3, constant(0)}, "getdirentries64": {4, constant(0)},
+		"mkdir": {2, sysMkdir}, "rename": {2, sysRename}, "readlink": {3, sysReadlink}, "readlinkat": {4, sysReadlinkat},
+		"mkdirat": {3, sysMkdirat}, "rmdir": {1, sysRmdir}, "unlinkat": {3, sysUnlinkat}, "renameat": {4, sysRenameat},
+		"renameatx_np": {5, sysRenameatx}, "faccessat": {4, sysFaccessat}, "truncate": {2, sysTruncate}, "fcntl": {3, sysFcntl}, "dup": {1, sysDup},
+		"ioctl": {3, constant(-eNOTTY)}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
+		"getattrlist": {5, sysGetattrlist}, "getattrlistat": {6, sysGetattrlistat}, "fgetattrlist": {5, sysFgetattrlist},
+		"getattrlistbulk": {5, sysGetattrlistbulk}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen},
+		"getfsstat64": {3, constant(0)}, "pathconf": {2, sysPathconf}, "fpathconf": {2, sysPathconf}, "getdirentries64": {4, sysGetdirentries64},
 		// memory
 		"mmap": {6, sysMmap}, "munmap": {2, sysMunmap}, "mprotect": {3, constant(0)}, "madvise": {3, constant(0)},
 		"mremap_encrypted": {0, constant(0)}, "shared_region_check_np": {1, sysSharedRegionCheck},
@@ -60,7 +63,7 @@ func init() {
 
 // trivial are more calls answered with a constant (negative: errno) and no side effects.
 var trivial = map[string]int64{
-	"objc_bp_assist_cfg_np": 0, "work_interval_ctl": -eNOTSUP, "memorystatus_control": 0, "proc_rlimit_control": 0,
+	"objc_bp_assist_cfg_np": 0, "iopolicysys": 0, "work_interval_ctl": -eNOTSUP, "memorystatus_control": 0, "proc_rlimit_control": 0,
 	"thread_selfusage": 0, "crossarch_trap": -eNOTSUP, "__semwait_signal": 0, "kevent_qos": 0, "kevent_id": 0, "kevent64": 0, "kevent": 0,
 	"guarded_kqueue_np": 100, "kqueue": 100, "kqueue_workloop_ctl": 0, "necp_open": -eNOSYS, "socket": -eACCES, "umask": 0o22,
 	"audit_session_self": 0, "getaudit_addr": -eNOSYS, "coalition_info": -eNOSYS, "persona": -eNOSYS,

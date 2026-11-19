@@ -193,7 +193,8 @@ type Process struct {
 	cacheDir   string
 	cachePaths map[string]dyldcache.File
 	inodes     map[string]uint64
-	slide      uint64 // of the shared region, once dyld maps the cache into it
+	seen       map[fileID]string // every file the guest has looked at, for fsgetpath
+	slide      uint64            // of the shared region, once dyld maps the cache into it
 	slideSet   bool
 	imageInfo  [2]uint64 // address and size of dyld's __all_image_info, for TASK_DYLD_INFO
 }
@@ -237,7 +238,7 @@ func New(cfg Config) (p *Process, err error) {
 	p = &Process{cache: cfg.Cache, dyld: dyld, home: home, runner: runner, runnerPath: cfg.Runner, system: cfg.System, os: cfg.OS, trace: cfg.Trace,
 		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]struct{}{},
 		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
-		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}}
+		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
 	for suffix, f := range cfg.Cache.Files {
 		p.cachePaths[cfg.CacheDir+"/"+CacheName+suffix] = f
 	}
@@ -640,11 +641,10 @@ func (p *Process) Diagnostics() string {
 			out = append(out, "  guest stderr: "+l)
 		}
 	}
-	var frames []string
+	out = append(out, "  backtrace (cache addresses):")
 	for _, a := range p.backtrace() {
-		frames = append(frames, fmt.Sprintf("%#x", a-p.slide))
+		out = append(out, "    "+p.where(a))
 	}
-	out = append(out, "  backtrace (cache addresses): "+strings.Join(frames, " "))
 	var unknown []string
 	for u := range p.unknown {
 		unknown = append(unknown, fmt.Sprintf("  unhandled: mig %d port %#x from %s", u.id, u.port, p.where(u.lr)))

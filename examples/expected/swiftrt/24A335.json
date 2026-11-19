@@ -1,0 +1,7 @@
+{
+  "build": "24A335",
+  "cache_uuid": "D997B0E9-E31B-35FE-B129-3171B279B087",
+  "exit_code": 0,
+  "output": "areas [\"3.142\", \"6.000\"]\ndynamic cast 1 Circle\ntree [1, 3, 4, 5, 9]\ndeinit after 10\ncaught tooBig(7)\nstring 16 20 41 NAÏVE CAFÉ 👩‍👩‍👧 日本語 4\nmirror [\"w=1.0\", \"h=2.0\"]\nset 100 dict 14\nsort [0, 1, 2, 3, 4] lazy 78\njson {\"extra\":{\"x\":1},\"name\":\"d\",\"shapes\":[{\"r\":2}],\"tags\":[\"a\",\"b\"],\"when\":\"2023-11-14T22:13:20Z\"}\ndecoded 2.0 1700000000.0 [\"x\": 1]\nplist [\"a\", \"b\"]\nbridge 6 23\nmeasure 3000.0\nfile true\n",
+  "version": "15.0"
+}

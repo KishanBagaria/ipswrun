@@ -1,0 +1,7 @@
+{
+  "build": "24G90",
+  "cache_uuid": "4C1223E5-CACE-3982-A003-6110A7A8A25C",
+  "exit_code": 0,
+  "output": "classes at start 6222, images 304\nNSObject: 280 methods, 112 class methods, 1 ivars, 22 properties, 3 protocols, depth 1, size 8, image libobjc.A.dylib\nNSString: 283 methods, 46 class methods, 0 ivars, 9 properties, 5 protocols, depth 2, size 8, image Foundation\nNSMutableDictionary: 63 methods, 3 class methods, 0 ivars, 0 properties, 0 protocols, depth 3, size 8, image CoreFoundation\nNSURLSession: 67 methods, 16 class methods, 22 ivars, 13 properties, 2 protocols, depth 2, size 160, image CFNetwork\nIMCore: loaded, 224 classes: IMTranscriptEffectHelper, IMSWHighlightCenterController, IMChatContext\nIMTranscriptEffectHelper: 0 methods, 14 class methods, 0 ivars, 0 properties, 0 protocols, depth 2, size 8, image IMCore\nIMSWHighlightCenterController: 9 methods, 2 class methods, 2 ivars, 6 properties, 1 protocols, depth 2, size 24, image IMCore\nclasses now 39000, images 665\nencoding @24@0:8@16\nsignature 4 args, returns {_NSRange=QQ}\ndynamic RUNTIME DynamicProbe\nhello invocation from runtime\nNSSecureCoding 1, NSString conforms 1\n",
+  "version": "15.6.1"
+}

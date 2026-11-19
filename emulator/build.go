@@ -22,8 +22,10 @@ var BaseEnv = []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "Ma
 	"CFFIXED_USER_HOME=" + GuestHome, "TMPDIR=" + GuestHome + "/tmp/"}
 
 // DefaultSystem is what a guest may read from the build's system volume unless told otherwise:
-// the feature flags and the system version.
-var DefaultSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/CoreServices/SystemVersion.plist"}
+// the feature flags, the system version, ICU's data (locales, calendars, time zones) and the
+// Objective-C runtime's block trampolines, which are not in the shared cache.
+var DefaultSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/CoreServices/SystemVersion.plist", "/usr/share/icu/",
+	"/usr/lib/libobjc-trampolines.dylib"}
 
 // Run describes one guest execution against a build.
 type Run struct {

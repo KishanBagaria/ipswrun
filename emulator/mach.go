@@ -227,6 +227,7 @@ func init() {
 		3410: ok,        // task_set_special_port
 		3418: freshPort, // semaphore_create
 		4811: migVMMap,
+		4813: migVMRemap,
 		8000: ok, // task_restartable_ranges_register
 		8001: ok,
 	}
@@ -250,6 +251,26 @@ func migVMMap(p *Process, body []byte) migReply { // mach_vm_map
 	}
 	p.note("  mach_vm_map(%#x, %#x, flags %#x) = %#x", addr, size, flags, start)
 	return migData(le64(start))
+}
+
+// migVMRemap (mach_vm_remap) gives the caller a second mapping of file-backed memory. It is a
+// copy made now, which is the same thing as long as neither mapping is written afterwards: true
+// of code, which is what gets remapped (the Objective-C runtime's block trampolines).
+func migVMRemap(p *Process, body []byte) migReply {
+	addr, size, mask, flags := le.Uint64(body[48:]), le.Uint64(body[56:]), le.Uint64(body[64:]), uint64(le.Uint32(body[72:]))
+	source, copied := le.Uint64(body[76:]), le.Uint32(body[84:]) != 0
+	r := p.findRegion(source)
+	if r == nil || r.end < source+size || r.kind == zeroRegion && !copied {
+		p.note("  mach_vm_remap of %#x size %#x: not file-backed memory", source, size)
+		return migCode(kernInvalidArg)
+	}
+	start, ok := p.alloc(size, allocation{addr: addr, fixed: flags&1 == 0, mask: mask, kind: fileRegion, data: p.read(source, size),
+		name: "vm_remap:" + r.name, keepOther: flags&0x4000 == 0})
+	if !ok {
+		return migCode(kernNoSpace)
+	}
+	p.note("  mach_vm_remap(%#x, %#x) = %#x", source, size, start)
+	return migData(append(le64(start), le32(5, 7)...)) // current and maximum protection
 }
 
 func migClockGetTime(*Process, []byte) migReply {

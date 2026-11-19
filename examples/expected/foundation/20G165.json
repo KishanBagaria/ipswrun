@@ -1,0 +1,7 @@
+{
+  "build": "20G165",
+  "cache_uuid": "5F50D953-A228-3416-A982-9FDE102DB036",
+  "exit_code": 0,
+  "output": "os 11.6.0\nargs 1 home /Users/emu\ndict 1000 last key999\njson {\"a\":[1,2.5,\"three\",null],\"b\":{\"c\":true}}\njson round trip 1\nplist 113 bytes, date 86400\ndate 2023-11-14T22:13:20Z\ncalendar year 1970 weekday 5\nregex 2 matches\nnumber 1.234.567,891\nurl host example.com port 8443 path /a b/c items 2\nbase64 aMOpbGxvIHfDtnJsZA== upper STRASSE\nfiles ok 1 read 21 listing a.json,note.txt size 21\nbuild 20G165\nuuid length 36\n",
+  "version": "11.6"
+}
