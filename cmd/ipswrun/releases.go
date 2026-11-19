@@ -144,13 +144,6 @@ func onApple(raw string) bool {
 	return strings.HasSuffix(host, ".apple.com") || strings.HasSuffix(host, ".cdn-apple.com")
 }
 
-type statusError struct {
-	url, status string
-	code        int
-}
-
-func (e *statusError) Error() string { return e.url + " answered " + e.status }
-
 func get(from string) ([]byte, error) {
 	client := http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(from)
@@ -159,7 +152,7 @@ func get(from string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, &statusError{from, resp.Status, resp.StatusCode}
+		return nil, fmt.Errorf("%s answered %s", from, resp.Status)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 }
@@ -176,10 +169,6 @@ func fetchCurrent(device string) ([]release, error) {
 // fetchIndex asks the index for every release of device.
 func fetchIndex(device string) ([]release, error) {
 	data, err := get(fmt.Sprintf(indexURL, url.PathEscape(device)))
-	var status *statusError
-	if errors.As(err, &status) && status.code == http.StatusNotFound {
-		return nil, fmt.Errorf("it has no Mac model %q, the --device", device)
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -222,59 +211,58 @@ func selectReleases(known []release, selector string, current, index func() ([]r
 	for _, part := range strings.Split(selector, ",") {
 		exactly := func(r release) bool { return part == r.Version || strings.EqualFold(part, r.Build) }
 		under := func(r release) bool { return strings.HasPrefix(r.Version, part+".") }
-		var matched []release
 		var feedErr error
-		among := "the first and last of each major version, which ipswrun --releases prints"
+		offered := func() []release {
+			var offered []release
+			offered, feedErr = current()
+			return offered
+		}
+		noRelease := func(among string) error {
+			err := fmt.Errorf("no release %q among %s; one that is not listed runs from the https URL of its restore image", part, among)
+			if feedErr != nil {
+				err = fmt.Errorf("%w. Apple's feed, which names the current release, could not be read: %w", err, feedErr)
+			}
+			return err
+		}
+		var matched []release
 		switch {
 		case strings.HasPrefix(part, "https://"):
 			matched = []release{{URL: part}}
 		case strings.Contains(part, "/") || strings.HasSuffix(part, ".ipsw"):
 			return nil, nil, fmt.Errorf("a restore image must be an https:// URL, not %q (local files and plain http are not read)", part)
 		case part == "latest":
-			if matched, feedErr = current(); feedErr != nil {
+			if matched = offered(); feedErr != nil {
 				return nil, nil, fmt.Errorf("latest is what Apple's feed says it is, and the feed %w: %w", errSource, feedErr)
 			}
 		case slices.ContainsFunc(known, exactly):
 			matched = filter(known, exactly)
-		default:
-			var offered []release
-			offered, feedErr = current()
-			named := withCurrent(known, offered)
-			isVersion := versionName.MatchString(part)
-			switch {
-			case part == "all":
-				matched = named
-			case slices.ContainsFunc(offered, exactly):
-				matched = filter(offered, exactly)
-			case isVersion || buildName.MatchString(part):
-				every, err := index()
-				if err != nil {
-					return nil, nil, fmt.Errorf("%q is not built in, so it is looked up in the index of every release at api.ipsw.me, which %w: %w\nfix: pass the https URL of its restore image instead", part, errSource, err)
-				}
-				among = "the releases api.ipsw.me lists for this --device"
-				if matched = filter(every, exactly); len(matched) == 0 && isVersion {
-					matched = filter(every, under)
-				}
-				for _, r := range matched {
-					if !onApple(r.URL) {
-						return nil, nil, fmt.Errorf("api.ipsw.me has %s at %s, which is not an https URL on a host of Apple's; pass that URL yourself if you trust it", r.name(), r.URL)
-					}
-				}
-				if len(matched) > 0 {
-					feedErr = nil // the index answered what the feed was asked
-				}
-			default:
-				matched = filter(named, under)
+		case slices.ContainsFunc(offered(), exactly):
+			matched = filter(offered(), exactly)
+		case versionName.MatchString(part) || buildName.MatchString(part):
+			every, indexErr := index()
+			if indexErr != nil {
+				return nil, nil, fmt.Errorf("%q is not built in, so it is looked up in the index of every release at api.ipsw.me, which %w: %w\nfix: pass the https URL of its restore image instead", part, errSource, indexErr)
 			}
+			if matched = filter(every, exactly); len(matched) == 0 {
+				matched = filter(every, under)
+			}
+			if len(matched) == 0 {
+				return nil, nil, noRelease("the releases api.ipsw.me lists for this --device")
+			}
+			for _, r := range matched {
+				if !onApple(r.URL) {
+					return nil, nil, fmt.Errorf("api.ipsw.me has %s at %s, which is not an https URL on a host of Apple's; pass that URL yourself if you trust it", r.name(), r.URL)
+				}
+			}
+		default: // "all", a major version, or nothing at all: only the releases with the feed's can say
+			if matched = withCurrent(known, offered()); part != "all" {
+				matched = filter(matched, under)
+			}
+			note = cmp.Or(note, feedErr)
 		}
 		if len(matched) == 0 {
-			err := fmt.Errorf("no release %q among %s; one that is not listed runs from the https URL of its restore image", part, among)
-			if feedErr != nil {
-				err = fmt.Errorf("%w. Apple's feed, which names the current release, could not be read: %w", err, feedErr)
-			}
-			return nil, nil, err
+			return nil, nil, noRelease("the first and last of each major version, which ipswrun --releases prints")
 		}
-		note = cmp.Or(note, feedErr)
 		for _, r := range matched {
 			if !seen[r.URL] {
 				seen[r.URL] = true
