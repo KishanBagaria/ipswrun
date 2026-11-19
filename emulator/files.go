@@ -422,6 +422,28 @@ func sysWrite(p *Process, a []uint64) int64 {
 	return int64(n)
 }
 
+// sysWritev writes the pieces it is given one after another, and stops at one that is cut short.
+func sysWritev(p *Process, a []uint64) int64 {
+	if a[2] > 1024 {
+		return -eINVAL
+	}
+	var written int64
+	for i := uint64(0); i < a[2]; i++ {
+		base, length := p.u64(a[1]+16*i), p.u64(a[1]+16*i+8)
+		n := sysWrite(p, []uint64{a[0], base, length})
+		switch {
+		case n < 0 && written == 0:
+			return n
+		case n < 0:
+			return written
+		}
+		if written += n; uint64(n) < length {
+			break
+		}
+	}
+	return written
+}
+
 func sysPwrite(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
 	if f == nil || f.kind != hostFD {
@@ -504,6 +526,7 @@ func hostCall(err error) int64 {
 }
 
 func (p *Process) doUnlink(path string, dir bool) int64 {
+	p.note("  unlink %s", path)
 	host, ok := p.hostPath(path)
 	if !ok {
 		return -eNOENT
