@@ -54,7 +54,7 @@ func init() {
 		"psynch_rw_rdlock": {5, sysPsynchRWRdlock}, "psynch_rw_wrlock": {5, sysPsynchRWWrlock}, "psynch_rw_unlock": {5, sysPsynchRWUnlock}, "bsdthread_ctl": {4, constant(0)}, "workq_open": {0, constant(0)},
 		"workq_kernreturn": {4, sysWorkqKernreturn}, "kdebug_trace64": {0, constant(0)}, "kdebug_trace": {0, constant(0)},
 		"kdebug_trace_string": {0, constant(0)}, "kdebug_typefilter": {2, constant(-ePERM)}, "getentropy": {2, sysGetentropy},
-		"csops": {4, sysCsops}, "csops_audittoken": {4, sysCsops}, "csrctl": {3, constant(-ePERM)}, "getrlimit": {2, sysGetrlimit},
+		"ptrace": {1, sysPtrace}, "csops": {4, sysCsops}, "csops_audittoken": {4, sysCsops}, "csrctl": {3, constant(-ePERM)}, "getrlimit": {2, sysGetrlimit},
 		"setrlimit": {2, constant(0)}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
@@ -279,6 +279,15 @@ func sysCsops(p *Process, a []uint64) int64 {
 		return 0
 	}
 	return -eINVAL // no entitlements, identity or cdhash to report
+}
+
+// sysPtrace lets a guest refuse a debugger (PT_DENY_ATTACH), which Apple's daemons do before
+// anything else: there is none. No other request has a process to act on.
+func sysPtrace(p *Process, a []uint64) int64 {
+	if a[0] == 31 {
+		return 0
+	}
+	return -eINVAL
 }
 
 func sysGetrlimit(p *Process, a []uint64) int64 {

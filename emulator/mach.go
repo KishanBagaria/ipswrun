@@ -19,12 +19,14 @@ var machNames = map[int64]string{
 
 // Kernel and message return codes.
 const (
-	kernNoSpace     = 3
-	kernInvalidArg  = 4
-	kernFailure     = 5
-	sendInvalidDest = 0x10000003
-	rcvTimedOut     = 0x10004003
-	bootstrapPort   = 0x707
+	kernNoSpace      = 3
+	kernInvalidArg   = 4
+	kernFailure      = 5
+	kernNotSupported = 46
+	sendInvalidDest  = 0x10000003
+	rcvTimedOut      = 0x10004003
+	bootstrapPort    = 0x707
+	hostPort         = 0x303
 )
 
 var machHandlers map[string]handler
@@ -38,7 +40,7 @@ func init() {
 		}
 	}
 	machHandlers = map[string]handler{
-		"task_self": {0, constant(0x203)}, "thread_self": {0, machThreadSelf}, "host_self": {0, constant(0x303)},
+		"task_self": {0, constant(0x203)}, "thread_self": {0, machThreadSelf}, "host_self": {0, constant(hostPort)},
 		"reply_port": {0, newPort}, "thread_get_special_reply_port": {0, newPort},
 		"vm_allocate": {4, machVMAllocate}, "vm_map": {6, machVMMap}, "vm_deallocate": {3, machVMDeallocate},
 		"vm_protect": {5, constant(0)}, "vm_purgable_control": {4, constant(0)},
@@ -243,6 +245,7 @@ func init() {
 		200:  migHostInfo,
 		202:  func(*Process, []byte) migReply { return migData(le64(pageSize)) }, // host_page_size
 		206:  freshPort,                                                          // host_get_clock_service
+		412:  migHostGetSpecialPort,
 		1000: migClockGetTime,
 		3405: migTaskInfo,
 		3228: migPortGetContext,
@@ -251,7 +254,8 @@ func init() {
 		3418: freshPort, // semaphore_create
 		4811: migVMMap,
 		4813: migVMRemap,
-		8000: ok, // task_restartable_ranges_register
+		4822: func(*Process, []byte) migReply { return migCode(kernNotSupported) }, // mach_vm_reclaim_ring_allocate: malloc frees at once instead
+		8000: ok,                                                                   // task_restartable_ranges_register
 		8001: ok,
 	}
 }
@@ -264,6 +268,17 @@ func migTaskGetSpecialPort(p *Process, body []byte) migReply {
 		return migPort(bootstrapPort)
 	}
 	return migPort(0)
+}
+
+// migHostGetSpecialPort gives the host port itself, which libdispatch asks for by this route
+// before it watches Mach ports. The privileged ones are not for a user process.
+func migHostGetSpecialPort(p *Process, body []byte) migReply {
+	which := int32(le.Uint32(body[36:]))
+	p.note("  host_get_special_port %d", which)
+	if which == 1 { // HOST_PORT
+		return migPort(hostPort)
+	}
+	return migCode(kernInvalidArg)
 }
 
 func migVMMap(p *Process, body []byte) migReply { // mach_vm_map

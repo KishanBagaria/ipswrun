@@ -30,16 +30,17 @@ var DefaultSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/C
 
 // Run describes one guest execution against a build.
 type Run struct {
-	Unicorn    string        // path of the verified libunicorn (see EnsureUnicorn)
-	Home       string        // host directory behind GuestHome
-	Executable string        // host path of the guest Mach-O (arm64, linked against the cache)
-	Args       []string      // guest arguments after argv[0]
-	Env        []string      // added to BaseEnv
-	System     []string      // system-volume files and directory prefixes (ending in "/") the guest may read; DefaultSystem if empty
-	Timeout    time.Duration // for the whole run
-	Trace      bool          // print every system call to stderr
-	Survey     bool          // answer calls nothing implements with an error instead of stopping (see Config.Survey)
-	Notes      io.Writer     // told about a cache location that could not be read, unless the release has none there; os.Stderr if nil
+	Unicorn    string            // path of the verified libunicorn (see EnsureUnicorn)
+	Home       string            // host directory behind GuestHome
+	Mounts     map[string]string // more host directories the guest may change, by the guest directory each appears as
+	Executable string            // host path of the guest Mach-O (arm64, linked against the cache)
+	Args       []string          // guest arguments after argv[0]
+	Env        []string          // added to BaseEnv
+	System     []string          // system-volume files and directory prefixes (ending in "/") the guest may read; DefaultSystem if empty
+	Timeout    time.Duration     // for the whole run
+	Trace      bool              // print every system call to stderr
+	Survey     bool              // answer calls nothing implements with an error instead of stopping (see Config.Survey)
+	Notes      io.Writer         // told about a cache location that could not be read, unless the release has none there; os.Stderr if nil
 }
 
 var leadingDigits = regexp.MustCompile(`^\d+`)
@@ -136,7 +137,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Process, *dyldcache.Cache, error)
 	}
 
 	build := image.Build()
-	p, err := New(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Executable: run.Executable, Dyld: dyld, System: system, Trace: run.Trace, Survey: run.Survey,
+	p, err := New(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Executable: run.Executable, Dyld: dyld, System: system, Trace: run.Trace, Survey: run.Survey,
 		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0"}})
 	if err != nil {
 		return nil, cache, err

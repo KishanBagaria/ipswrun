@@ -134,3 +134,29 @@ func TestOnlyTheHomeCanBeChanged(t *testing.T) {
 		t.Errorf("rename under the home: %d", errno)
 	}
 }
+
+// A mount is a second place the guest can change, and the directories on the way to it exist.
+func TestMounts(t *testing.T) {
+	host := t.TempDir()
+	p := &Process{home: t.TempDir(), mounts: []mount{{"/var/db/fpsd", host}}, fds: map[uint64]*fd{}, nextFD: 3}
+	if errno := p.doMkdir("/var/db/fpsd/adi", 0o700); errno != 0 {
+		t.Fatalf("mkdir under the mount: %d", errno)
+	}
+	if n := p.doOpen("/var/db/fpsd/adi/adi.pb", 0x201, 0o600); n != 3 { // O_WRONLY|O_CREAT
+		t.Fatalf("creating a file under the mount: %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(host, "adi", "adi.pb")); err != nil {
+		t.Errorf("the file did not reach the host: %v", err)
+	}
+	if above, ok := p.resolve("/var/db"); !ok || above.kind != dirFD || above.writable {
+		t.Errorf("the directory above the mount resolved to %+v, %v", above, ok)
+	}
+	for name, errno := range map[string]int64{
+		"mkdir beside the mount": p.doMkdir("/var/db/other", 0o700),
+		"open beside the mount":  p.doOpen("/var/db/fpsdx", 0x201, 0o600),
+	} {
+		if errno >= 0 {
+			t.Errorf("%s: %d, want an errno", name, errno)
+		}
+	}
+}

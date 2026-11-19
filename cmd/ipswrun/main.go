@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -83,6 +84,25 @@ func checkPerRelease(releases int, flag, value string) error {
 	ext := filepath.Ext(value)
 	return fmt.Errorf("--%s %s would be shared by %d releases; put {build} or {version} in it, as in --%s '%s-{build}%s'",
 		flag, value, releases, flag, strings.TrimSuffix(value, ext), ext)
+}
+
+// checkMounts refuses a --mount that does not name an absolute guest directory and a host one,
+// that would hide the home or everything, or whose host directory several releases would share.
+func checkMounts(releases int, mounts []string) error {
+	for _, m := range mounts {
+		guest, host, ok := strings.Cut(m, "=")
+		guest = path.Clean(guest)
+		switch {
+		case !ok || !strings.HasPrefix(guest, "/") || host == "":
+			return fmt.Errorf("--mount %s is not <guest dir>=<host dir>, as in --mount /var/db=out/db", m)
+		case guest == "/" || guest == emulator.GuestHome || strings.HasPrefix(emulator.GuestHome, guest+"/"):
+			return fmt.Errorf("--mount %s would replace the guest's home or what is above it; --home is the directory behind %s", m, emulator.GuestHome)
+		}
+		if releases > 1 && !strings.Contains(host, "{build}") && !strings.Contains(host, "{version}") {
+			return fmt.Errorf("--mount %s would be shared by %d releases; put {build} or {version} in the host directory, as in --mount '%s=%s-{build}'", m, releases, guest, host)
+		}
+	}
+	return nil
 }
 
 // fix is the last line of a failure: what to do about it, for the failures where that is known.
@@ -192,6 +212,7 @@ type options struct {
 	home, report              string // may contain {build} and {version}
 	guest                     string
 	args, env, system         []string
+	mounts                    []string // <guest dir>=<host dir>; the host side may contain {build} and {version}
 	stream, trace, showStatus bool
 	missing                   bool
 	timeout                   float64
@@ -240,8 +261,17 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		}
 		defer os.RemoveAll(home)
 	}
+	mounts := map[string]string{}
+	for _, m := range o.mounts {
+		guest, host, _ := strings.Cut(m, "=")
+		host = perRelease.Replace(host)
+		if err := os.MkdirAll(host, 0o777); err != nil {
+			return failed(err)
+		}
+		mounts[guest] = host
+	}
 	status.set(label+out.name, image.Stats)
-	process, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Executable: o.guest, Args: o.args,
+	process, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Mounts: mounts, Executable: o.guest, Args: o.args,
 		Env: o.env, System: o.system, Timeout: time.Duration(o.timeout * float64(time.Second)), Trace: o.trace, Survey: o.missing, Notes: status})
 	status.stop()
 	if process != nil {
@@ -362,7 +392,8 @@ URL of any restore image, or several of these separated by commas.`)
 		flag.PrintDefaults()
 	}
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
-	var env, system list
+	var env, system, mounts list
+	flag.Var(&mounts, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
 	flag.Var(&env, "env", "KEY=VALUE added to the guest environment (repeatable)")
 	flag.Var(&system, "system", "system-volume file, or directory ending in /, the guest may read (repeatable; default: feature flags, SystemVersion.plist, /usr/share/icu/ and libobjc-trampolines.dylib; giving any replaces the default)")
 	device := flag.String("device", "Macmini9,1", "BuildManifest product used to pick disk images")
@@ -398,7 +429,7 @@ URL of any restore image, or several of these separated by commas.`)
 		var note, err error
 		if releases, note, err = checkArgs(known, flag.Args(), current, index); err == nil {
 			feedNote(note)
-			err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath))
+			err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath), checkMounts(len(releases), mounts))
 		}
 		if errors.Is(err, errSource) {
 			return 0, err
@@ -433,7 +464,7 @@ URL of any restore image, or several of these separated by commas.`)
 		}
 	}
 	o := &options{unicorn: unicorn, cache: *cache, device: *device, home: *home, report: *reportPath, guest: flag.Arg(1), args: flag.Args()[2:],
-		env: env, system: system, stream: *stream, trace: *trace, missing: *missing, showStatus: showStatus, timeout: *timeout}
+		env: env, system: system, mounts: mounts, stream: *stream, trace: *trace, missing: *missing, showStatus: showStatus, timeout: *timeout}
 	return o.runAll(releases)
 }
 

@@ -223,7 +223,9 @@ func TestDispatch(t *testing.T) {
 		}{
 			{"getpid", nil, guestPID, false},
 			{"umask", nil, 0o22, false},
-			{"socket", nil, eACCES, true}, // a negative result is an errno: carry set, x0 positive
+			{"socket", nil, eACCES, true},             // a negative result is an errno: carry set, x0 positive
+			{"ptrace", []uint64{31}, 0, false},        // PT_DENY_ATTACH: nothing would attach
+			{"ptrace", []uint64{10, 1}, eINVAL, true}, // PT_ATTACH: nothing to attach to
 			{"read", []uint64{99, dataAddr, 8}, eBADF, true},
 			{"read_nocancel", []uint64{99, dataAddr, 8}, eBADF, true},   // shares read's handler
 			{"open", []uint64{nowhere, 0, 0}, eFAULT, true},             // a path the guest has not mapped

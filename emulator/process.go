@@ -9,6 +9,7 @@ package emulator
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -166,12 +167,14 @@ type SystemFile struct {
 
 // Config describes one guest process.
 type Config struct {
-	Unicorn    string           // path of the verified libunicorn (see EnsureUnicorn)
-	Cache      *dyldcache.Cache // the build's dyld shared cache
-	CacheDir   string           // guest directory the cache files appear in
-	Home       string           // host directory behind GuestHome
-	Executable string           // host path of the guest executable
-	Dyld       []byte           // the build's /usr/lib/dyld
+	Unicorn  string           // path of the verified libunicorn (see EnsureUnicorn)
+	Cache    *dyldcache.Cache // the build's dyld shared cache
+	CacheDir string           // guest directory the cache files appear in
+	Home     string           // host directory behind GuestHome
+	// Mounts are more host directories the guest may change, by the guest directory each appears as.
+	Mounts     map[string]string
+	Executable string // host path of the guest executable
+	Dyld       []byte // the build's /usr/lib/dyld
 	// System serves read-only files from the build's system volume; a lookup failure stops the run.
 	System func(path string) (SystemFile, error)
 	OS     map[string]string // "version", "build" and "release" reported by sysctl
@@ -187,8 +190,9 @@ type Process struct {
 	cache   *dyldcache.Cache
 	dyld    []byte
 	home    string
-	exe     []byte // the guest executable
-	exePath string // and where it is on the host
+	mounts  []mount // longest guest path first
+	exe     []byte  // the guest executable
+	exePath string  // and where it is on the host
 	system  func(path string) (SystemFile, error)
 	os      map[string]string
 	trace   bool
@@ -326,7 +330,15 @@ func New(cfg Config) (p *Process, err error) {
 	if err != nil {
 		return nil, err
 	}
-	p = &Process{cache: cfg.Cache, dyld: dyld, home: home, exe: exe, exePath: cfg.Executable, system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
+	var mounts []mount
+	for guest, host := range cfg.Mounts {
+		if host, err = filepath.EvalSymlinks(host); err != nil {
+			return nil, err
+		}
+		mounts = append(mounts, mount{canonical(guest), host})
+	}
+	slices.SortFunc(mounts, func(a, b mount) int { return cmp.Or(len(b.guest)-len(a.guest), strings.Compare(a.guest, b.guest)) })
+	p = &Process{mounts: mounts, cache: cfg.Cache, dyld: dyld, home: home, exe: exe, exePath: cfg.Executable, system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
 		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{}, contexts: map[uint32]uint64{}, ignored: map[int]int{},
 		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
@@ -850,7 +862,12 @@ func (p *Process) loadMachO(data []byte, name string, base uint64) (f *macho.Fil
 // (a fault, something unimplemented, the timeout) is a *StopError.
 func (p *Process) Start(argv, env []string, timeout time.Duration) (err error) {
 	defer guard(&err)
+	// A guest built for this is arm64. What Apple ships has only arm64e, which runs the same
+	// here: the keys are off, as dyld is told below.
 	exe, err := thin(p.exe, 0)
+	if err != nil {
+		exe, err = thin(p.exe, cpuSubtypeARM64E)
+	}
 	if err != nil {
 		return fmt.Errorf("guest executable: %w", err)
 	}

@@ -77,7 +77,7 @@ The program you run, the guest, is an ordinary executable built on a Mac:
 clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains -o guest guest.c
 ```
 
-`-no_fixup_chains` is what lets every release's dyld load it. [`examples/Makefile`](examples/Makefile) has the flags for Objective-C and Swift too.
+`-no_fixup_chains` is what lets every release's dyld load it. A binary with only arm64e code, as Apple's own are, is loaded too. [`examples/Makefile`](examples/Makefile) has the flags for Objective-C and Swift too.
 
 What the guest gets:
 
@@ -91,6 +91,7 @@ What the guest gets:
 | Flag | What it does |
 | --- | --- |
 | `--home <dir>` | host directory the guest sees as its home, `/Users/emu` (default: a temporary one, deleted afterwards). `{build}` and `{version}` are filled in per release, and one is required with several |
+| `--mount <guest dir>=<host dir>` | another host directory the guest sees and may change, at that guest path, such as `--mount /var/db=out/db` (repeatable). `{build}` and `{version}` in the host directory as in `--home` |
 | `--env KEY=VALUE` | added to the guest environment (repeatable) |
 | `--system <path>` | system-volume file, or directory ending in `/`, the guest may read (repeatable). The default is feature flags, `SystemVersion.plist`, ICU data in `/usr/share/icu/` and `/usr/lib/libobjc-trampolines.dylib`; giving any replaces the default |
 | `--cache <dir>` | where downloads are kept between runs (default: `ipswrun-<uid>` in the system temporary directory, so cleared on reboot) |
@@ -116,7 +117,7 @@ What the guest gets:
 - **Threads that never wait.** Threads take turns: one runs until it waits for something (a lock, a condition, a semaphore, a queue, a timer), yields or ends, and only then does another. POSIX threads and libdispatch queues, groups, semaphores and timers work this way. A thread that spins without a system call until another thread does something waits forever, and a run where no thread can go on stops and lists what each was waiting for. Read-write locks that have to wait, signals between threads and thread cancellation are not there.
 - **Daemons and the network.** A blocking Mach receive is answered with a dead-reply notification, which callers see as an interrupted XPC connection. Of the events libdispatch can wait for, only timers happen: not Mach ports, files, sockets, signals or processes.
 - **Anything that needs a daemon.** `NSUserDefaults` reads back nothing (no `cfprefsd`). `SecKeyCreateRandomKey` fails unless the key is made the iOS way (`kSecUseDataProtectionKeychain`, not permanent), because the macOS default is the legacy CDSA stack behind `securityd`.
-- **Files outside the home.** What the guest writes outside `--home` never reaches the host, and it can read system files only from the `--system` allowlist.
+- **Files outside the home.** What the guest writes outside `--home` and the `--mount` directories never reaches the host, and it can read system files only from the `--system` allowlist.
 - **macOS 13 and 14 by range.** Their images keep the shared cache in a deflate-compressed ZIP member, which cannot be read by range. `--stream-compressed` downloads that one member (3.6–4.5 GB).
 - **Shared memory through `mach_vm_remap`.** It copies instead of sharing, and only file-backed memory: enough for code (the Objective-C block trampolines), wrong for memory that is written afterwards.
 - **Some CPU features.** The emulated core has a 44-bit address space and reports no DIT, SHA-3 or SHA-512 instructions.

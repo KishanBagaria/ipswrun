@@ -35,7 +35,7 @@ const (
 type fdKind uint8
 
 const (
-	hostFD  fdKind = iota // a real descriptor: stdio, or a file under the temporary home
+	hostFD  fdKind = iota // a real descriptor: stdio, or a file under the home or a mount
 	dirFD                 // a directory that exists only as a name
 	dataFD                // read-only bytes
 	cacheFD               // a file of the build read by range: of the dyld shared cache or the system volume
@@ -86,7 +86,7 @@ type target struct {
 	kind     fdKind
 	path     string // canonical
 	host     string
-	writable bool // under the home: the guest may create, change, rename and remove it
+	writable bool // under the home or a mount: the guest may create, change, rename and remove it
 	data     []byte
 	cache    dyldcache.File
 }
@@ -117,8 +117,11 @@ func canonical(path string) string {
 
 func crcInode(path string) uint64 { return uint64(crc32.ChecksumIEEE([]byte(path)) & 0xFFFFFF) }
 
-// resolve maps a guest path to what backs it. Only the temporary home, the guest executable and three
-// device nodes ever name host files; everything else is served from memory or does not exist.
+// mount is a host directory the guest sees, and may change, at a guest path.
+type mount struct{ guest, host string }
+
+// resolve maps a guest path to what backs it. Only the home, the mounts, the guest executable and
+// three device nodes ever name host files; everything else is served from memory or does not exist.
 func (p *Process) resolve(path string) (target, bool) {
 	path = canonical(path)
 	t, ok := p.lookup(path)
@@ -135,6 +138,14 @@ func (p *Process) lookup(path string) (target, bool) {
 	}
 	if f, ok := p.cachePaths[path]; ok {
 		return target{kind: cacheFD, cache: f}, true
+	}
+	for _, m := range p.mounts {
+		switch {
+		case path == m.guest || strings.HasPrefix(path, m.guest+"/"):
+			return target{kind: hostFD, host: m.host + path[len(m.guest):], writable: true}, true
+		case strings.HasPrefix(m.guest, path+"/"): // on the way to it
+			return target{kind: dirFD}, true
+		}
 	}
 	switch {
 	case path == GuestHome || strings.HasPrefix(path, GuestHome+"/"):
@@ -421,7 +432,7 @@ func (p *Process) doAccess(path string) int64 {
 func sysAccess(p *Process, a []uint64) int64    { return p.doAccess(p.cstr(a[0])) }
 func sysFaccessat(p *Process, a []uint64) int64 { return p.doAccess(p.at(a[0], a[1])) }
 
-// hostPath resolves a guest path to the host file behind it. ok says that it is under the home:
+// hostPath resolves a guest path to the host file behind it. ok says that it is under the home or a mount:
 // only those can be changed, never the guest executable or a device.
 func (p *Process) hostPath(path string) (host string, ok bool) {
 	t, _ := p.resolve(path)
@@ -493,7 +504,7 @@ func sysTruncate(p *Process, a []uint64) int64 {
 	return hostCall(syscall.Truncate(host, int64(a[1])))
 }
 
-// doReadlink serves the links a guest makes under its home; nothing else is a symbolic link.
+// doReadlink serves the links a guest makes under its home or a mount; nothing else is a symbolic link.
 func (p *Process) doReadlink(path string, buf, size uint64) int64 {
 	host, ok := p.hostPath(path)
 	if !ok {
@@ -511,7 +522,7 @@ func (p *Process) doReadlink(path string, buf, size uint64) int64 {
 func sysReadlink(p *Process, a []uint64) int64   { return p.doReadlink(p.cstr(a[0]), a[1], a[2]) }
 func sysReadlinkat(p *Process, a []uint64) int64 { return p.doReadlink(p.at(a[0], a[1]), a[2], a[3]) }
 
-// list reads the names in an open directory, once. Only directories under the home have any.
+// list reads the names in an open directory, once. Only directories under the home or a mount have any.
 func (p *Process) list(f *fd) int64 {
 	if f.names != nil {
 		return 0
