@@ -157,5 +157,14 @@ func TestPorts(t *testing.T) {
 		if checked.kind != xpcReceive || found.kind != xpcSend || checked.name != found.name || p.ports[found.name] == nil || p.ports[found.name].sends != 1 {
 			t.Errorf("checked in as %+v, found as %+v", checked, found)
 		}
+		// The modern (XPC domain) and legacy (bootstrap) routines ask the same two questions: a
+		// daemon that checks in with either gets the service's receive right, and a client that
+		// looks it up with either gets a send right to the same port.
+		if legacy, _ := ask(routineCheckInLegacy, "com.example.provided").values["port"].(xpcPort); legacy.kind != xpcReceive || legacy.name != checked.name {
+			t.Errorf("legacy check-in gave %+v, not the receive right %+v", legacy, checked)
+		}
+		if modern, _ := ask(routineLookUp, "com.example.provided").values["port"].(xpcPort); modern.kind != xpcSend || modern.name != checked.name {
+			t.Errorf("modern look-up gave %+v, not a send right to %#x", modern, checked.name)
+		}
 	})
 }

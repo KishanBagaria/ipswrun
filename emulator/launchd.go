@@ -26,9 +26,13 @@ const (
 	xpcReply = 0x20000000 // the id of an answer
 
 	// What is asked: in the low bits of a message's id, or in older releases in the message.
-	routineLookUp       = 207
-	routineLookUpLegacy = 804 // the same question, as bootstrap_look_up asks it
-	routineCheckIn      = 805
+	// Look-up asks launchd for a send right to a service; check-in gets the service's own receive
+	// right, for the provider. Each has a modern form in the XPC domain subsystem (type 7, with a
+	// domain-port) and the legacy bootstrap form the old entry points still use.
+	routineLookUp        = 207
+	routineLookUpLegacy  = 804 // the same question, as bootstrap_look_up asks it
+	routineCheckIn       = 206 // xpc_connection_create_mach_service of a listener checks in this way
+	routineCheckInLegacy = 805 // as bootstrap_check_in asks it
 
 	noSuchService = 3 // ESRCH, as launchd says it
 	launchdPID    = 1
@@ -60,15 +64,17 @@ func (p *Process) launchd(m message, raw []byte) bool {
 	if r := request.uint("routine"); r != 0 {
 		routine = r
 	}
+	checkIn := routine == routineCheckIn || routine == routineCheckInLegacy
+	lookUp := routine == routineLookUp || routine == routineLookUpLegacy
 	reply := &xpcDictionary{}
 	q, provided := p.service(request.string("name"))
 	switch {
-	case routine != routineLookUp && routine != routineLookUpLegacy && routine != routineCheckIn:
+	case !checkIn && !lookUp:
 		p.note("  to launchd, routine %d: %v", routine, request)
 		return false
 	case !provided:
 		reply.set("error", int64(noSuchService))
-	case routine == routineCheckIn:
+	case checkIn:
 		reply.set("port", xpcPort{xpcReceive, q.name})
 	default:
 		p.transfer(q.name, makeSend)
