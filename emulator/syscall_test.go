@@ -164,13 +164,13 @@ func newProcess(t *testing.T) *Process {
 	if library, err := os.ReadFile(unicorn); err != nil || sha256Hex(library) != unicornBuilds[runtime.GOOS+"/"+runtime.GOARCH].librarySHA256 {
 		t.Skip("no verified libunicorn in the user cache directory; run ipswrun --setup")
 	}
-	runner := filepath.Join(t.TempDir(), "runner")
-	if err := os.WriteFile(runner, []byte("not run"), 0o666); err != nil {
+	exe := filepath.Join(t.TempDir(), "guest")
+	if err := os.WriteFile(exe, []byte("not run"), 0o666); err != nil {
 		t.Fatal(err)
 	}
 	var p *Process
 	onMain(func() { // New runs the engine to turn the MMU on
-		p, err = New(Config{Unicorn: unicorn, Cache: &dyldcache.Cache{}, Home: t.TempDir(), Runner: runner, Dyld: le32(0xFEEDFACF, cpuARM64, 0, 0, 0, 0, 0, 0),
+		p, err = New(Config{Unicorn: unicorn, Cache: &dyldcache.Cache{}, Home: t.TempDir(), Executable: exe, Dyld: le32(0xFEEDFACF, cpuARM64, 0, 0, 0, 0, 0, 0),
 			OS: map[string]string{"build": "24G90", "version": "15.6.1"}})
 	})
 	if err != nil {

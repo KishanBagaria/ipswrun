@@ -105,11 +105,11 @@ func TestVolumes(t *testing.T) {
 
 // The guest can change what is under its home and nothing else that a host file backs.
 func TestOnlyTheHomeCanBeChanged(t *testing.T) {
-	runner := filepath.Join(t.TempDir(), "runner")
-	if err := os.WriteFile(runner, []byte("not run"), 0o666); err != nil {
+	exe := filepath.Join(t.TempDir(), "guest")
+	if err := os.WriteFile(exe, []byte("not run"), 0o666); err != nil {
 		t.Fatal(err)
 	}
-	p := &Process{home: t.TempDir(), runnerPath: runner, fds: map[uint64]*fd{}, nextFD: 3}
+	p := &Process{home: t.TempDir(), exePath: exe, fds: map[uint64]*fd{}, nextFD: 3}
 	if n := p.doOpen(GuestHome+"/file", 0x201, 0o644); n != 3 { // O_WRONLY|O_CREAT
 		t.Fatalf("creating a file under the home: %d", n)
 	}
@@ -124,11 +124,11 @@ func TestOnlyTheHomeCanBeChanged(t *testing.T) {
 			t.Errorf("%s: %d, want an errno", name, errno)
 		}
 	}
-	if data, err := os.ReadFile(runner); err != nil || string(data) != "not run" {
-		t.Errorf("the runner is now %q (%v)", data, err)
+	if data, err := os.ReadFile(exe); err != nil || string(data) != "not run" {
+		t.Errorf("the guest executable is now %q (%v)", data, err)
 	}
 	if n := p.doOpen(GuestExe, 0, 0); n != 4 {
-		t.Errorf("opening the runner to read: %d", n)
+		t.Errorf("opening the guest executable to read: %d", n)
 	}
 	if errno := p.doRename(GuestHome+"/file", GuestHome+"/renamed"); errno != 0 {
 		t.Errorf("rename under the home: %d", errno)

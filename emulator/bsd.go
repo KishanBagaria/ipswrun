@@ -263,7 +263,7 @@ func sysGetentropy(p *Process, a []uint64) int64 {
 	var out []byte
 	for uint64(len(out)) < a[1] {
 		p.entropy++
-		sum := sha256.Sum256(fmt.Appendf(nil, "chat.db schema dump %d", p.entropy))
+		sum := sha256.Sum256(fmt.Appendf(nil, "ipswrun entropy %d", p.entropy))
 		out = append(out, sum[:]...)
 	}
 	p.write(a[0], out[:a[1]])

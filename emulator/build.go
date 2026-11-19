@@ -136,7 +136,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Process, *dyldcache.Cache, error)
 	}
 
 	build := image.Build()
-	p, err := New(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Runner: run.Executable, Dyld: dyld, System: system, Trace: run.Trace, Survey: run.Survey,
+	p, err := New(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Executable: run.Executable, Dyld: dyld, System: system, Trace: run.Trace, Survey: run.Survey,
 		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0"}})
 	if err != nil {
 		return nil, cache, err

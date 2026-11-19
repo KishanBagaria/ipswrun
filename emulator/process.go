@@ -43,8 +43,8 @@ const (
 
 	// GuestHome is the emulated user's home directory; it is backed by Config.Home on the host.
 	GuestHome = "/Users/emu"
-	// GuestExe is the path the runner has inside the guest.
-	GuestExe    = "/emu/runner"
+	// GuestExe is the path the guest executable has inside the guest.
+	GuestExe    = "/emu/guest"
 	guestDyld   = "/usr/lib/dyld"
 	cryptex     = "/System/Volumes/Preboot/Cryptexes/OS"
 	cryptexLink = "/System/Cryptexes/OS"
@@ -166,12 +166,12 @@ type SystemFile struct {
 
 // Config describes one guest process.
 type Config struct {
-	Unicorn  string           // path of the verified libunicorn (see EnsureUnicorn)
-	Cache    *dyldcache.Cache // the build's dyld shared cache
-	CacheDir string           // guest directory the cache files appear in
-	Home     string           // host directory behind GuestHome
-	Runner   string           // host path of the guest executable
-	Dyld     []byte           // the build's /usr/lib/dyld
+	Unicorn    string           // path of the verified libunicorn (see EnsureUnicorn)
+	Cache      *dyldcache.Cache // the build's dyld shared cache
+	CacheDir   string           // guest directory the cache files appear in
+	Home       string           // host directory behind GuestHome
+	Executable string           // host path of the guest executable
+	Dyld       []byte           // the build's /usr/lib/dyld
 	// System serves read-only files from the build's system volume; a lookup failure stops the run.
 	System func(path string) (SystemFile, error)
 	OS     map[string]string // "version", "build" and "release" reported by sysctl
@@ -183,16 +183,16 @@ type Config struct {
 
 // Process is one emulated process.
 type Process struct {
-	uc         *engine
-	cache      *dyldcache.Cache
-	dyld       []byte
-	home       string
-	runner     []byte
-	runnerPath string
-	system     func(path string) (SystemFile, error)
-	os         map[string]string
-	trace      bool
-	survey     bool
+	uc      *engine
+	cache   *dyldcache.Cache
+	dyld    []byte
+	home    string
+	exe     []byte // the guest executable
+	exePath string // and where it is on the host
+	system  func(path string) (SystemFile, error)
+	os      map[string]string
+	trace   bool
+	survey  bool
 
 	regions []*region // sorted by start
 	mapped  map[uint64]struct{}
@@ -298,7 +298,7 @@ func New(cfg Config) (p *Process, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("dyld: %w", err)
 	}
-	runner, err := os.ReadFile(cfg.Runner)
+	exe, err := os.ReadFile(cfg.Executable)
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +306,7 @@ func New(cfg Config) (p *Process, err error) {
 	if err != nil {
 		return nil, err
 	}
-	p = &Process{cache: cfg.Cache, dyld: dyld, home: home, runner: runner, runnerPath: cfg.Runner, system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
+	p = &Process{cache: cfg.Cache, dyld: dyld, home: home, exe: exe, exePath: cfg.Executable, system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
 		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{},
 		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
@@ -795,11 +795,11 @@ func (p *Process) loadMachO(data []byte, name string, base uint64) (f *macho.Fil
 // (a fault, something unimplemented, the timeout) is a *StopError.
 func (p *Process) Start(argv, env []string, timeout time.Duration) (err error) {
 	defer guard(&err)
-	runner, err := thin(p.runner, 0)
+	exe, err := thin(p.exe, 0)
 	if err != nil {
-		return fmt.Errorf("runner: %w", err)
+		return fmt.Errorf("guest executable: %w", err)
 	}
-	p.loadMachO(runner, "runner", 0)
+	p.loadMachO(exe, "guest", 0)
 	apple := []string{"executable_path=" + GuestExe, "", "", "", "ptr_munge=0x7a3c5e9b1d2f4a68",
 		fmt.Sprintf("main_stack=%#x,%#x,%#x,%#x", uint64(stackTop), uint64(stackSize), uint64(stackTop), uint64(stackSize)),
 		fmt.Sprintf("executable_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(exeInode)),

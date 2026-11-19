@@ -115,7 +115,7 @@ func canonical(path string) string {
 
 func crcInode(path string) uint64 { return uint64(crc32.ChecksumIEEE([]byte(path)) & 0xFFFFFF) }
 
-// resolve maps a guest path to what backs it. Only the temporary home, the runner and three
+// resolve maps a guest path to what backs it. Only the temporary home, the guest executable and three
 // device nodes ever name host files; everything else is served from memory or does not exist.
 func (p *Process) resolve(path string) (target, bool) {
 	path = canonical(path)
@@ -127,7 +127,7 @@ func (p *Process) resolve(path string) (target, bool) {
 func (p *Process) lookup(path string) (target, bool) {
 	switch {
 	case path == GuestExe:
-		return target{kind: hostFD, host: p.runnerPath}, true
+		return target{kind: hostFD, host: p.exePath}, true
 	case path == guestDyld:
 		return target{kind: dataFD, data: p.dyld}, true
 	}
@@ -420,7 +420,7 @@ func sysAccess(p *Process, a []uint64) int64    { return p.doAccess(p.cstr(a[0])
 func sysFaccessat(p *Process, a []uint64) int64 { return p.doAccess(p.at(a[0], a[1])) }
 
 // hostPath resolves a guest path to the host file behind it. ok says that it is under the home:
-// only those can be changed, never the runner or a device.
+// only those can be changed, never the guest executable or a device.
 func (p *Process) hostPath(path string) (host string, ok bool) {
 	t, _ := p.resolve(path)
 	return t.host, t.writable
