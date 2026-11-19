@@ -19,7 +19,7 @@ jobs:
       - run: file examples/bin/* && shasum -a 256 examples/bin/*
       # What these guests print on a real Mac, which is what they should print under ipswrun.
       - run: |
-          for guest in threads swiftasync; do
+          for guest in threads swiftasync ipc; do
             examples/bin/$guest | tee native.txt && diff native.txt examples/expected/$guest/native.txt || exit
             # And every recorded run that got to the end printed exactly that.
             for run in examples/expected/$guest/*.json; do
@@ -59,6 +59,6 @@ jobs:
           path: ${{ runner.temp }}/ipswrun-matrix
           key: matrix-${{ runner.os }}-${{ hashFiles('examples/*.c', 'examples/*.m', 'examples/*.swift', 'examples/Makefile') }}
           restore-keys: matrix-${{ runner.os }}-
-      - run: examples/matrix.sh --guest=crypto,threads,swiftasync 15.0 27.2
+      - run: examples/matrix.sh --guest=crypto,threads,swiftasync,ipc,service 15.0 27.2
         env:
           IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix

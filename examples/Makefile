@@ -1,11 +1,12 @@
 # Guests for ipswrun. Chained fixups are turned off so that every release's dyld can load them.
 TARGET = -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains
-GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync
+GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service
 
 all: $(addprefix bin/,$(GUESTS))
 
 bin/guest: LIBS = -lsqlite3
 bin/crypto: LIBS = -framework Security
+bin/ipc: LIBS = -framework CoreFoundation
 
 bin/%: %.c | bin
 	clang $(TARGET) -o $@ $< $(LIBS)

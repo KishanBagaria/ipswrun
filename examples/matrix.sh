@@ -64,7 +64,7 @@ run_one() {
 	rm -rf "$home" "$report"
 	mkdir -p "$home" "$cache/$build"
 	# ${flags[@]+…}: an empty array is "unbound" to the bash 3.2 that macOS ships.
-	"$results/bin/ipswrun" ${flags[@]+"${flags[@]}"} --cache "$cache/$build" --home "$home" --report "$report" \
+	"$results/bin/ipswrun" ${flags[@]+"${flags[@]}"} ${options[@]+"${options[@]}"} --cache "$cache/$build" --home "$home" --report "$report" \
 		"$build" "examples/bin/$guest" ${args[@]+"${args[@]}"} >"$out/$build.out" 2>"$out/$build.err" </dev/null
 	status=$?
 
@@ -102,10 +102,12 @@ for guest in ${guests//,/ }; do
 		echo "examples/bin/$guest is not there, and is built on a Mac" >&2
 		exit 1
 	fi
-	out=$results/$guest expected=examples/expected/$guest args=()
+	out=$results/$guest expected=examples/expected/$guest args=() options=()
 	mkdir -p "$out" || exit
 	# objcinfo describes the frameworks it is given: one that only exists as a private framework.
 	[ "$guest" != objcinfo ] || args=(/System/Library/PrivateFrameworks/IMCore.framework/IMCore)
+	# service is run as the process that provides the service it then uses.
+	[ "$guest" != service ] || options=(--service com.example.ipswrun.echo)
 
 	# At most $jobs at once: when that many are running, wait for the oldest.
 	pids=()
