@@ -217,6 +217,12 @@ func xpcAppend(out []byte, ports []xpcPort, value any) ([]byte, []xpcPort) {
 		out = append(append(out, le32(xpcData, uint32(len(v)))...), xpcPadded(slices.Clone(v))...)
 	case xpcPort:
 		out, ports = append(out, le32(v.kind)...), append(ports, v)
+	case []any:
+		var body []byte
+		for _, item := range v {
+			body, ports = xpcAppend(body, ports, item)
+		}
+		out = append(append(out, le32(xpcArray, uint32(len(body)+4), uint32(len(v)))...), body...)
 	case *xpcDictionary:
 		var body []byte
 		for _, key := range v.keys {

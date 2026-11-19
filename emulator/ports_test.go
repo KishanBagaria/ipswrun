@@ -7,7 +7,8 @@ import (
 
 func TestXPCRoundTrip(t *testing.T) {
 	sent := (&xpcDictionary{}).set("name", "com.example.service").set("type", uint64(7)).set("flags", int64(-2)).
-		set("instance", []byte{1, 2, 3, 4, 5}).set("yes", true).set("port", xpcPort{xpcSend, 0x1234}).set("nothing", nil)
+		set("instance", []byte{1, 2, 3, 4, 5}).set("yes", true).set("port", xpcPort{xpcSend, 0x1234}).set("nothing", nil).
+		set("list", []any{"one", int64(2)}).set("none", []any{})
 	data, rights := xpcEncode(sent)
 	if len(data)%4 != 0 || len(rights) != 1 || rights[0].name != 0x1234 {
 		t.Errorf("encoded to %d bytes with rights %v", len(data), rights)

@@ -30,6 +30,7 @@ const (
 	routineLookUp       = 207
 	routineLookUpLegacy = 804 // the same question, as bootstrap_look_up asks it
 	routineCheckIn      = 805
+	routineEventStream  = 403 // a daemon asking for the events launchd keeps for it (xpc_set_event_stream_handler)
 	routineJobValue     = 301 // a process asking for one of the values launchd keeps about its job, by number
 
 	jobManagerUID      = 3   // the user of the launchd domain the process is in
@@ -70,6 +71,9 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 	}
 	checkIn := routine == routineCheckIn || routine == routineCheckInMach
 	switch {
+	case routine == routineEventStream:
+		// What launchd has for a daemon on one of its streams of events, by name: nothing.
+		reply.set("events", []any{})
 	case routine == routineJobValue:
 		// Which of launchd's domains the process is in: the system's, or the one of a user who is
 		// logged in at the screen. cfprefsd takes from it whether it is the daemon or a user's agent.
