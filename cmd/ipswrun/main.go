@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -86,23 +85,23 @@ func checkPerRelease(releases int, flag, value string) error {
 		flag, value, releases, flag, strings.TrimSuffix(value, ext), ext)
 }
 
-// checkMounts refuses a --mount that does not name an absolute guest directory and a host one,
-// that would hide the home or everything, or whose host directory several releases would share.
-func checkMounts(releases int, mounts []string) error {
-	for _, m := range mounts {
-		guest, host, ok := strings.Cut(m, "=")
-		guest = path.Clean(guest)
-		switch {
-		case !ok || !strings.HasPrefix(guest, "/") || host == "":
-			return fmt.Errorf("--mount %s is not <guest dir>=<host dir>, as in --mount /var/db=out/db", m)
-		case guest == "/" || guest == emulator.GuestHome || strings.HasPrefix(emulator.GuestHome, guest+"/"):
-			return fmt.Errorf("--mount %s would replace the guest's home or what is above it; --home is the directory behind %s", m, emulator.GuestHome)
+// parseMounts reads each --mount as <guest dir>=<host dir>, and refuses one that several releases
+// would share or that the emulator would not take.
+func parseMounts(releases int, values []string) (mounts []emulator.Mount, err error) {
+	for _, value := range values {
+		guest, host, ok := strings.Cut(value, "=")
+		if !ok || host == "" {
+			return nil, fmt.Errorf("--mount %s is not <guest dir>=<host dir>, as in --mount /var/db=out/db", value)
 		}
-		if releases > 1 && !strings.Contains(host, "{build}") && !strings.Contains(host, "{version}") {
-			return fmt.Errorf("--mount %s would be shared by %d releases; put {build} or {version} in the host directory, as in --mount '%s=%s-{build}'", m, releases, guest, host)
+		if err := checkPerRelease(releases, "mount", value); err != nil {
+			return nil, err
 		}
+		mounts = append(mounts, emulator.Mount{Guest: guest, Host: host})
 	}
-	return nil
+	if err := emulator.CheckMounts(mounts); err != nil {
+		return nil, fmt.Errorf("--mount: %w", err)
+	}
+	return mounts, nil
 }
 
 // fix is the last line of a failure: what to do about it, for the failures where that is known.
@@ -212,7 +211,7 @@ type options struct {
 	home, report              string // may contain {build} and {version}
 	guest                     string
 	args, env, system         []string
-	mounts                    []string // <guest dir>=<host dir>; the host side may contain {build} and {version}
+	mounts                    []emulator.Mount // the host side may contain {build} and {version}
 	stream, trace, showStatus bool
 	missing                   bool
 	timeout                   float64
@@ -261,14 +260,12 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		}
 		defer os.RemoveAll(home)
 	}
-	mounts := map[string]string{}
-	for _, m := range o.mounts {
-		guest, host, _ := strings.Cut(m, "=")
-		host = perRelease.Replace(host)
-		if err := os.MkdirAll(host, 0o777); err != nil {
+	mounts := slices.Clone(o.mounts)
+	for i := range mounts {
+		mounts[i].Host = perRelease.Replace(mounts[i].Host)
+		if err := os.MkdirAll(mounts[i].Host, 0o777); err != nil {
 			return failed(err)
 		}
-		mounts[guest] = host
 	}
 	status.set(label+out.name, image.Stats)
 	process, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Mounts: mounts, Executable: o.guest, Args: o.args,
@@ -392,8 +389,8 @@ URL of any restore image, or several of these separated by commas.`)
 		flag.PrintDefaults()
 	}
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
-	var env, system, mounts list
-	flag.Var(&mounts, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
+	var env, system, mountValues list
+	flag.Var(&mountValues, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
 	flag.Var(&env, "env", "KEY=VALUE added to the guest environment (repeatable)")
 	flag.Var(&system, "system", "system-volume file, or directory ending in /, the guest may read (repeatable; default: feature flags, SystemVersion.plist, /usr/share/icu/ and libobjc-trampolines.dylib; giving any replaces the default)")
 	device := flag.String("device", "Macmini9,1", "BuildManifest product used to pick disk images")
@@ -421,6 +418,7 @@ URL of any restore image, or several of these separated by commas.`)
 	}
 	// Nothing is fetched for a command line that cannot run. --setup takes no arguments.
 	var releases []release
+	var mounts []emulator.Mount
 	if !*setup {
 		if flag.NArg() == 0 {
 			flag.Usage()
@@ -429,7 +427,9 @@ URL of any restore image, or several of these separated by commas.`)
 		var note, err error
 		if releases, note, err = checkArgs(known, flag.Args(), current, index); err == nil {
 			feedNote(note)
-			err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath), checkMounts(len(releases), mounts))
+			if err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath)); err == nil {
+				mounts, err = parseMounts(len(releases), mountValues)
+			}
 		}
 		if errors.Is(err, errSource) {
 			return 0, err

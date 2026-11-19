@@ -109,7 +109,7 @@ func TestOnlyTheHomeCanBeChanged(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("not run"), 0o666); err != nil {
 		t.Fatal(err)
 	}
-	p := &Process{home: t.TempDir(), exePath: exe, fds: map[uint64]*fd{}, nextFD: 3}
+	p := &Process{mounts: []Mount{{GuestHome, t.TempDir()}}, exePath: exe, fds: map[uint64]*fd{}, nextFD: 3}
 	if n := p.doOpen(GuestHome+"/file", 0x201, 0o644); n != 3 { // O_WRONLY|O_CREAT
 		t.Fatalf("creating a file under the home: %d", n)
 	}
@@ -138,7 +138,7 @@ func TestOnlyTheHomeCanBeChanged(t *testing.T) {
 // A mount is a second place the guest can change, and the directories on the way to it exist.
 func TestMounts(t *testing.T) {
 	host := t.TempDir()
-	p := &Process{home: t.TempDir(), mounts: []mount{{"/var/db/fpsd", host}}, fds: map[uint64]*fd{}, nextFD: 3}
+	p := &Process{mounts: []Mount{{"/var/db/fpsd", host}, {GuestHome, t.TempDir()}}, fds: map[uint64]*fd{}, nextFD: 3}
 	if errno := p.doMkdir("/var/db/fpsd/adi", 0o700); errno != 0 {
 		t.Fatalf("mkdir under the mount: %d", errno)
 	}
@@ -150,6 +150,14 @@ func TestMounts(t *testing.T) {
 	}
 	if above, ok := p.resolve("/var/db"); !ok || above.kind != dirFD || above.writable {
 		t.Errorf("the directory above the mount resolved to %+v, %v", above, ok)
+	}
+	for _, bad := range [][]Mount{{{"/", host}}, {{"var/db", host}}, {{GuestHome + "/", host}}, {{"/var/db", host}, {"/var/./db", host}}} {
+		if CheckMounts(bad) == nil {
+			t.Errorf("mounts %v were accepted", bad)
+		}
+	}
+	if err := CheckMounts([]Mount{{"/Users", host}, {"/var/db", host}}); err != nil {
+		t.Errorf("a mount above the home, and another: %v", err)
 	}
 	for name, errno := range map[string]int64{
 		"mkdir beside the mount": p.doMkdir("/var/db/other", 0o700),

@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"os"
 	pathpkg "path"
@@ -117,8 +118,30 @@ func canonical(path string) string {
 
 func crcInode(path string) uint64 { return uint64(crc32.ChecksumIEEE([]byte(path)) & 0xFFFFFF) }
 
-// mount is a host directory the guest sees, and may change, at a guest path.
-type mount struct{ guest, host string }
+// Mount is a host directory the guest sees, and may change, at a guest directory. The home is one.
+type Mount struct{ Guest, Host string }
+
+// CheckMounts says what is wrong with the mounts a guest is given besides its home: each is at
+// an absolute guest directory of its own, and neither the root nor the home.
+func CheckMounts(mounts []Mount) error {
+	seen := map[string]bool{GuestHome: true}
+	for _, m := range mounts {
+		guest := canonical(m.Guest)
+		switch {
+		case !strings.HasPrefix(m.Guest, "/") || guest == "/":
+			return fmt.Errorf("a mount at %q: it has to be at an absolute guest directory other than the root", m.Guest)
+		case guest == GuestHome:
+			return fmt.Errorf("a mount at %s: that is the guest's home, which is given as the home", guest)
+		case seen[guest]:
+			return fmt.Errorf("two mounts at %s", guest)
+		}
+		seen[guest] = true
+	}
+	return nil
+}
+
+// under reports whether a path is a directory or something below it.
+func under(path, dir string) bool { return path == dir || strings.HasPrefix(path, dir+"/") }
 
 // resolve maps a guest path to what backs it. Only the home, the mounts, the guest executable and
 // three device nodes ever name host files; everything else is served from memory or does not exist.
@@ -141,22 +164,20 @@ func (p *Process) lookup(path string) (target, bool) {
 	}
 	for _, m := range p.mounts {
 		switch {
-		case path == m.guest || strings.HasPrefix(path, m.guest+"/"):
-			return target{kind: hostFD, host: m.host + path[len(m.guest):], writable: true}, true
-		case strings.HasPrefix(m.guest, path+"/"): // on the way to it
+		case under(path, m.Guest):
+			return target{kind: hostFD, host: m.Host + path[len(m.Guest):], writable: true}, true
+		case under(m.Guest, path): // on the way to it
 			return target{kind: dirFD}, true
 		}
 	}
 	switch {
-	case path == GuestHome || strings.HasPrefix(path, GuestHome+"/"):
-		return target{kind: hostFD, host: p.home + path[len(GuestHome):], writable: true}, true
 	case path == "/dev/null" || path == "/dev/urandom" || path == "/dev/random":
 		return target{kind: hostFD, host: path}, true
-	case path == p.cacheDir || strings.HasPrefix(p.cacheDir, path+"/"):
+	case under(p.cacheDir, path):
 		return target{kind: dirFD}, true
 	}
 	switch path {
-	case "/", "/Users", "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/var", "/tmp", "/private/tmp", "/emu":
+	case "/", "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/var", "/tmp", "/private/tmp", "/emu":
 		return target{kind: dirFD}, true
 	}
 	if p.system != nil {

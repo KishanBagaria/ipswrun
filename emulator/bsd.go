@@ -281,10 +281,12 @@ func sysCsops(p *Process, a []uint64) int64 {
 	return -eINVAL // no entitlements, identity or cdhash to report
 }
 
+const ptDenyAttach = 31
+
 // sysPtrace lets a guest refuse a debugger (PT_DENY_ATTACH), which Apple's daemons do before
 // anything else: there is none. No other request has a process to act on.
 func sysPtrace(p *Process, a []uint64) int64 {
-	if a[0] == 31 {
+	if a[0] == ptDenyAttach {
 		return 0
 	}
 	return -eINVAL
