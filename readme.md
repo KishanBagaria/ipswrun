@@ -124,7 +124,7 @@ What the guest gets:
 
 ## What is tested
 
-Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads and libdispatch. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
+Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
 
 ## How it works
 

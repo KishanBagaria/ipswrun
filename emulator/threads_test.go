@@ -97,7 +97,7 @@ func TestThreads(t *testing.T) {
 		// A timer on the work queue's kqueue is due when its deadline on the guest's clock is.
 		q := p.kqueue(0)
 		p.changeTimer(q, kevent{ident: 1, filter: filterTimer, flags: evAdd | evOneshot, fflags: noteAbsolute | noteMachTime,
-			data: int64(machTicks() + uint64(time.Second/tickNanos))})
+			data: int64(machTicks() + 24_000_000)})
 		if due := time.Until(q.timers[1].deadline); due < 900*time.Millisecond || due > 1100*time.Millisecond {
 			t.Errorf("a timer a second of ticks away is due in %v", due)
 		}

@@ -2,6 +2,6 @@
   "build": "26B131",
   "cache_uuid": "C208F2EB-29B0-3D9E-BA56-45FD90E37B16",
   "exit_code": 0,
-  "output": "group    100 tasks: squares 338350 actor 5050\nlet      884\nsleep    at least 50 ms false, under 5 s true\nresume   7\ndetached 81\ncancel   true\n",
+  "output": "group    100 tasks: squares 338350 actor 5050\nlet      884\nsleep    at least 50 ms true, under 5 s true\nresume   7\ndetached 81\ncancel   true\n",
   "version": "27.2.1"
 }

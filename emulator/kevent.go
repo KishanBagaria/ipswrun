@@ -190,7 +190,7 @@ func (p *Process) timerDeadline(c kevent) time.Time {
 	}
 	switch {
 	case c.fflags&noteAbsolute == 0 && unit == 0:
-		return time.Now().Add(time.Duration(c.data * tickNanos))
+		return time.Now().Add(tickDuration(c.data))
 	case c.fflags&noteAbsolute == 0:
 		return time.Now().Add(time.Duration(c.data) * unit)
 	case unit != 0:

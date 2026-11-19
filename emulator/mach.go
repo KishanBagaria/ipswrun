@@ -108,7 +108,7 @@ func machPortType(p *Process, a []uint64) int64 {
 }
 
 func machTimebaseInfo(p *Process, a []uint64) int64 {
-	p.write(a[0], le32(tickNanos, 1))
+	p.write(a[0], le32(125, 3))
 	return 0
 }
 

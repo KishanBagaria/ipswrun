@@ -664,17 +664,20 @@ func (p *Process) setupMMU() error {
 	return nil
 }
 
-// tickNanos is how long a tick of the emulated CPU's counter lasts: it counts the host's uptime at
-// 62.5 MHz, whatever the host. mach_timebase_info says so, which is what makes the guest's idea
-// of how long things take the same as the host's.
-const tickNanos = 16
+// The guest's clock is the host's uptime in the ticks of an Apple silicon Mac: 24 MHz, which
+// mach_timebase_info reports as 125/3 ns a tick and newer system libraries take for granted. The
+// emulated CPU's own counter runs at another rate, so the commpage tells libsystem not to read
+// it and to ask the kernel instead (see interrupt).
 
 // machTicks is the guest's mach_absolute_time now.
-func machTicks() uint64 { return uptimeNanos() / tickNanos }
+func machTicks() uint64 { return uptimeNanos() * 3 / 125 }
+
+// tickDuration is how long a number of ticks lasts.
+func tickDuration(ticks int64) time.Duration { return time.Duration(ticks * 125 / 3) }
 
 // tickTime is when the guest's mach_absolute_time is, or was, ticks.
 func tickTime(ticks uint64) time.Time {
-	return time.Now().Add(time.Duration(int64(ticks-machTicks()) * tickNanos))
+	return time.Now().Add(tickDuration(int64(ticks - machTicks())))
 }
 
 func (p *Process) setupCommpage() {
@@ -682,15 +685,15 @@ func (p *Process) setupCommpage() {
 		page := hostPage(base, pageSize)
 		if base == commPage {
 			clear(page[0x120:0x148]) // no timeofday fast path: forces the syscall
-			// The clock is the emulated CPU's counter and nothing else: no offset added to it (the
-			// host's own, or the one of the Mac a Linux host's page was taken from, would put
-			// mach_absolute_time anywhere, before zero included), no time asleep, no approximate
-			// time. machTicks is how the counter runs.
+			// The clock is machTicks and nothing else: no offset (the host's own, or that of the
+			// Mac a Linux host's page was taken from, would put mach_absolute_time anywhere,
+			// before zero included), no time asleep, no approximate time.
 			clear(page[0x88:0x90]) // TIMEBASE_OFFSET
 			clear(page[0x98:0xB0]) // CONT_TIMEBASE, BOOTTIME_USEC, CONT_HW_TIMEBASE
 			le.PutUint64(page[0xA0:], uint64(time.Now().UnixMicro())-uptimeNanos()/1000)
 			clear(page[0xC0:0xD0]) // APPROX_TIME and whether it is supported
-			page[0x90] = 1         // USER_TIMEBASE_SPEC: plain cntvct_el0
+			page[0x90] = 0         // USER_TIMEBASE_NONE: mach_absolute_time is a trap, not the counter
+			page[0x91] = 0         // nor does the counter keep mach_continuous_time
 			page[0x10C] = 0        // no TPRO: dyld falls back to mprotect
 			// Hide CPU features the emulated core lacks (DIT, SHA3, SHA512, SPECRES) and report one CPU.
 			caps := le.Uint64(page[0x10:]) &^ (0x0200000000000000 | 0x100000000 | 0x80000000 | 0x0000100000000000)
@@ -947,6 +950,10 @@ func (p *Process) interrupt(number uint32) {
 		return
 	}
 	switch n := int64(p.uc.reg(regX0 + 16)); {
+	case uint32(n) == 0xFFFFFFFD, uint32(n) == 0xFFFFFFFC:
+		// The fast traps -3 and -4, mach_absolute_time and mach_continuous_time: the same clock,
+		// as no time is spent asleep. They are made too often to be worth a line in the trace.
+		p.setX(0, machTicks())
 	case n > 0 && n&0xFFFFFFFF == 0x80000000:
 		p.machdep()
 	case n < 0:
