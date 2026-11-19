@@ -56,14 +56,14 @@ The first argument chooses the releases:
 
 | Release | Runs against |
 | --- | --- |
-| `15.6.1` or `24G90` | that release |
-| `15` | 15.0 and 15.6.1 |
+| `15.2` or `24C101` | that release: any since 11.0.1, by version or build |
 | `latest` | the release Apple currently offers |
-| `all` | every release known by name |
-| `https://…/UniversalMac_15.3_24D60_Restore.ipsw` | any other restore image |
-| `11,15,27.2.1` | several of the above |
+| `all` | the first and last release of every major version, and the current one |
+| `15` | those of `all` under it: 15.0 and 15.6.1 |
+| `https://…/UniversalMac_15.3_24D60_Restore.ipsw` | the restore image at that URL |
+| `11,15.2,27.2.1` | several of the above |
 
-The releases known by name are a list built into ipswrun plus the current one from [Apple's feed](https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml); `ipswrun --releases` prints them. macOS 13 and 14 are skipped unless you pass [`--stream-compressed`](#what-does-not-work).
+A release is found in three places, in this order: a list built into ipswrun, which is what `all` runs and `ipswrun --releases` prints; [Apple's feed](https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml), which names the current release; and, for every other, the [ipsw.me](https://ipsw.me) index of the restore images Apple has published. The index is not Apple's, so ipswrun follows it only to an https URL on Apple's hosts, and refuses an image that turns out not to be the build it was listed as. A version no release has, such as `11.0`, stands for the releases under it (11.0.1). macOS 13 and 14 are skipped unless you pass [`--stream-compressed`](#what-does-not-work).
 
 ## Usage
 
@@ -99,9 +99,9 @@ What the guest gets:
 | `--timeout <seconds>` | how long the guest may run on each release, counted from when it starts (default 900) |
 | `--trace` | print every emulated system call |
 | `--missing` | answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all, with how often each was made and from where, when the guest ends |
-| `--device <product>` | Mac model the disk images and `latest` are picked for (default `Macmini9,1`) |
+| `--device <product>` | Mac model the disk images and the releases looked up are picked for (default `Macmini9,1`) |
 | `--unicorn <dir>` | where the pinned `libunicorn` is kept (default: the user cache directory) |
-| `--releases` | print the releases known by name (version, build, URL), then exit |
+| `--releases` | print the releases `all` stands for (version, build, URL), then exit |
 | `--setup` | only fetch and verify `libunicorn`, then exit |
 
 ## Requirements
@@ -123,7 +123,7 @@ What the guest gets:
 
 ## What is tested
 
-Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases known by name and diffs every run against [`examples/expected`](examples/expected).
+Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
 
 ## How it works
 

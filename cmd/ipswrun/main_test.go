@@ -92,9 +92,22 @@ func TestReleasesByName(t *testing.T) {
 	newer := release{"27.3", "26D50", "https://example.invalid/UniversalMac_27.3_26D50_Restore.ipsw"}
 	const url = "https://example.invalid/UniversalMac_Restore.ipsw"
 	const everything = "20B29 20G165 21A559 21G115 22A380 22G120 23A344 23G93 24A335 24G90 25A354 25G83 26A428 26B131"
+	data, err := os.ReadFile("testdata/index.json") // api.ipsw.me's reply for Macmini9,1 of 2026-11-19, the fields read
+	if err != nil {
+		t.Fatal(err)
+	}
+	every, err := parseIndex(data)
+	if err != nil || len(every) != 80 || every[0].Build != "20B29" || every[79].Build != "26B131" {
+		t.Fatalf("the index parsed to %d releases (error %v), want 80 from 20B29 to 26B131", len(every), err)
+	}
+	for _, r := range every {
+		if !onApple(r.URL) {
+			t.Errorf("the index's %s is not taken to be on Apple's hosts", r.URL)
+		}
+	}
 	for _, c := range []struct {
-		selector, want string
-		asks, down     bool
+		selector, want             string
+		asks, down, looks, noIndex bool
 	}{
 		{selector: "15.6.1", want: "24G90"},
 		{selector: "24g90", want: "24G90"},
@@ -103,27 +116,45 @@ func TestReleasesByName(t *testing.T) {
 		{selector: "12.6,http://x/a"},
 		{selector: "15.0,,27.0", asks: true},
 		{selector: "1", asks: true},
+		{selector: "sequoia", asks: true},
 		{selector: "15", want: "24A335 24G90", asks: true},
-		{selector: "27.2", want: "26B131", asks: true},
 		{selector: "27.3", want: "26D50", asks: true},
 		{selector: "26d50", want: "26D50", asks: true},
 		{selector: "latest", want: "26D50", asks: true},
 		{selector: "latest,27.3,all", want: "26D50 " + everything, asks: true},
 		{selector: "all", want: everything + " 26D50", asks: true},
+		// A release neither the list nor the feed names is whichever the index says it is.
+		{selector: "15.2", want: "24C101", asks: true, looks: true},
+		{selector: "24c101", want: "24C101", asks: true, looks: true},
+		{selector: "27.2", want: "26B123", asks: true, looks: true},
+		{selector: "15.3", want: "24D60", asks: true, looks: true},
+		{selector: "11.0", want: "20B29", asks: true, looks: true},
+		{selector: "13.5", want: "22G74", asks: true, looks: true},
+		{selector: "15.2,24G90,24C101,26.3.1,15", want: "24C101 24G90 25D2128 24A335", asks: true, looks: true},
+		{selector: "9.9", asks: true, looks: true},
+		{selector: "24Z999", asks: true, looks: true},
+		{selector: "15.2", asks: true, looks: true, noIndex: true},
 		// Without the feed the list still answers for what it has, and says what it went without.
 		{selector: "all", want: everything, asks: true, down: true},
 		{selector: "27", want: "26A428 26B131", asks: true, down: true},
-		{selector: "27.3", asks: true, down: true},
+		{selector: "27.3", asks: true, down: true, looks: true},
 		{selector: "latest", asks: true, down: true},
 		{selector: "27.2.1", want: "26B131", down: true},
+		{selector: "15.2", want: "24C101", asks: true, down: true, looks: true},
 	} {
-		asked := 0
+		asked, looked := 0, 0
 		selected, note, err := selectReleases(known, c.selector, func() ([]release, error) {
 			asked++
 			if c.down {
 				return nil, errors.New("feed is down")
 			}
 			return []release{newer}, nil
+		}, func() ([]release, error) {
+			looked++
+			if c.noIndex {
+				return nil, errors.New("index is down")
+			}
+			return every, nil
 		})
 		var got []string
 		for _, r := range selected {
@@ -135,13 +166,32 @@ func TestReleasesByName(t *testing.T) {
 		if asked > 1 || (asked == 1) != c.asks {
 			t.Errorf("%s: Apple's feed was asked %d time(s), want asked %v", c.selector, asked, c.asks)
 		}
-		unread := c.asks && c.down
+		if looked > 1 || (looked == 1) != c.looks {
+			t.Errorf("%s: the index was asked %d time(s), want asked %v", c.selector, looked, c.looks)
+		}
+		// The note is for a feed whose answer the releases selected could have depended on.
+		unread := c.asks && c.down && !c.looks
 		if err == nil && (note != nil) != unread {
 			t.Errorf("%s: note %v, want one only for a feed that could not be read", c.selector, note)
 		}
-		if err != nil && unread && !strings.Contains(err.Error(), "feed is down") {
+		if err != nil && c.asks && c.down && !strings.Contains(err.Error(), "feed is down") {
 			t.Errorf("%s: the error does not say the feed could not be read: %v", c.selector, err)
 		}
+		// A name that could not be looked up is a failed run; a name nothing has is a bad command line.
+		if err != nil && errors.Is(err, errSource) != (c.noIndex || c.selector == "latest") {
+			t.Errorf("%s: wrong kind of error: %v", c.selector, err)
+		}
+	}
+	// The index is someone else's: an image it places anywhere but on Apple's hosts is not fetched.
+	for _, bad := range []string{"http://updates.cdn-apple.com/x.ipsw", "https://example.invalid/x.ipsw", "https://updates.cdn-apple.com.example.invalid/x.ipsw", "https://apple.com@example.invalid/x.ipsw"} {
+		_, _, err := selectReleases(known, "15.2", func() ([]release, error) { return nil, nil },
+			func() ([]release, error) { return []release{{"15.2", "24C101", bad}}, nil })
+		if err == nil || !strings.Contains(err.Error(), "not an https URL on a host of Apple's") {
+			t.Errorf("%s from the index: error %v, want it refused", bad, err)
+		}
+	}
+	if _, err := parseIndex([]byte(`{"status":404,"message":"not found"}`)); err == nil {
+		t.Error("a reply with no restore images was accepted as the index")
 	}
 	if !(release{Version: "13.6"}).compressed() || !(release{Version: "14.0"}).compressed() || (release{Version: "15.0"}).compressed() || (release{URL: url}).compressed() {
 		t.Error("only macOS 13 and 14 releases are skipped without --stream-compressed")

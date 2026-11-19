@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs a guest against every release ipswrun knows by name (ipswrun --releases) and diffs what each run reported
+# Runs a guest against every release that "all" stands for (ipswrun --releases) and diffs what each run reported
 # against what is recorded for it in examples/expected/<guest>/<build>.json.
 #
 #   examples/matrix.sh [--guest=NAME] [--stream-compressed] [--update] [version prefix...]
