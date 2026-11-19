@@ -204,7 +204,21 @@ func (p *Process) send(m message) int64 {
 	if !m.inline {
 		m.bits, m.remote, m.local, m.id = le.Uint32(body), le.Uint32(body[8:]), le.Uint32(body[12:]), le.Uint32(body[20:])
 	}
-	if q := p.destination(m.remote); q != nil {
+	if q := p.destination(m.remote); q != nil && q.object != nil {
+		// A port of the kernel's: it answers at once, and a request it does not know is one
+		// nothing implements.
+		reply, ok := q.object.request(p, m.id, body)
+		p.note("  mach_msg id %d to the kernel's port %#x send %d rcv %d", m.id, m.remote, m.sendSize, m.rcvSize)
+		if !ok {
+			p.unknown[unknownMIG{m.id, m.remote, p.uc.reg(regLR)}]++
+			return sendInvalidDest
+		}
+		p.answer(m, m.id+100, reply, 0)
+		if m.bits&0x1F == moveSend {
+			p.releaseSend(m.remote)
+		}
+		return 0
+	} else if q != nil {
 		said := ""
 		if p.trace { // what an XPC message says, read before its rights are taken out of it
 			if ports, payload, ok := xpcBody(m.bits, body); ok {
@@ -296,7 +310,8 @@ func init() {
 	migRoutines = map[uint32]func(*Process, []byte) migReply{
 		200:  migHostInfo,
 		202:  func(*Process, []byte) migReply { return migData(le64(pageSize)) }, // host_page_size
-		206:  freshPort,                                                          // host_get_clock_service
+		205:  migHostGetIOMain,
+		206:  freshPort, // host_get_clock_service
 		412:  migHostGetSpecialPort,
 		1000: migClockGetTime,
 		3405: migTaskInfo,

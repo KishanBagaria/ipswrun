@@ -23,6 +23,7 @@ type Machine struct {
 	running  *Process            // the process whose thread has, or last had, the turn
 	services map[string]*service // what launchd knows (see launchd.go)
 	shared   map[string]*sharedMemory
+	ioMain   *port // what IOKit's searches are sent to, once a process has asked for it
 	deadline time.Time
 	settling time.Time // once the main guest has exited: when the daemons are no longer waited for
 	done     bool      // the run is over
