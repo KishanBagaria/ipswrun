@@ -12,32 +12,63 @@ On an Apple silicon Mac with Go 1.27+:
 go build -o ipswrun ./cmd/ipswrun
 make -C examples bin/guest
 
-./ipswrun 'https://updates.cdn-apple.com/2020FallFCS/fullrestores/001-79706/93A4C43C-2B45-47AF-84EA-794F8886B85C/UniversalMac_11.0.1_20B29_Restore.ipsw' examples/bin/guest
-./ipswrun 'https://updates.cdn-apple.com/2026FallFCS/c202a724-db7e-4d56-917b-110aa0226507/UniversalMac_27.2.1_26B131_Restore.ipsw' examples/bin/guest
+./ipswrun 11.0.1,27.2.1 examples/bin/guest
 ```
 
 The same executable, [`examples/guest.c`](examples/guest.c), reports the system it found itself in, six years apart:
 
 ```
+==> macOS 11.0.1 (20B29)
 macOS 11.0.1 (20B29)
 loaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking
 sqlite 3.32.3: 1 row(s) in /Users/emu/guest.sqlite
-```
-
-```
+==> macOS 27.2.1 (26B131)
 macOS 27.2.1 (26B131)
 loaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking
 sqlite 3.54.0: 1 row(s) in /Users/emu/guest.sqlite
 ```
 
-A run typically fetches 150–600 MB and takes from twenty seconds to a few minutes, nearly all of it download. Running the same release again reuses what was fetched.
+A release typically fetches 150–600 MB and takes from twenty seconds to a few minutes, nearly all of it download. Running the same release again reuses what was fetched.
 
-[`examples/builds.txt`](examples/builds.txt) has the URL of the first and last release of every major version, and https://api.ipsw.me lists the rest. macOS 13 and 14 need [`--stream-compressed`](#what-does-not-work).
+## Every release
+
+`all` runs the guest against the first and last release of every major version:
+
+```sh
+./ipswrun all ./zlib-version
+```
+
+```
+==> macOS 11.0.1 (20B29)
+zlib 1.2.11
+==> macOS 11.6 (20G165): same as macOS 11.0.1 (20B29)
+==> macOS 12.0.1 (21A559): same as macOS 11.0.1 (20B29)
+==> macOS 12.6 (21G115): same as macOS 11.0.1 (20B29)
+==> macOS 15.0 (24A335)
+zlib 1.2.12
+==> macOS 15.6.1 (24G90): same as macOS 15.0 (24A335)
+...
+```
+
+A release whose output and exit status repeat an earlier one says `same as`, so the output shows where behaviour changed. A release that fails does not stop the ones after it.
+
+The first argument chooses the releases:
+
+| Release | Runs against |
+| --- | --- |
+| `15.6.1` or `24G90` | that release |
+| `15` | 15.0 and 15.6.1 |
+| `latest` | the release Apple currently offers |
+| `all` | every release known by name |
+| `https://…/UniversalMac_15.3_24D60_Restore.ipsw` | any other restore image |
+| `11,15,27.2.1` | several of the above |
+
+The releases known by name are a list built into ipswrun plus the current one from [Apple's feed](https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml); `ipswrun --releases` prints them. macOS 13 and 14 are skipped unless you pass [`--stream-compressed`](#what-does-not-work).
 
 ## Usage
 
 ```sh
-ipswrun [flags] <https IPSW url> <guest executable> [guest arguments...]
+ipswrun [flags] <release> <guest executable> [guest arguments...]
 ```
 
 The program you run, the guest, is an ordinary executable built on a Mac:
@@ -51,24 +82,25 @@ clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains -o guest guest.
 What the guest gets:
 
 - **That release's code.** It is loaded by the release's own dyld against the release's own dyld shared cache, so `dlopen` of any system framework, private ones included, gets the code that shipped.
-- **A home directory**, `/Users/emu`. By default it is a temporary directory that is deleted after the run. Pass `--home <dir>` to keep what the guest writes there, which is the usual way to get results out.
+- **A home directory**, `/Users/emu`. By default it is a temporary directory that is deleted after the run. Pass `--home <dir>` to keep what the guest writes there, which is the usual way to get results out. With several releases, give each its own: `--home 'out/{build}'`.
 - **Standard output and error**, printed when the guest has finished rather than as it runs.
-- **Its exit status**, which becomes ipswrun's. ipswrun itself exits 2 for a bad command line and 70 for a run that failed.
+- **Its exit status**, which becomes ipswrun's. ipswrun itself exits 2 for a bad command line and 70 for a run that failed. With several releases it exits 70 if any run failed, otherwise 1 if any guest exited nonzero.
 
 ## Options
 
 | Flag | What it does |
 | --- | --- |
-| `--home <dir>` | host directory the guest sees as its home, `/Users/emu` (default: a temporary one, deleted afterwards) |
+| `--home <dir>` | host directory the guest sees as its home, `/Users/emu` (default: a temporary one, deleted afterwards). `{build}` and `{version}` are filled in per release, and one is required with several |
 | `--env KEY=VALUE` | added to the guest environment (repeatable) |
 | `--system <path>` | system-volume file, or directory ending in `/`, the guest may read (repeatable). The default is feature flags, `SystemVersion.plist`, ICU data in `/usr/share/icu/` and `/usr/lib/libobjc-trampolines.dylib`; giving any replaces the default |
 | `--cache <dir>` | where downloads are kept between runs (default: `ipswrun-<uid>` in the system temporary directory, so cleared on reboot) |
 | `--stream-compressed` | allow downloading one compressed disk image member front to back, for macOS 13 and 14 |
-| `--report <file>` | write a JSON summary: version, build, shared cache UUID, exit code, pages mapped, requests, bytes and seconds |
-| `--timeout <seconds>` | how long the guest may run, counted from when it starts (default 900) |
+| `--report <file>` | write a JSON summary: version, build, shared cache UUID, exit code, pages mapped, requests, bytes and seconds. `{build}` and `{version}` as in `--home` |
+| `--timeout <seconds>` | how long the guest may run on each release, counted from when it starts (default 900) |
 | `--trace` | print every emulated system call |
-| `--device <product>` | BuildManifest product used to pick disk images (default `Macmini9,1`) |
+| `--device <product>` | Mac model the disk images and `latest` are picked for (default `Macmini9,1`) |
 | `--unicorn <dir>` | where the pinned `libunicorn` is kept (default: the user cache directory) |
+| `--releases` | print the releases known by name (version, build, URL), then exit |
 | `--setup` | only fetch and verify `libunicorn`, then exit |
 
 ## Requirements
@@ -83,14 +115,14 @@ What the guest gets:
 - **Threads, daemons and the network.** There is one thread: work queued to other threads never runs. A blocking Mach receive is answered with a dead-reply notification, which callers see as an interrupted XPC connection.
 - **Anything that needs a daemon.** `NSUserDefaults` reads back nothing (no `cfprefsd`). `SecKeyCreateRandomKey` fails unless the key is made the iOS way (`kSecUseDataProtectionKeychain`, not permanent), because the macOS default is the legacy CDSA stack behind `securityd`.
 - **Files outside the home.** What the guest writes outside `--home` never reaches the host, and it can read system files only from the `--system` allowlist.
-- **macOS 13 and 14 by range.** Their images keep the shared cache in a deflate-compressed ZIP member, which cannot be read by range. `--stream-compressed` downloads that one member (3.6–4.5 GB); without the flag the run stops and says so.
+- **macOS 13 and 14 by range.** Their images keep the shared cache in a deflate-compressed ZIP member, which cannot be read by range. `--stream-compressed` downloads that one member (3.6–4.5 GB).
 - **Shared memory through `mach_vm_remap`.** It copies instead of sharing, and only file-backed memory: enough for code (the Objective-C block trampolines), wrong for memory that is written afterwards.
 - **Some CPU features.** The emulated core has a 44-bit address space and reports no DIT, SHA-3 or SHA-512 instructions.
 - **System calls nobody has needed yet.** An unimplemented call stops the run with a message and a guest backtrace instead of guessing.
 
 ## What is tested
 
-Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases and diffs every run against [`examples/expected`](examples/expected). Other guests will find system calls that are not implemented yet.
+Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases known by name and diffs every run against [`examples/expected`](examples/expected).
 
 ## How it works
 

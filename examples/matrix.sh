@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs a guest against every restore image in examples/builds.txt and diffs what each run reported
+# Runs a guest against every release ipswrun knows by name (ipswrun --releases) and diffs what each run reported
 # against what is recorded for it in examples/expected/<guest>/<build>.json.
 #
 #   examples/matrix.sh [--guest=NAME] [--stream-compressed] [--update] [version prefix...]
@@ -27,7 +27,7 @@ for arg; do
 done
 
 cache=${IPSWRUN_CACHE:-$HOME/Library/Caches/ipswrun/matrix}
-results=${RESULTS:-$(mktemp -d -t ipswrun-matrix)}
+results=${RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/ipswrun-matrix.XXXXXX")} || exit
 mkdir -p "$results/bin" || exit
 go build -o "$results/bin/ipswrun" ./cmd/ipswrun || exit
 make -s -C examples "bin/$guest" && cp "examples/bin/$guest" "$results/bin/guest" || exit
@@ -36,8 +36,7 @@ expected=examples/expected/$guest args=()
 [ "$guest" != objcinfo ] || args=(/System/Library/PrivateFrameworks/IMCore.framework/IMCore)
 
 failed=0
-while IFS=$'\t' read -r version build url; do
-	case $version in '' | \#*) continue ;; esac
+while IFS=$'\t' read -r version build _; do
 	if [ ${#prefixes[@]} -gt 0 ]; then
 		wanted=
 		for prefix in "${prefixes[@]}"; do
@@ -60,7 +59,7 @@ while IFS=$'\t' read -r version build url; do
 	mkdir -p "$home" "$cache/$build"
 	# ${flags[@]+…}: an empty array is "unbound" to the bash 3.2 that macOS ships.
 	"$results/bin/ipswrun" ${flags[@]+"${flags[@]}"} --cache "$cache/$build" --home "$home" --report "$report" \
-		"$url" "$results/bin/guest" ${args[@]+"${args[@]}"} >"$results/$build.out" 2>"$results/$build.err" </dev/null
+		"$build" "$results/bin/guest" ${args[@]+"${args[@]}"} >"$results/$build.out" 2>"$results/$build.err" </dev/null
 	status=$?
 
 	# What a build is expected to reproduce: its identity, the guest's exit status and its output.
@@ -84,7 +83,7 @@ while IFS=$'\t' read -r version build url; do
 	printf '%-8s %-8s exit %-3s %s\n' "$version" "$build" "$status" "$verdict"
 	[ "$verdict" != DIFFERS ] || sed 's/^/    /' "$results/$build.diff"
 	[ "$status" -ne 70 ] || tail -n 5 "$results/$build.err" | sed 's/^/    /'
-done <examples/builds.txt
+done < <("$results/bin/ipswrun" --releases)
 
 echo "results in $results"
 exit $failed
