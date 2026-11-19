@@ -157,5 +157,12 @@ func TestPorts(t *testing.T) {
 		if checked.kind != xpcReceive || found.kind != xpcSend || checked.name != found.name || p.ports[found.name] == nil || p.ports[found.name].sends != 1 {
 			t.Errorf("checked in as %+v, found as %+v", checked, found)
 		}
+		// bootstrap_check_in asks with a routine of its own, and gets the same port.
+		if again, _ := ask(routineCheckInMach, "com.example.provided").values["port"].(xpcPort); again != checked {
+			t.Errorf("checked in as %+v, and by bootstrap_check_in as %+v", checked, again)
+		}
+		if d := ask(routineCheckInMach, "com.example.other"); d.uint("error") != noSuchService {
+			t.Errorf("bootstrap_check_in of a service the guest does not provide: %v", d)
+		}
 	})
 }

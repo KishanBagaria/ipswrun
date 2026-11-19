@@ -29,6 +29,7 @@ const (
 	routineLookUp       = 207
 	routineLookUpLegacy = 804 // the same question, as bootstrap_look_up asks it
 	routineCheckIn      = 805
+	routineCheckInMach  = 206 // the same, as bootstrap_check_in asks it: how a daemon that is not an XPC listener gets its port
 
 	noSuchService = 3 // ESRCH, as launchd says it
 	launchdPID    = 1
@@ -62,13 +63,14 @@ func (p *Process) launchd(m message, raw []byte) bool {
 	}
 	reply := &xpcDictionary{}
 	q, provided := p.service(request.string("name"))
+	checkIn := routine == routineCheckIn || routine == routineCheckInMach
 	switch {
-	case routine != routineLookUp && routine != routineLookUpLegacy && routine != routineCheckIn:
+	case !checkIn && routine != routineLookUp && routine != routineLookUpLegacy:
 		p.note("  to launchd, routine %d: %v", routine, request)
 		return false
 	case !provided:
 		reply.set("error", int64(noSuchService))
-	case routine == routineCheckIn:
+	case checkIn:
 		reply.set("port", xpcPort{xpcReceive, q.name})
 	default:
 		p.transfer(q.name, makeSend)
