@@ -21,6 +21,10 @@ jobs:
       - run: |
           for guest in threads swiftasync; do
             examples/bin/$guest | tee native.txt && diff native.txt examples/expected/$guest/native.txt || exit
+            # And every recorded run that got to the end printed exactly that.
+            for run in examples/expected/$guest/*.json; do
+              [ "$(jq .exit_code $run)" != 0 ] || jq -j .output $run | diff - native.txt || { echo $run; exit 1; }
+            done
           done
       - uses: actions/upload-artifact@v4
         with:
@@ -28,7 +32,7 @@ jobs:
           path: examples/bin/
           if-no-files-found: error
 
-  # Runs one guest against two releases on both kinds of host, with the same binaries, so that a
+  # Runs three guests against two releases on both kinds of host, with the same binaries, so that a
   # difference between hosts shows up as one.
   run:
     needs: build
@@ -48,5 +52,13 @@ jobs:
           name: guests
           path: examples/bin
       - run: chmod +x examples/bin/*
-      - run: examples/matrix.sh --guest=crypto 15.0 27.2
-      - run: examples/matrix.sh --guest=threads 15.0 27.2
+      # What ipswrun fetched of the two releases, kept between runs: without it every run downloads
+      # a few hundred megabytes of each from Apple.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ipswrun-matrix
+          key: matrix-${{ runner.os }}-${{ hashFiles('examples/*.c', 'examples/*.m', 'examples/*.swift', 'examples/Makefile') }}
+          restore-keys: matrix-${{ runner.os }}-
+      - run: examples/matrix.sh --guest=crypto,threads,swiftasync 15.0 27.2
+        env:
+          IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix
