@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -21,17 +22,22 @@ type Machine struct {
 	procs    []*Process
 	running  *Process            // the process whose thread has, or last had, the turn
 	services map[string]*service // what launchd knows (see launchd.go)
+	shared   map[string]*sharedMemory
 	deadline time.Time
+	settling time.Time // once the main guest has exited: when the daemons are no longer waited for
+	done     bool      // the run is over
 }
 
 // Guest is one program to run as a process.
 type Guest struct {
 	Executable string   // host path of the Mach-O (arm64, linked against the cache)
+	Image      []byte   // the Mach-O itself, if it is not a file of the host's: Executable is then only its name
 	Args       []string // after argv[0]
 	Env        []string // its whole environment
 	// Services are the Mach services it provides: the names it may check in with launchd, which
 	// keeps what is sent to them until it does.
 	Services []string
+	Root     bool // it runs as root, not as the guests' user
 }
 
 // NewMachine makes a machine with no process yet.
@@ -55,7 +61,7 @@ func NewMachine(cfg Config) (*Machine, error) {
 		mounts[i] = Mount{canonical(m.Guest), host}
 	}
 	slices.SortStableFunc(mounts, func(a, b Mount) int { return len(b.Guest) - len(a.Guest) })
-	return &Machine{cfg: cfg, dyld: dyld, mounts: mounts, services: map[string]*service{}}, nil
+	return &Machine{cfg: cfg, dyld: dyld, mounts: mounts, services: map[string]*service{}, shared: map[string]*sharedMemory{}}, nil
 }
 
 // Spawn makes a process of a guest, ready to run from dyld's entry point. Two guests may not
@@ -66,8 +72,18 @@ func (m *Machine) Spawn(g Guest) (p *Process, err error) {
 			return nil, fmt.Errorf("the service %s is provided by both %s and %s", name, s.provider.exePath, g.Executable)
 		}
 	}
-	if p, err = m.newProcess(g.Executable); err != nil {
+	image := g.Image
+	if image == nil {
+		if image, err = os.ReadFile(g.Executable); err != nil {
+			return nil, err
+		}
+	}
+	if p, err = m.newProcess(g.Executable, image); err != nil {
 		return nil, err
+	}
+	p.hostExe = g.Image == nil
+	if g.Root {
+		p.uid, p.gid = 0, 0
 	}
 	for _, name := range g.Services {
 		m.services[name] = &service{provider: p}
@@ -82,10 +98,13 @@ func (m *Machine) Main() *Process { return m.procs[0] }
 // Processes are every guest that was started, the main one first.
 func (m *Machine) Processes() []*Process { return m.procs }
 
-// Close releases every process.
+// Close releases every process, and then the memory they shared.
 func (m *Machine) Close() {
 	for _, p := range m.procs {
 		p.Close()
+	}
+	for _, s := range m.shared {
+		s.free()
 	}
 }
 
@@ -96,12 +115,15 @@ func (m *Machine) Run(timeout time.Duration) (err error) {
 	m.deadline = time.Now().Add(timeout)
 	main := m.procs[0]
 	m.running = main
-	for !main.exited {
+	for !m.done {
 		p := m.running
 		p.step()
 		if p.exited {
 			p.note("exited with status %d", p.exitCode)
 			p.reap()
+			if p == main {
+				m.settling = time.Now().Add(settleTime)
+			}
 		}
 		if p.exited || p.reschedule() {
 			m.schedule()
@@ -110,12 +132,20 @@ func (m *Machine) Run(timeout time.Duration) (err error) {
 	return nil
 }
 
-// user is who a message's trailer says sent it: the guests' user, or for the kernel and launchd root.
-func (m *Machine) user(pid uint32) (uid, gid uint32) {
-	if pid == 0 || pid == launchdPID {
-		return 0, 0
+// settleTime is how long the daemons may go on after the guest has exited. What a daemon was
+// asked to do it may do later, as cfprefsd writes preferences a moment after it is given them,
+// and on a real system it is still there to do it. Here the run goes on until no daemon has
+// anything left to do or to wait for, or until this much time has passed.
+const settleTime = 5 * time.Second
+
+// process is the process with a pid, if it has not exited.
+func (m *Machine) process(pid uint32) *Process {
+	for _, p := range m.procs {
+		if p.pid == pid && !p.exited {
+			return p
+		}
 	}
-	return guestUID, guestGID
+	return nil
 }
 
 // live are the processes that have not exited.
@@ -183,12 +213,18 @@ func (m *Machine) schedule() {
 				p.reap()
 			}
 		}
-		if main.exited {
+		// The guest has exited: the run is over once the daemons are at rest, or have had their time.
+		if main.exited && (len(m.live()) == 0 || !now.Before(m.settling)) {
+			m.done = true
 			return
 		}
 		if p, t := m.next(); t != nil {
 			p.switchTo(t)
 			m.running = p
+			return
+		}
+		if main.exited && (until.IsZero() || until.After(m.settling)) {
+			m.done = true
 			return
 		}
 		// Nothing can run. A thread that waits for a message or a signal may wait for good: that

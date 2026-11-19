@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,10 +19,17 @@ import (
 // CacheName is the file name of the arm64e dyld shared cache; subcaches add a suffix.
 const CacheName = "dyld_shared_cache_arm64e"
 
-// BaseEnv is the environment every guest gets: no preference daemon, no allocator features that
-// need address space or kernel support the emulator lacks, and the emulated home.
-var BaseEnv = []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "MallocDeferredReclaim=0", "HOME=" + GuestHome,
-	"CFFIXED_USER_HOME=" + GuestHome, "TMPDIR=" + GuestHome + "/tmp/"}
+// BaseEnv is the environment every guest gets: no allocator features that need address space or
+// kernel support the emulator lacks, and the emulated home.
+var BaseEnv = []string{"MallocNanoZone=0", "MallocDeferredReclaim=0", "HOME=" + GuestHome, "TMPDIR=" + GuestHome + "/tmp/"}
+
+// noPreferencesEnv is added for a run without the daemon that keeps preferences, cfprefsd: it
+// has CoreFoundation read and write them in the process itself. The fixed home does that too,
+// which is why a run with the daemon has to do without it.
+var noPreferencesEnv = []string{"__CFPREFERENCES_AVOID_DAEMON=1", "CFFIXED_USER_HOME=" + GuestHome}
+
+// preferencesAgent is the service of cfprefsd that keeps a user's preferences.
+const preferencesAgent = "com.apple.cfprefsd.agent"
 
 // DefaultSystem is what a guest may read from the build's system volume unless told otherwise:
 // the feature flags, the system version, ICU's data (locales, calendars, time zones) and the
@@ -28,11 +37,16 @@ var BaseEnv = []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "Ma
 var DefaultSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/CoreServices/SystemVersion.plist", "/usr/share/icu/",
 	"/usr/lib/libobjc-trampolines.dylib"}
 
+// SystemPrefix starts the name of an executable that is taken from the build's system volume
+// and not from the host: system:/usr/sbin/cfprefsd.
+const SystemPrefix = "system:"
+
 // Daemon is a guest that runs beside the main one, to provide Mach services to it.
 type Daemon struct {
 	Services   []string // the names it may check in with launchd
-	Executable string   // host path of its Mach-O
+	Executable string   // host path of its Mach-O, or with SystemPrefix its path in the build
 	Args       []string // after argv[0]
+	Root       bool     // it runs as root, as a launchd daemon does, and not as the guest's user, as an agent
 }
 
 // Run describes one guest execution against a build.
@@ -41,7 +55,7 @@ type Run struct {
 	Home       string        // host directory behind GuestHome
 	Mounts     []Mount       // more host directories the guests may change (see CheckMounts)
 	Services   []string      // the Mach services the guest provides: the names it may check in with launchd
-	Executable string        // host path of the guest Mach-O (arm64, linked against the cache)
+	Executable string        // host path of the guest Mach-O (arm64, linked against the cache), or with SystemPrefix its path in the build
 	Args       []string      // guest arguments after argv[0]
 	Daemons    []Daemon      // more guests, started with it, that provide services
 	Env        []string      // added to BaseEnv, for every guest
@@ -53,6 +67,40 @@ type Run struct {
 }
 
 var leadingDigits = regexp.MustCompile(`^\d+`)
+
+// nestedFramework matches the directory of a framework that is inside another.
+var nestedFramework = regexp.MustCompile(`^/System/Library/(Private)?Frameworks/.+\.framework/.+\.framework$`)
+
+// realDirectory is the path of a directory of the system volume with every symbolic link on the
+// way to it followed; empty if there is no such directory.
+func realDirectory(image *rangefs.Image, path string) (string, error) {
+	real := ""
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	for links := 0; len(parts) > 0; {
+		next := real + "/" + parts[0]
+		entry, err := image.Stat(rangefs.FileSystem, next)
+		if err != nil {
+			return "", err
+		}
+		switch entry.Kind {
+		case rangefs.Directory:
+			real, parts = next, parts[1:]
+		case rangefs.Symlink:
+			if links++; links > 16 {
+				return "", nil
+			}
+			target := entry.Target
+			if !strings.HasPrefix(target, "/") {
+				target = real + "/" + target
+			}
+			parts = append(strings.Split(strings.TrimPrefix(pathpkg.Clean(target), "/"), "/"), parts[1:]...)
+			real = ""
+		default:
+			return "", nil
+		}
+	}
+	return real, nil
+}
 
 // RunBuild starts the guest, and the daemons beside it, inside the userland of the build in image
 // and runs them until the guest exits. The machine is returned even when the run fails, for its
@@ -125,10 +173,25 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		for _, prefix := range allowed {
 			wanted = wanted || strings.HasPrefix(path, prefix) || path+"/" == prefix || strings.HasPrefix(prefix, path+"/")
 		}
-		if !wanted {
-			return SystemFile{}, nil
-		}
 		if f, ok := known[path]; ok {
+			return f, nil
+		}
+		if !wanted {
+			// A framework inside another is reached through a symbolic link (Frameworks, for
+			// Versions/Current/Frameworks). Its code is in the shared cache under its real path,
+			// which dyld finds by opening the framework's directory: that much of it exists.
+			if !nestedFramework.MatchString(path) {
+				return SystemFile{}, nil
+			}
+			real, err := realDirectory(image, path)
+			if err != nil {
+				return SystemFile{}, err
+			}
+			f := SystemFile{Dir: real != "" && real != path, Real: real}
+			known[path] = f
+			if !f.Dir {
+				return SystemFile{}, nil
+			}
 			return f, nil
 		}
 		entry, err := image.Stat(rangefs.FileSystem, path)
@@ -152,12 +215,29 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 	if err != nil {
 		return nil, cache, err
 	}
-	env := append(append([]string{}, BaseEnv...), run.Env...)
+	env := slices.Clone(BaseEnv)
+	if !slices.ContainsFunc(run.Daemons, func(d Daemon) bool { return slices.Contains(d.Services, preferencesAgent) }) {
+		env = append(env, noPreferencesEnv...)
+	}
+	env = append(env, run.Env...)
 	guests := []Guest{{Executable: run.Executable, Args: run.Args, Env: env, Services: run.Services}}
 	for _, d := range run.Daemons {
-		guests = append(guests, Guest{Executable: d.Executable, Args: d.Args, Env: env, Services: d.Services})
+		guests = append(guests, Guest{Executable: d.Executable, Args: d.Args, Env: env, Services: d.Services, Root: d.Root})
 	}
 	for _, g := range guests {
+		if path, ok := strings.CutPrefix(g.Executable, SystemPrefix); ok {
+			f, err := image.Open(rangefs.FileSystem, path)
+			if err == nil && f == nil {
+				err = fmt.Errorf("the system volume has no file %s", path)
+			}
+			if err == nil {
+				g.Image, err = f.ReadAll()
+			}
+			if err != nil {
+				return m, cache, fmt.Errorf("%s: %w", g.Executable, err)
+			}
+			g.Executable = path
+		}
 		if _, err := m.Spawn(g); err != nil {
 			return m, cache, fmt.Errorf("%s: %w", g.Executable, err)
 		}

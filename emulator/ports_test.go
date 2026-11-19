@@ -146,6 +146,22 @@ func TestPorts(t *testing.T) {
 			}
 			return d
 		}
+		// Asked which of its domains a process is in, launchd says the user's, or for root the system's.
+		domain := func() string {
+			reply := allocate()
+			request, _ := xpcEncode((&xpcDictionary{}).set("get", true).set("outgsk", uint64(jobManagerName)))
+			p.m.launchd(p, message{bits: makeSendOnce << 8, id: 0x40000000 | routineJobValue, local: reply}, append(header(0, 0, bootstrapPort, 0), request...))
+			answer := p.owned(reply).queue[0]
+			ports, payload, _ := xpcBody(le.Uint32(answer.data), answer.data)
+			d, _ := xpcDecode(payload, ports)
+			return d.string("out")
+		}
+		user := domain()
+		p.uid = 0
+		if system := domain(); user != "Aqua" || system != "System" {
+			t.Errorf("launchd's domains: %q for the user, %q for root", user, system)
+		}
+		p.uid = guestUID
 		if d := ask(routineLookUp, "com.example.other"); d.uint("error") != noSuchService {
 			t.Errorf("looking up a service nobody provides: %v", d)
 		}

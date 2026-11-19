@@ -65,6 +65,11 @@ func (d *xpcDictionary) uint(key string) uint64 {
 	return 0
 }
 
+func (d *xpcDictionary) bool(key string) bool {
+	b, _ := d.values[key].(bool)
+	return b
+}
+
 func (d *xpcDictionary) string(key string) string {
 	s, _ := d.values[key].(string)
 	return s

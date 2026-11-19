@@ -18,6 +18,7 @@ const (
 	eNOENT    = 2
 	eSRCH     = 3
 	eBADF     = 9
+	eEXIST    = 17
 	eNOMEM    = 12
 	eACCES    = 13
 	eFAULT    = 14
@@ -50,11 +51,16 @@ type fd struct {
 	path  string // canonical; stdio descriptors have none
 	pos   int64
 	names []string // of a directory being listed, read on the first getdirentries
+	// shared, of a descriptor from shm_open, is the memory it names; data is then what it holds.
+	shared *sharedMemory
 }
 
 func (f *fd) size() int64 {
-	if f.kind == cacheFD {
+	switch {
+	case f.kind == cacheFD:
 		return f.cache.Size()
+	case f.shared != nil:
+		return int64(len(f.shared.data))
 	}
 	return int64(len(f.data))
 }
@@ -76,8 +82,12 @@ func (f *fd) pread(off, n uint64) ([]byte, int64) {
 		}
 		return data, 0
 	case dataFD:
-		off = min(off, uint64(len(f.data)))
-		return f.data[off:min(off+min(n, 1<<40), uint64(len(f.data)))], 0
+		data := f.data
+		if f.shared != nil {
+			data = f.shared.data
+		}
+		off = min(off, uint64(len(data)))
+		return data[off:min(off+min(n, 1<<40), uint64(len(data)))], 0
 	}
 	return nil, -eISDIR
 }
@@ -110,11 +120,24 @@ func closeHost(fd int) { syscall.Close(fd) }
 // file has one identity (and one inode number) however the guest names it.
 func canonical(path string) string {
 	path = pathpkg.Clean(path)
-	if path == cryptexLink || strings.HasPrefix(path, cryptexLink+"/") {
+	switch {
+	case under(path, cryptexLink):
 		path = cryptex + path[len(cryptexLink):]
+	case under(path, "/etc"):
+		path = "/private" + path
 	}
 	return path
 }
+
+// The users the machine has, as the files a process falls back on when no directory service
+// answers: root, and the one every other guest runs as. Root reads the second file, which has
+// three more fields.
+const (
+	passwdFile       = "/private/etc/passwd"
+	masterPasswdFile = "/private/etc/master.passwd"
+	passwd           = "root:*:0:0:System Administrator:/var/root:/bin/sh\nemu:*:501:20:emu:" + GuestHome + ":/bin/zsh\n"
+	masterPasswd     = "root:*:0:0::0:0:System Administrator:/var/root:/bin/sh\nemu:*:501:20::0:0:emu:" + GuestHome + ":/bin/zsh\n"
+)
 
 func crcInode(path string) uint64 { return uint64(crc32.ChecksumIEEE([]byte(path)) & 0xFFFFFF) }
 
@@ -148,16 +171,24 @@ func under(path, dir string) bool { return path == dir || strings.HasPrefix(path
 func (p *Process) resolve(path string) (target, bool) {
 	path = canonical(path)
 	t, ok := p.lookup(path)
-	t.path = path
+	if t.path == "" {
+		t.path = path
+	}
 	return t, ok
 }
 
 func (p *Process) lookup(path string) (target, bool) {
 	switch {
-	case path == GuestExe:
+	case path == GuestExe && p.hostExe:
 		return target{kind: hostFD, host: p.exePath}, true
+	case path == GuestExe:
+		return target{kind: dataFD, data: p.exe}, true
 	case path == guestDyld:
 		return target{kind: dataFD, data: p.dyld}, true
+	case path == passwdFile:
+		return target{kind: dataFD, data: []byte(passwd)}, true
+	case path == masterPasswdFile:
+		return target{kind: dataFD, data: []byte(masterPasswd)}, true
 	}
 	if f, ok := p.cachePaths[path]; ok {
 		return target{kind: cacheFD, cache: f}, true
@@ -177,7 +208,7 @@ func (p *Process) lookup(path string) (target, bool) {
 		return target{kind: dirFD}, true
 	}
 	switch path {
-	case "/", "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/var", "/tmp", "/private/tmp", "/emu":
+	case "/", "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/private/etc", "/var", "/var/root", "/private/var/root", "/tmp", "/private/tmp", "/emu":
 		return target{kind: dirFD}, true
 	}
 	if p.system != nil {
@@ -186,7 +217,7 @@ func (p *Process) lookup(path string) (target, bool) {
 			stopf("%v", err)
 		}
 		if f.Dir {
-			return target{kind: dirFD}, true
+			return target{kind: dirFD, path: f.Real}, true
 		}
 		if f.File != nil {
 			return target{kind: cacheFD, cache: f.File}, true
@@ -431,6 +462,9 @@ func sysLseek(p *Process, a []uint64) int64 {
 
 func sysFtruncate(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
+	if f != nil && f.shared != nil {
+		return f.shared.resize(a[1])
+	}
 	if f == nil || f.kind != hostFD {
 		return -eBADF
 	}
@@ -733,9 +767,4 @@ func sysFsgetpath(p *Process, a []uint64) int64 {
 	}
 	p.write(a[0], str(path))
 	return int64(len(path) + 1)
-}
-
-func sysShmOpen(p *Process, a []uint64) int64 {
-	p.note("  shm_open %s", p.cstr(a[0]))
-	return -eNOENT
 }

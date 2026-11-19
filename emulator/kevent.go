@@ -210,6 +210,10 @@ func (p *Process) changeWorkloop(q *kqueue, c kevent) {
 	switch {
 	case c.fflags&noteThreadRequest != 0 && c.flags&evDelete != 0:
 		q.request, q.requested = nil, false
+	case c.fflags&noteThreadRequest != 0 && p.stale(c):
+		// The queue is no longer in the state its owner asked for a thread in: another thread
+		// took the work meanwhile, and one started now would find a queue that is not its own.
+		p.note("  the workloop's state has changed since: no thread")
 	case c.fflags&noteThreadRequest != 0:
 		request := c
 		q.request, q.requested = &request, true
@@ -229,6 +233,14 @@ func (p *Process) changeWorkloop(q *kqueue, c kevent) {
 			p.wait(waitWorkloop, q.id, time.Time{}, result{})
 		}
 	}
+}
+
+// stale reports whether a workloop event is out of date. Such an event may say where the state
+// of its queue is, and what it was, under a mask, when the event was made: the kernel acts on
+// the event only if it still is.
+func (p *Process) stale(c kevent) bool {
+	addr, mask, value := c.ext[1], c.ext[2], c.ext[3]
+	return addr != 0 && p.u64(addr)&mask != value&mask
 }
 
 // serve starts work queue threads for the kqueues that have something for one, and reports when

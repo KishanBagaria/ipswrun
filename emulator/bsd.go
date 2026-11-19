@@ -35,15 +35,15 @@ func init() {
 		"renameatx_np": {5, sysRenameatx}, "faccessat": {4, sysFaccessat}, "truncate": {2, sysTruncate}, "fcntl": {3, sysFcntl}, "dup": {1, sysDup},
 		"ioctl": {3, constant(-eNOTTY)}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
 		"getattrlist": {5, sysGetattrlist}, "getattrlistat": {6, sysGetattrlistat}, "fgetattrlist": {5, sysFgetattrlist},
-		"getattrlistbulk": {5, sysGetattrlistbulk}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen},
+		"getattrlistbulk": {5, sysGetattrlistbulk}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen}, "shm_unlink": {1, sysShmUnlink},
 		"getfsstat64": {3, constant(0)}, "pathconf": {2, sysPathconf}, "fpathconf": {2, sysPathconf}, "getdirentries64": {4, sysGetdirentries64},
 		// memory
 		"mmap": {6, sysMmap}, "munmap": {2, sysMunmap}, "mprotect": {3, constant(0)}, "madvise": {3, constant(0)},
 		"mremap_encrypted": {0, constant(0)}, "shared_region_check_np": {1, sysSharedRegionCheck},
 		"shared_region_map_and_slide_2_np": {4, sysSharedRegionMap}, "map_with_linking_np": {4, constant(-eNOTSUP)},
 		// process
-		"exit": {1, sysExit}, "getpid": {0, sysGetpid}, "getppid": {0, constant(1)}, "getuid": {0, constant(guestUID)},
-		"geteuid": {0, constant(guestUID)}, "getgid": {0, constant(guestGID)}, "getegid": {0, constant(guestGID)}, "gettid": {2, constant(-eSRCH)},
+		"exit": {1, sysExit}, "getpid": {0, sysGetpid}, "getppid": {0, constant(1)}, "getuid": {0, sysGetuid},
+		"geteuid": {0, sysGetuid}, "getgid": {0, sysGetgid}, "getegid": {0, sysGetgid}, "gettid": {2, constant(-eSRCH)},
 		"issetugid": {0, constant(0)}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
 		"__pthread_sigmask": {3, sysSigprocmask}, "__pthread_kill": {2, sysPthreadKill}, "kill": {3, sysKill},
 		"sigaltstack": {2, constant(0)}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
@@ -58,7 +58,7 @@ func init() {
 		"setrlimit": {2, constant(0)}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
-		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpid}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
 	}
 	for name, v := range trivial {
 		bsdHandlers[name] = handler{4, constant(v)}
@@ -134,6 +134,9 @@ func sysMmap(p *Process, a []uint64) int64 {
 	}
 	if f.kind == dirFD {
 		return -eACCES
+	}
+	if f.shared != nil && flags&mapShared != 0 {
+		return p.mapShared(f.shared, addr, length, off, fixed)
 	}
 	name := "?"
 	if f.path != "" {
@@ -234,6 +237,16 @@ func sysExit(p *Process, a []uint64) int64 {
 }
 
 func sysGetpid(p *Process, a []uint64) int64 { return int64(p.pid) }
+func sysGetuid(p *Process, a []uint64) int64 { return int64(p.uid) }
+func sysGetgid(p *Process, a []uint64) int64 { return int64(p.gid) }
+
+// hostUUID is the machine's own identifier: the same on every run, as everything else about it is.
+var hostUUID = [16]byte{0x1F, 0x5A, 0xE3, 0x70, 0x9C, 0x42, 0x4D, 0x1B, 0x8E, 0x6D, 0x49, 0x50, 0x53, 0x57, 0x52, 0x4E}
+
+func sysGethostuuid(p *Process, a []uint64) int64 {
+	p.write(a[0], hostUUID[:])
+	return 0
+}
 
 func sysSigaction(p *Process, a []uint64) int64 {
 	if a[2] != 0 {
@@ -356,8 +369,17 @@ func sysMacSyscall(p *Process, a []uint64) int64 {
 		return 0
 	case policy == "Sandbox":
 		return 0
+	case policy == "Quarantine": // nothing is quarantined, and nothing a guest writes will be
+		return 0
 	}
 	return -eNOSYS
+}
+
+// fixed is a string in a field of n bytes, cut short if it has to be to end in a zero.
+func fixed(s string, n int) []byte {
+	out := make([]byte, n)
+	copy(out[:n-1], s)
+	return out
 }
 
 func (p *Process) reason(addr uint64) string {
@@ -385,14 +407,28 @@ func sysOSFaultWithPayload(p *Process, a []uint64) int64 {
 func sysProcInfo(p *Process, a []uint64) int64 {
 	callnum, flavor, buf, size := a[0], a[2], a[4], a[5]
 	p.note("  proc_info call %d flavor %d size %d", callnum, flavor, size)
-	switch {
-	case callnum == 15: // PROC_INFO_CALL_SET_DYLD_IMAGES
+	if callnum == 15 { // PROC_INFO_CALL_SET_DYLD_IMAGES
 		return 0
+	}
+	// Everything else is asked about a process, which may be another: a daemon asks about its client.
+	about := p.m.process(uint32(a[1]))
+	if about == nil {
+		return -eSRCH
+	}
+	switch {
+	case callnum == 2 && flavor == 3 && size >= 136: // PROC_PIDTBSDINFO
+		// struct proc_bsdinfo: flags (64-bit), status (running), exit status, pid, parent; the
+		// user and group three times over; the name twice; then nothing until when it started.
+		info := le32(0x10, 2, 0, about.pid, launchdPID, about.uid, about.gid, about.uid, about.gid, about.uid, about.gid, 0)
+		info = append(append(info, fixed(about.label, 16)...), fixed(about.label, 32)...)
+		info = append(info, le32(uint32(len(about.fds)), about.pid, 0, 0, 0, 0)...)
+		p.write(buf, append(info, le64(fixedMtime, 0)...))
+		return 136
 	case callnum == 2 && flavor == 11: // PROC_PIDPATHINFO
 		p.write(buf, str(GuestExe))
 		return 0
 	case callnum == 2 && flavor == 17 && size >= 56: // PROC_PIDUNIQIDENTIFIERINFO
-		p.write(buf, append(make([]byte, 16), le64(uint64(p.pid), 1, 0, 0, 0)...))
+		p.write(buf, append(make([]byte, 16), le64(uint64(about.pid), 1, 0, 0, 0)...))
 		return 56
 	case callnum == 2 && flavor == 19: // PROC_PIDARCHINFO
 		info := le32(cpuARM64, cpuSubtypeARM64E, 0)
