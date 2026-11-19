@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -24,6 +25,7 @@ const (
 	kernFailure      = 5
 	kernNotSupported = 46
 	sendInvalidDest  = 0x10000003
+	sendTooSmall     = 0x10000008
 	rcvTimedOut      = 0x10004003
 	bootstrapPort    = 0x707
 	hostPort         = 0x303
@@ -32,7 +34,6 @@ const (
 var machHandlers map[string]handler
 
 func init() {
-	newPort := func(p *Process, a []uint64) int64 { return int64(p.newPort()) }
 	portOut := func(arg int) func(*Process, []uint64) int64 {
 		return func(p *Process, a []uint64) int64 {
 			p.write(a[arg], le32(p.newPort()))
@@ -41,19 +42,19 @@ func init() {
 	}
 	machHandlers = map[string]handler{
 		"task_self": {0, constant(0x203)}, "thread_self": {0, machThreadSelf}, "host_self": {0, constant(hostPort)},
-		"reply_port": {0, newPort}, "thread_get_special_reply_port": {0, newPort},
+		"reply_port": {0, machReplyPort}, "thread_get_special_reply_port": {0, machSpecialReplyPort},
 		"vm_allocate": {4, machVMAllocate}, "vm_map": {6, machVMMap}, "vm_deallocate": {3, machVMDeallocate},
 		"vm_protect": {5, constant(0)}, "vm_purgable_control": {4, constant(0)},
-		"port_allocate": {3, portOut(2)}, "port_construct": {4, machPortConstruct}, "port_deallocate": {2, constant(0)},
-		"port_mod_refs": {4, constant(0)}, "port_insert_right": {4, constant(0)}, "port_destruct": {4, constant(0)},
-		"port_guard": {4, machPortGuard}, "port_unguard": {3, constant(0)}, "port_insert_member": {3, constant(0)},
-		"port_move_member": {3, constant(0)}, "port_extract_member": {3, constant(0)}, "port_type": {3, machPortType},
-		"port_request_notification":         {0, constant(0)},
+		"port_allocate": {3, machPortAllocate}, "port_construct": {4, machPortConstruct}, "port_deallocate": {2, machPortDeallocate},
+		"port_mod_refs": {4, machPortModRefs}, "port_insert_right": {4, machPortInsertRight}, "port_destruct": {4, machPortDestruct},
+		"port_guard": {4, machPortGuard}, "port_unguard": {3, constant(0)}, "port_insert_member": {3, machPortInsertMember},
+		"port_move_member": {3, machPortInsertMember}, "port_extract_member": {3, machPortExtractMember}, "port_type": {3, machPortType},
+		"port_request_notification":         {7, machPortRequestNotification},
 		"task_dyld_process_info_notify_get": {2, constant(kernFailure)}, // nobody is watching
 		"timebase_info":                     {1, machTimebaseInfo}, "generate_activity_id": {3, machGenerateActivityID},
 		"host_create_mach_voucher": {4, portOut(3)}, "swtch_pri": {1, sysYield}, "swtch": {0, sysYield}, "thread_switch": {3, sysYield},
-		"mk_timer_create": {0, newPort}, "mk_timer_destroy": {1, constant(0)}, "mk_timer_arm": {2, constant(0)},
-		"mk_timer_arm_leeway": {4, constant(0)}, "mk_timer_cancel": {2, constant(0)}, "semaphore_signal": {1, machSemaphoreSignal},
+		"mk_timer_create": {0, machTimerCreate}, "mk_timer_destroy": {1, machTimerDestroy}, "mk_timer_arm": {2, machTimerArm},
+		"mk_timer_arm_leeway": {4, machTimerArmLeeway}, "mk_timer_cancel": {2, machTimerCancel}, "semaphore_signal": {1, machSemaphoreSignal},
 		"semaphore_signal_all": {1, machSemaphoreSignalAll}, "semaphore_wait": {1, machSemaphoreWait},
 		"semaphore_timedwait": {3, machSemaphoreTimedwait}, "semaphore_wait_signal": {2, machSemaphoreWaitSignal}, "pid_for_task": {2, machPidForTask},
 		"mach_msg": {7, machMsg}, "mach_msg_overwrite": {8, machMsgOverwrite}, "mach_msg2": {8, machMsg2},
@@ -119,26 +120,6 @@ func machGenerateActivityID(p *Process, a []uint64) int64 {
 	return 0
 }
 
-// machPortConstruct makes a port and keeps the context it is given, which its owner reads back.
-func machPortConstruct(p *Process, a []uint64) int64 {
-	port := p.newPort()
-	p.write(a[3], le32(port))
-	p.contexts[port] = a[2]
-	return 0
-}
-
-// machPortGuard guards a port with a value, which is also its context.
-func machPortGuard(p *Process, a []uint64) int64 {
-	p.contexts[uint32(a[1])] = a[2]
-	return 0
-}
-
-func migPortGetContext(p *Process, body []byte) migReply {
-	port := le.Uint32(body[32:])
-	p.note("  mach_port_get_context %#x = %#x", port, p.contexts[port])
-	return migData(le64(p.contexts[port]))
-}
-
 func machThreadSelf(p *Process, a []uint64) int64 { return int64(p.current.port) }
 
 func machPidForTask(p *Process, a []uint64) int64 {
@@ -150,16 +131,19 @@ func machPidForTask(p *Process, a []uint64) int64 {
 type message struct {
 	msg, option, sendSize, rcvSize, rcvMsg uint64
 	rcvName                                uint32
-	inline                                 bool // mach_msg2 passes the header fields in registers
-	remote, local, id                      uint32
+	timeout                                uint32 // milliseconds
+	inline                                 bool   // mach_msg2 passes the header fields in registers
+	bits, remote, local, id                uint32
+	// Of a message given as a vector: where the data beside it is sent from and received to.
+	aux, auxSendSize, auxRcv, auxRcvSize uint64
 }
 
 func machMsg(p *Process, a []uint64) int64 {
-	return p.doMsg(message{msg: a[0], option: a[1], sendSize: a[2], rcvSize: a[3], rcvMsg: a[0], rcvName: uint32(a[4])})
+	return p.doMsg(message{msg: a[0], option: a[1] & 0xFFFFFFFF, sendSize: a[2], rcvSize: a[3], rcvMsg: a[0], rcvName: uint32(a[4]), timeout: uint32(a[5])})
 }
 
 func machMsgOverwrite(p *Process, a []uint64) int64 {
-	m := message{msg: a[0], option: a[1], sendSize: a[2], rcvSize: a[3], rcvMsg: a[7], rcvName: uint32(a[4])}
+	m := message{msg: a[0], option: a[1] & 0xFFFFFFFF, sendSize: a[2], rcvSize: a[3], rcvMsg: a[7], rcvName: uint32(a[4]), timeout: uint32(a[5])}
 	if m.rcvMsg == 0 {
 		m.rcvMsg = m.msg
 	}
@@ -167,31 +151,83 @@ func machMsgOverwrite(p *Process, a []uint64) int64 {
 }
 
 // machMsg2: x2 = msgh_bits | send_size<<32; x3 = remote | local<<32; x4 = voucher | id<<32;
-// x5 = desc_count | rcv_name<<32; x6 = rcv_size | priority<<32
+// x5 = desc_count | rcv_name<<32; x6 = rcv_size | priority<<32; x7 = timeout
+//
+// With MACH64_MSG_VECTOR x0 is not the message but a vector of two (address to send from, address
+// to receive to if not the same, and the size of each): the message, and data that travels beside
+// it. The sizes in the registers are then how many of the two there are.
 func machMsg2(p *Process, a []uint64) int64 {
-	return p.doMsg(message{msg: a[0], option: a[1] & 0xFFFFFFFF, sendSize: a[2] >> 32, rcvSize: a[6] & 0xFFFFFFFF, rcvMsg: a[0],
-		rcvName: uint32(a[5] >> 32), inline: true, remote: uint32(a[3]), local: uint32(a[3] >> 32), id: uint32(a[4] >> 32)})
+	m := message{msg: a[0], option: a[1] & 0xFFFFFFFF, sendSize: a[2] >> 32, rcvSize: a[6] & 0xFFFFFFFF, rcvMsg: a[0],
+		rcvName: uint32(a[5] >> 32), timeout: uint32(a[7]), inline: true, bits: uint32(a[2]), remote: uint32(a[3]), local: uint32(a[3] >> 32), id: uint32(a[4] >> 32)}
+	if a[1]&msgVector != 0 {
+		count := m.rcvSize
+		if m.option&machSendMsg != 0 {
+			count = m.sendSize
+		}
+		part := func(i uint64) (data, rcv, sendSize, rcvSize uint64) {
+			v := p.read(a[0]+24*i, 24)
+			data, rcv = le.Uint64(v), le.Uint64(v[8:])
+			if rcv == 0 {
+				rcv = data
+			}
+			return data, rcv, uint64(le.Uint32(v[16:])), uint64(le.Uint32(v[20:]))
+		}
+		m.msg, m.rcvMsg, m.sendSize, m.rcvSize = part(0)
+		if count > 1 {
+			m.aux, m.auxRcv, m.auxSendSize, m.auxRcvSize = part(1)
+		}
+		p.note("  mach_msg2 vector of %d: message at %#x, %d to send, room for %d at %#x; beside it %d to send, room for %d at %#x",
+			count, m.msg, m.sendSize, m.rcvSize, m.rcvMsg, m.auxSendSize, m.auxRcvSize, m.auxRcv)
+	}
+	return p.doMsg(m)
 }
 
 func header(bits, size, local, id uint32) []byte { return le32(bits, size, 0, local, 0, id) }
 
+// doMsg sends, receives, or does one and then the other.
 func (p *Process) doMsg(m message) int64 {
-	if m.option&1 == 0 { // receive only
-		if m.option&0x100 != 0 {
-			p.note("  mach_msg receive with timeout on %#x", m.rcvName)
-			return rcvTimedOut
+	if m.option&machSendMsg != 0 {
+		if failed := p.send(m); failed != 0 {
+			return failed
 		}
-		// Nobody will ever answer: there are no other threads or services. Deliver what the kernel
-		// sends when a reply right dies unanswered, so the waiter sees an interrupted connection.
-		p.note("  mach_msg receive on %#x would block: send-once notification", m.rcvName)
-		p.write(m.rcvMsg, append(header(0x1200, 24, m.rcvName, 71), make([]byte, 32)...)) // MACH_NOTIFY_SEND_ONCE
-		return 0
 	}
+	if m.option&machRcvMsg != 0 {
+		return p.receive(m)
+	}
+	return 0
+}
+
+// send delivers a message: to the queue of a port of the guest's own, or to the kernel, whose
+// answer is queued on the reply port at once.
+func (p *Process) send(m message) int64 {
 	if !m.inline {
 		h := p.read(m.msg, 24)
-		m.remote, m.local, m.id = le.Uint32(h[8:]), le.Uint32(h[12:]), le.Uint32(h[20:])
+		m.bits, m.remote, m.local, m.id = le.Uint32(h), le.Uint32(h[8:]), le.Uint32(h[12:]), le.Uint32(h[20:])
 	}
-	body := p.read(m.msg, max(m.sendSize, 24))
+	if m.sendSize < 24 || m.sendSize&3 != 0 {
+		return sendTooSmall // no header, or not a whole number of words
+	}
+	body := p.read(m.msg, m.sendSize)
+	if q := p.destination(m.remote); q != nil {
+		arrived, ok := p.carried(m, body)
+		if !ok {
+			return sendTooSmall // shorter than what it says it carries
+		}
+		le.PutUint32(arrived[12:], q.name)
+		p.note("  mach_msg id %d to port %#x: %d bytes queued", m.id, q.name, len(arrived))
+		sent := machMessage{data: arrived, sender: guestPID, moved: m.bits&0x1F == moveSend}
+		if m.bits&0x1F == makeSend {
+			q.made++
+		}
+		if m.auxSendSize > 0 {
+			sent.aux = p.read(m.aux, m.auxSendSize)
+		}
+		p.post(q, sent)
+		return 0
+	}
+	if m.remote == bootstrapPort && p.launchd(m, body) {
+		return 0
+	}
 	routine := migRoutines[m.id]
 	unhandled := ""
 	if routine == nil {
@@ -203,14 +239,14 @@ func (p *Process) doMsg(m message) int64 {
 		return sendInvalidDest
 	}
 	reply := routine(p, body)
-	if m.option&2 == 0 {
+	if m.local == 0 {
 		return 0
 	}
-	bits := uint32(0x1200)
+	bits := uint32(moveSendOnce << 8)
 	if reply.port {
-		bits |= 0x80000000 // complex: one port descriptor
+		bits |= bitsComplex // one port descriptor
 	}
-	p.write(m.rcvMsg, append(header(bits, uint32(24+len(reply.body)), m.local, m.id+100), reply.body...))
+	p.post(p.receiver(m.local), machMessage{data: append(header(bits, uint32(24+len(reply.body)), m.local, m.id+100), reply.body...)})
 	return 0
 }
 
@@ -248,11 +284,14 @@ func init() {
 		412:  migHostGetSpecialPort,
 		1000: migClockGetTime,
 		3405: migTaskInfo,
+		3218: ok, // mach_port_set_attributes: limits and importance, which nothing here enforces
 		3228: migPortGetContext,
+		3240: func(*Process, []byte) migReply { return migData(le64(0)) }, // mach_port_is_connection_for_service: it is, under no sandbox filter
 		3409: migTaskGetSpecialPort,
 		3410: ok,        // task_set_special_port
 		3418: freshPort, // semaphore_create
 		4811: migVMMap,
+		4817: migMakeMemoryEntry,
 		4813: migVMRemap,
 		4822: func(*Process, []byte) migReply { return migCode(kernNotSupported) }, // mach_vm_reclaim_ring_allocate: malloc frees at once instead
 		8000: ok,                                                                   // task_restartable_ranges_register
@@ -260,7 +299,7 @@ func init() {
 	}
 }
 
-// migTaskGetSpecialPort hands out only a (dead-end) bootstrap port.
+// migTaskGetSpecialPort hands out only the bootstrap port, which leads to launchd (see launchd.go).
 func migTaskGetSpecialPort(p *Process, body []byte) migReply {
 	which := int32(le.Uint32(body[32:]))
 	p.note("  task_get_special_port %d", which)
@@ -281,9 +320,26 @@ func migHostGetSpecialPort(p *Process, body []byte) migReply {
 	return migCode(kernInvalidArg)
 }
 
+// migMakeMemoryEntry (mach_make_memory_entry_64) names a stretch of memory with a port, by which
+// it can be mapped again: how large data is passed along without copying it into a message. The
+// entry is a copy made now, and a mapping of it a copy of that.
+func migMakeMemoryEntry(p *Process, body []byte) migReply {
+	size, offset := le.Uint64(body[48:]), le.Uint64(body[56:])
+	size = align(offset+size, pageSize) - offset&^(pageSize-1)
+	name := p.newPort()
+	p.entries[name] = slices.Clone(p.read(offset&^(pageSize-1), size))
+	p.note("  mach_make_memory_entry(%#x, %#x) = %#x", offset, size, name)
+	return migReply{body: append(append(migPort(name).body, ndr...), le64(size)...), port: true}
+}
+
 func migVMMap(p *Process, body []byte) migReply { // mach_vm_map
 	addr, size, mask, flags := le.Uint64(body[48:]), le.Uint64(body[56:]), le.Uint64(body[64:]), uint64(le.Uint32(body[72:]))
-	start, ok := p.vmMap(addr, size, mask, flags, allocation{name: "vm_map"})
+	what := allocation{name: "vm_map"}
+	if entry, ok := p.entries[le.Uint32(body[28:])]; ok {
+		from := min(le.Uint64(body[76:]), uint64(len(entry)))
+		what = allocation{kind: fileRegion, data: entry[from:], name: "memory entry"}
+	}
+	start, ok := p.vmMap(addr, size, mask, flags, what)
 	if !ok {
 		return migCode(kernNoSpace)
 	}
@@ -339,7 +395,7 @@ func migTaskInfo(p *Process, body []byte) migReply {
 	case 17: // TASK_DYLD_INFO
 		return counted(append(le64(p.imageInfo[:]...), le32(1)...))
 	case 15: // TASK_AUDIT_TOKEN
-		return counted(le32(0, guestUID, guestGID, guestUID, guestGID, guestPID, 100000, 1))
+		return counted(le32(0, guestUID, guestGID, guestUID, guestGID, guestPID, 100000, guestExecution))
 	}
 	return migCode(kernInvalidArg)
 }

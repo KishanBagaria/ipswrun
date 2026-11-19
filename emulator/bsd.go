@@ -54,7 +54,7 @@ func init() {
 		"psynch_rw_rdlock": {5, sysPsynchRWRdlock}, "psynch_rw_wrlock": {5, sysPsynchRWWrlock}, "psynch_rw_unlock": {5, sysPsynchRWUnlock}, "bsdthread_ctl": {4, constant(0)}, "workq_open": {0, constant(0)},
 		"workq_kernreturn": {4, sysWorkqKernreturn}, "kdebug_trace64": {0, constant(0)}, "kdebug_trace": {0, constant(0)},
 		"kdebug_trace_string": {0, constant(0)}, "kdebug_typefilter": {2, constant(-ePERM)}, "getentropy": {2, sysGetentropy},
-		"ptrace": {1, sysPtrace}, "csops": {4, sysCsops}, "csops_audittoken": {4, sysCsops}, "csrctl": {3, constant(-ePERM)}, "getrlimit": {2, sysGetrlimit},
+		"ptrace": {1, sysPtrace}, "select": {5, sysSelect}, "pselect": {5, sysPselect}, "kqueue": {0, sysKqueue}, "guarded_kqueue_np": {2, sysKqueue}, "csops": {4, sysCsops}, "csops_audittoken": {4, sysCsops}, "csrctl": {3, constant(-ePERM)}, "getrlimit": {2, sysGetrlimit},
 		"setrlimit": {2, constant(0)}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
@@ -69,7 +69,7 @@ func init() {
 var trivial = map[string]int64{
 	"objc_bp_assist_cfg_np": 0, "iopolicysys": 0, "work_interval_ctl": -eNOTSUP, "memorystatus_control": 0, "proc_rlimit_control": 0,
 	"thread_selfusage": 0, "crossarch_trap": -eNOTSUP, "kevent64": 0, "kevent": 0,
-	"guarded_kqueue_np": 100, "kqueue": 100, "kqueue_workloop_ctl": 0, "necp_open": -eNOSYS, "socket": -eACCES, "umask": 0o22,
+	"kqueue_workloop_ctl": 0, "necp_open": -eNOSYS, "socket": -eACCES, "umask": 0o22,
 	"audit_session_self": 0, "getaudit_addr": -eNOSYS, "coalition_info": -eNOSYS, "persona": -eNOSYS,
 	"debug_syscall_reject_config": 0, "debug_syscall_reject": 0, "setattrlist": 0, "fsetattrlist": 0, "chmod": 0, "fchmod": 0,
 	"flock": 0, "setxattr": 0, "fsetxattr": 0, "getxattr": -eNOATTR, "fgetxattr": -eNOATTR, "listxattr": 0, "flistxattr": 0, "chdir": 0,
@@ -279,6 +279,46 @@ func sysCsops(p *Process, a []uint64) int64 {
 		return 0
 	}
 	return -eINVAL // no entitlements, identity or cdhash to report
+}
+
+// sysKqueue gives a descriptor that can be described and closed like any other. The events asked
+// of it never happen: only libdispatch's own kqueues, which have no descriptor, are emulated.
+func sysKqueue(p *Process, a []uint64) int64 {
+	n := p.nextFD
+	p.fds[n] = &fd{kind: dataFD}
+	p.nextFD++
+	return int64(n)
+}
+
+// selectNothing is select on descriptors nothing ever happens to: none is ready, once the time
+// the caller would wait has passed. It never passes for a caller that set none.
+func (p *Process) selectNothing(a []uint64, timed bool, timeout time.Duration) int64 {
+	for _, set := range a[1:4] {
+		if set != 0 {
+			p.write(set, make([]byte, align(a[0], 32)/8))
+		}
+	}
+	switch {
+	case !timed:
+		p.wait(waitSignal, 0, time.Time{}, result{})
+	case timeout > 0:
+		p.wait(waitSleep, 0, time.Now().Add(timeout), result{})
+	}
+	return 0
+}
+
+func sysSelect(p *Process, a []uint64) int64 { // the timeout is seconds and microseconds
+	if a[4] == 0 {
+		return p.selectNothing(a, false, 0)
+	}
+	return p.selectNothing(a, true, relative(p.u64(a[4]), uint64(p.u32(a[4]+8))*1000))
+}
+
+func sysPselect(p *Process, a []uint64) int64 { // and here nanoseconds
+	if a[4] == 0 {
+		return p.selectNothing(a, false, 0)
+	}
+	return p.selectNothing(a, true, relative(p.u64(a[4]), p.u64(a[4]+8)))
 }
 
 const ptDenyAttach = 31

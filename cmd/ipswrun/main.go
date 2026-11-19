@@ -211,6 +211,7 @@ type options struct {
 	home, report              string // may contain {build} and {version}
 	guest                     string
 	args, env, system         []string
+	services                  []string
 	mounts                    []emulator.Mount // the host side may contain {build} and {version}
 	stream, trace, showStatus bool
 	missing                   bool
@@ -268,7 +269,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		}
 	}
 	status.set(label+out.name, image.Stats)
-	process, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Mounts: mounts, Executable: o.guest, Args: o.args,
+	process, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Mounts: mounts, Services: o.services, Executable: o.guest, Args: o.args,
 		Env: o.env, System: o.system, Timeout: time.Duration(o.timeout * float64(time.Second)), Trace: o.trace, Survey: o.missing, Notes: status})
 	status.stop()
 	if process != nil {
@@ -389,7 +390,8 @@ URL of any restore image, or several of these separated by commas.`)
 		flag.PrintDefaults()
 	}
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
-	var env, system, mountValues list
+	var env, system, mountValues, services list
+	flag.Var(&services, "service", "name of a Mach service the guest provides, as a daemon does: it can check that name in, and look it up (repeatable)")
 	flag.Var(&mountValues, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
 	flag.Var(&env, "env", "KEY=VALUE added to the guest environment (repeatable)")
 	flag.Var(&system, "system", "system-volume file, or directory ending in /, the guest may read (repeatable; default: feature flags, SystemVersion.plist, /usr/share/icu/ and libobjc-trampolines.dylib; giving any replaces the default)")
@@ -464,7 +466,7 @@ URL of any restore image, or several of these separated by commas.`)
 		}
 	}
 	o := &options{unicorn: unicorn, cache: *cache, device: *device, home: *home, report: *reportPath, guest: flag.Arg(1), args: flag.Args()[2:],
-		env: env, system: system, mounts: mounts, stream: *stream, trace: *trace, missing: *missing, showStatus: showStatus, timeout: *timeout}
+		env: env, system: system, mounts: mounts, services: services, stream: *stream, trace: *trace, missing: *missing, showStatus: showStatus, timeout: *timeout}
 	return o.runAll(releases)
 }
 

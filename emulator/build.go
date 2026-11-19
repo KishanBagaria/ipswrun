@@ -33,6 +33,7 @@ type Run struct {
 	Unicorn    string        // path of the verified libunicorn (see EnsureUnicorn)
 	Home       string        // host directory behind GuestHome
 	Mounts     []Mount       // more host directories the guest may change (see CheckMounts)
+	Services   []string      // the Mach services the guest provides: the names it may check in with launchd
 	Executable string        // host path of the guest Mach-O (arm64, linked against the cache)
 	Args       []string      // guest arguments after argv[0]
 	Env        []string      // added to BaseEnv
@@ -137,7 +138,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Process, *dyldcache.Cache, error)
 	}
 
 	build := image.Build()
-	p, err := New(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Executable: run.Executable, Dyld: dyld, System: system, Trace: run.Trace, Survey: run.Survey,
+	p, err := New(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Services: run.Services, Executable: run.Executable, Dyld: dyld, System: system, Trace: run.Trace, Survey: run.Survey,
 		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0"}})
 	if err != nil {
 		return nil, cache, err

@@ -33,9 +33,10 @@ const (
 	waitWorkloop
 	waitSignal
 	waitRWLock
+	waitPort
 )
 
-var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock"}
+var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message"}
 
 // thread is one guest thread. Its registers are in ctx whenever it is not the one running.
 type thread struct {
@@ -58,6 +59,9 @@ type thread struct {
 	// relaunched says the registers in ctx are a new start, not where the thread left off.
 	relaunched bool
 
+	reply     uint32   // the port it waits on for the answer to a synchronous message, once it asked for one
+	receiving *message // of a thread waiting for a Mach message: where it wants it
+
 	pthread uint64  // of a work queue thread: its pthread, which sits on top of its stack
 	serving *kqueue // of a work queue thread: whose events it was started for, if any
 }
@@ -74,6 +78,7 @@ const (
 	kernTimedOut       = 49 // KERN_OPERATION_TIMED_OUT
 	mainThreadPort     = 0x103
 	workerStackSize    = 512 << 10
+	workerEvents       = 16 // WQ_KEVENT_LIST_LEN
 	maxThreads         = 256
 	ulockNoErrno       = 0x01000000
 	ulockWakeAll       = 0x100
@@ -214,6 +219,8 @@ func (p *Process) schedule(pc uint64) uint64 {
 		case !slices.ContainsFunc(p.threads, func(t *thread) bool { return t.state != dead }):
 			p.exited = true // the last thread ended: the process does, as if main had returned 0
 			return pc
+		case until.IsZero() && slices.ContainsFunc(p.threads, func(t *thread) bool { return t.state == waiting && t.kind == waitPort }):
+			stopf("nothing left to run: every thread waits, at least one for a Mach message, and nothing is due that would send it one. A service waiting for a client ends this way")
 		case until.IsZero():
 			stopf("deadlock: no thread can run, and nothing is due that would let one")
 		case !until.Before(p.deadline):
@@ -342,9 +349,12 @@ func sysYield(p *Process, a []uint64) int64 {
 		}
 	}
 	for _, q := range p.kqueues {
-		if q.requested || len(q.ready) > 0 || len(q.timers) > 0 {
+		if q.requested || len(q.ready) > 0 || len(q.timers) > 0 || len(q.ports) > 0 {
 			p.yield = true
 		}
+	}
+	for _, q := range p.ports {
+		p.yield = p.yield || q.armed
 	}
 	return 0
 }
@@ -719,8 +729,9 @@ func (p *Process) startWorker(priority uint64, q *kqueue, events []kevent) *thre
 		t.pthread = base + pageSize + workerStackSize
 	}
 	p.adopt(t, t.pthread)
-	// The events go on the stack under the pthread, a workloop's id in the word before them.
-	top := t.pthread - 64 - uint64(len(events))*keventSize
+	// The events go on the stack under the pthread, a workloop's id in the word before them. There
+	// is room for workerEvents whatever their number: libdispatch keeps its own changes there.
+	top := t.pthread - workerEvents*keventSize
 	var list uint64
 	if q != nil {
 		list = top

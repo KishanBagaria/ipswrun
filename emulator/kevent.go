@@ -6,9 +6,10 @@ import (
 )
 
 // libdispatch gets its events from the kernel as kevents, and gets threads to handle them on from
-// the work queue. Two kinds of event are emulated: timers, and the requests a serial queue (a
-// "workloop") makes for a thread to drain it or for a turn at owning it. Either goes to the one
-// work queue kqueue every process has, or to the kqueue of one workloop, named by its id.
+// the work queue. Three kinds of event are emulated: timers, a Mach message arriving at a port
+// (see ports.go), and the requests a serial queue (a "workloop") makes for a thread to drain it or
+// for a turn at owning it. Each goes to the one work queue kqueue every process has, or to the
+// kqueue of one workloop, named by its id.
 
 // kevent is struct kevent_qos_s.
 type kevent struct {
@@ -27,15 +28,18 @@ const (
 	keventSize = 72
 
 	filterTimer    = -7
+	filterMachport = -8
 	filterUser     = -10
 	filterMemory   = -14 // memory pressure: never happens here
 	filterWorkloop = -17
 
-	evAdd     = 0x1
-	evDelete  = 0x2
-	evEnable  = 0x4
-	evDisable = 0x8
-	evOneshot = 0x10
+	evAdd      = 0x1
+	evDelete   = 0x2
+	evEnable   = 0x4
+	evDisable  = 0x8
+	evOneshot  = 0x10
+	evDispatch = 0x80  // disabled once it has happened, until enabled again
+	evVanished = 0x200 // asked for: to be told if what is watched goes away. In an event: it did
 
 	// Units and clocks of a timer.
 	noteSeconds  = 0x1
@@ -86,7 +90,8 @@ type kqueue struct {
 	id     uint64
 	timers map[uint64]*timer
 	users  map[uint64]kevent // events that happen when the guest says so
-	ready  []kevent          // events that happened and have not been handed to a thread yet
+	ports  map[watchKey]*watch
+	ready  []kevent // events that happened and have not been handed to a thread yet
 
 	// Of a workloop: its request for a thread, whether that is waiting to be answered, the thread
 	// that answered the last one, and the turns given to threads that had not asked yet.
@@ -105,7 +110,7 @@ type timer struct {
 func (p *Process) kqueue(id uint64) *kqueue {
 	q := p.kqueues[id]
 	if q == nil {
-		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, woken: map[uint64]bool{}}
+		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, ports: map[watchKey]*watch{}, woken: map[uint64]bool{}}
 		p.kqueues[id] = q
 	}
 	return q
@@ -153,6 +158,8 @@ func (p *Process) change(q *kqueue, changes []kevent) {
 			if ok && c.fflags&noteTrigger != 0 {
 				q.ready = append(q.ready, registered)
 			}
+		case filterMachport:
+			p.changeMachport(q, c)
 		case filterMemory:
 		default:
 			p.ignored[int(c.filter)]++
@@ -227,6 +234,7 @@ func (p *Process) changeWorkloop(q *kqueue, c kevent) {
 // serve starts work queue threads for the kqueues that have something for one, and reports when
 // the next timer is due (zero: none is armed).
 func (p *Process) serve(now time.Time) (next time.Time) {
+	next = p.fireTimers(now)
 	ids := make([]uint64, 0, len(p.kqueues))
 	for id := range p.kqueues {
 		ids = append(ids, id)
@@ -256,6 +264,7 @@ func (p *Process) serve(now time.Time) (next time.Time) {
 				t.deadline = p.timerDeadline(t.event)
 			}
 		}
+		p.watched(q)
 		if q.servicer != nil || !q.requested && len(q.ready) == 0 {
 			continue
 		}
@@ -263,11 +272,13 @@ func (p *Process) serve(now time.Time) (next time.Time) {
 		if q.requested {
 			events = append([]kevent{*q.request}, events...)
 		}
+		later := events[min(len(events), workerEvents):] // more than a thread is given at once
+		events = events[:len(events)-len(later)]
 		for _, event := range events {
 			priority = max(priority, uint64(event.qos))
 		}
 		if t := p.startWorker(priority, q, events); t != nil {
-			q.ready, q.requested = nil, false
+			q.ready, q.requested = slices.Clone(later), false
 			if q.id != 0 {
 				q.servicer = t
 			}

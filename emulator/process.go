@@ -3,7 +3,7 @@
 // It starts a macOS build's own /usr/lib/dyld the way XNU would, lets it map that build's dyld
 // shared cache, and pages cache contents in on first touch. System calls and Mach traps are
 // implemented just far enough for libSystem, CoreFoundation, Foundation, the Objective-C and
-// Swift runtimes, Security and SQLite to run single-threaded with no daemons around; anything
+// Swift runtimes, Security, SQLite, libdispatch and XPC to run as one process on its own; anything
 // unimplemented stops the run with a message rather than guessing.
 package emulator
 
@@ -54,6 +54,7 @@ const (
 
 	// The one process, user and machine the guest sees, however it asks.
 	guestPID         = 4242
+	guestExecution   = 1 // how many programs the process has run: the version of its pid
 	guestUID         = 501
 	guestGID         = 20
 	guestMemory      = 8 << 30
@@ -169,13 +170,15 @@ type SystemFile struct {
 
 // Config describes one guest process.
 type Config struct {
-	Unicorn    string           // path of the verified libunicorn (see EnsureUnicorn)
-	Cache      *dyldcache.Cache // the build's dyld shared cache
-	CacheDir   string           // guest directory the cache files appear in
-	Home       string           // host directory behind GuestHome
-	Mounts     []Mount          // more host directories the guest may change (see CheckMounts)
-	Executable string           // host path of the guest executable
-	Dyld       []byte           // the build's /usr/lib/dyld
+	Unicorn  string           // path of the verified libunicorn (see EnsureUnicorn)
+	Cache    *dyldcache.Cache // the build's dyld shared cache
+	CacheDir string           // guest directory the cache files appear in
+	Home     string           // host directory behind GuestHome
+	Mounts   []Mount          // more host directories the guest may change (see CheckMounts)
+	// Services are the Mach services the guest provides: the names it may check in with launchd.
+	Services   []string
+	Executable string // host path of the guest executable
+	Dyld       []byte // the build's /usr/lib/dyld
 	// System serves read-only files from the build's system volume; a lookup failure stops the run.
 	System func(path string) (SystemFile, error)
 	OS     map[string]string // "version", "build" and "release" reported by sysctl
@@ -223,7 +226,11 @@ type Process struct {
 	handoffs    map[uint64]int // mutexes unlocked for a waiter that had not arrived
 	kqueues     map[uint64]*kqueue
 	rwlocks     map[uint64]*rwlock
-	contexts    map[uint32]uint64 // of ports made with one
+	ports       map[uint32]*port  // the receive rights and port sets the guest has
+	once        map[uint32]*port  // its rights to send to one of them once, by name
+	entries     map[uint32][]byte // the memory behind each port that names some
+	services    map[string]*port  // the services the guest provides, and the port of each once it is asked for
+	eventData   uint64            // where a kevent says a message it did not deliver is
 	ignored     map[int]int       // kevent filters nothing emulates, and how many changes each was sent
 	threadStart uint64            // libpthread's entry points, and what it said of a pthread
 	wqThread    uint64
@@ -338,8 +345,12 @@ func New(cfg Config) (p *Process, err error) {
 		mounts[i] = Mount{canonical(m.Guest), host}
 	}
 	slices.SortStableFunc(mounts, func(a, b Mount) int { return len(b.Guest) - len(a.Guest) })
-	p = &Process{mounts: mounts, cache: cfg.Cache, dyld: dyld, exe: exe, exePath: cfg.Executable, system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
-		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{}, contexts: map[uint32]uint64{}, ignored: map[int]int{},
+	services := map[string]*port{}
+	for _, name := range cfg.Services {
+		services[name] = nil
+	}
+	p = &Process{services: services, mounts: mounts, cache: cfg.Cache, dyld: dyld, exe: exe, exePath: cfg.Executable, system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
+		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{}, ports: map[uint32]*port{}, once: map[uint32]*port{}, entries: map[uint32][]byte{}, ignored: map[int]int{},
 		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
 	for _, v := range volumes { // their roots, for fsgetpath
