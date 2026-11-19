@@ -29,7 +29,7 @@ func init() {
 		"stat64": {2, sysStat64}, "lstat64": {2, sysLstat64}, "fstatat64": {4, sysFstatat64}, "fstat64": {2, sysFstat64},
 		"open": {3, sysOpen}, "openat": {4, sysOpenat}, "guarded_open_np": {5, sysGuardedOpen}, "guarded_close_np": {2, sysGuardedClose},
 		"guarded_write_np": {4, sysGuardedWrite}, "guarded_pwrite_np": {5, sysGuardedPwrite}, "close": {1, sysClose},
-		"read": {3, sysRead}, "pread": {4, sysPread}, "write": {3, sysWrite}, "pwrite": {4, sysPwrite}, "lseek": {3, sysLseek},
+		"read": {3, sysRead}, "pread": {4, sysPread}, "write": {3, sysWrite}, "writev": {3, sysWritev}, "pwrite": {4, sysPwrite}, "lseek": {3, sysLseek},
 		"ftruncate": {2, sysFtruncate}, "fsync": {1, constant(0)}, "access": {2, sysAccess}, "unlink": {1, sysUnlink},
 		"mkdir": {2, sysMkdir}, "rename": {2, sysRename}, "readlink": {3, sysReadlink}, "readlinkat": {4, sysReadlinkat},
 		"mkdirat": {3, sysMkdirat}, "rmdir": {1, sysRmdir}, "unlinkat": {3, sysUnlinkat}, "renameat": {4, sysRenameat},
