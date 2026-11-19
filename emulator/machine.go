@@ -211,6 +211,9 @@ func (m *Machine) schedule() {
 				p.exited = true // the last thread ended: the process does, as if main had returned 0
 				p.note("exited with its last thread")
 				p.reap()
+				if p == main {
+					m.settling = now.Add(settleTime)
+				}
 			}
 		}
 		// The guest has exited: the run is over once the daemons are at rest, or have had their time.
