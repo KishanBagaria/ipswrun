@@ -22,11 +22,10 @@ import (
 )
 
 const (
-	smallRead   = 32 << 10  // a read this small that continues the previous one earns read-ahead
-	readAhead   = 256 << 10 // what such a read fetches
-	maxRequest  = 8 << 20   // longest range asked for at once
-	memBytes    = 64 << 20  // fetched data kept in memory
-	legacyBlock = 128 << 10 // block size of cache directories written before reads were exact
+	smallRead  = 32 << 10  // a read this small that continues the previous one earns read-ahead
+	readAhead  = 256 << 10 // what such a read fetches
+	maxRequest = 8 << 20   // longest range asked for at once
+	memBytes   = 64 << 20  // fetched data kept in memory
 
 	// A range is given up after this many requests in a row that brought nothing, or this many
 	// requests in all.
@@ -101,9 +100,8 @@ func newRangeReader(url, cacheDir string) (*rangeReader, error) {
 }
 
 // index lists what the cache directory already holds. An extent is a file named by its offset
-// and length in hex, "00000c0ffee0-1000"; a file named by eight hex digits alone is a block of
-// the older fixed-size layout and serves as the extent it is. Anything else, and any file whose
-// size is not what its name says, is left alone.
+// and length in hex, "00000c0ffee0-1000". Anything else, and any file whose size is not what its
+// name says, is left alone.
 func (r *rangeReader) index() error {
 	entries, err := os.ReadDir(r.dir)
 	if err != nil {
@@ -111,21 +109,11 @@ func (r *rangeReader) index() error {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		var off, n int64
-		if first, second, found := strings.Cut(name, "-"); found {
-			var err1, err2 error
-			off, err1 = strconv.ParseInt(first, 16, 64)
-			n, err2 = strconv.ParseInt(second, 16, 64)
-			if err1 != nil || err2 != nil || name != extentName(off, n) {
-				continue
-			}
-		} else {
-			block, err := strconv.ParseInt(name, 16, 64)
-			if err != nil || len(name) != 8 || block > r.size/legacyBlock {
-				continue
-			}
-			off = block * legacyBlock
-			n = min(legacyBlock, r.size-off)
+		first, second, _ := strings.Cut(name, "-")
+		off, err1 := strconv.ParseInt(first, 16, 64)
+		n, err2 := strconv.ParseInt(second, 16, 64)
+		if err1 != nil || err2 != nil || name != extentName(off, n) {
+			continue
 		}
 		info, err := entry.Info()
 		if err != nil || !info.Mode().IsRegular() || n <= 0 || off < 0 || n > r.size-off || info.Size() != n {

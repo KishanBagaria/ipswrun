@@ -163,9 +163,7 @@ func TestCacheDirectory(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(r.dir, extentName(5000, 100))); err != nil || !bytes.Equal(b, o.data[5000:5100]) {
 		t.Fatalf("extent file: %v", err)
 	}
-	// Blocks of the older layout, the short last one included, and files that are not what their names say.
-	os.WriteFile(filepath.Join(r.dir, "00000001"), o.data[legacyBlock:2*legacyBlock], 0o644)
-	os.WriteFile(filepath.Join(r.dir, "00000002"), o.data[2*legacyBlock:], 0o644)
+	// Files that are not what their names say.
 	os.WriteFile(filepath.Join(r.dir, "00000000"), o.data[:1000], 0o644)
 	os.WriteFile(filepath.Join(r.dir, extentName(9000, 50)), o.data[:49], 0o644)
 	os.WriteFile(filepath.Join(r.dir, "member-00000000-x.dmg"), o.data[:10], 0o644)
@@ -176,9 +174,8 @@ func TestCacheDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	read(t, r, o, 5000, 100)
-	read(t, r, o, legacyBlock-10, 300000-legacyBlock+10)
 	read(t, r, o, 9000, 50)
-	want := [][2]int64{{legacyBlock - 10, 10}, {9000, 50}}
+	want := [][2]int64{{9000, 50}}
 	if fmt.Sprint(o.ranges) != fmt.Sprint(want) {
 		t.Fatalf("requested %v, want %v", o.ranges, want)
 	}
@@ -267,7 +264,7 @@ func TestCompressedMemberIsRecognisable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = OpenStoredMember(bytes.NewReader(archive.Bytes()), r.File[0])
+	_, _, err = openStoredMember(bytes.NewReader(archive.Bytes()), r.File[0])
 	if !errors.Is(err, ErrCompressedMember) || !strings.Contains(err.Error(), "disk.dmg is a compressed ZIP member") {
 		t.Fatalf("got %v", err)
 	}

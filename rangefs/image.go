@@ -29,14 +29,12 @@ var ErrNoSystemOS = info.ErrorCryptexNotFound
 
 // Image is a remote restore image whose volumes are opened on first use.
 type Image struct {
-	// OpenMember turns a ZIP member into random-access bytes; OpenStoredMember unless replaced.
-	OpenMember MemberOpener
-
-	remote  *rangeReader
-	archive *zip.Reader
-	info    *info.Info
-	device  string
-	volumes map[string]*apfs.Reader
+	remote    *rangeReader
+	archive   *zip.Reader
+	info      *info.Info
+	device    string
+	streaming bool // see AllowStreaming
+	volumes   map[string]*apfs.Reader
 }
 
 // Open reads the ZIP directory and build manifest of the restore image at url. device is the
@@ -58,8 +56,7 @@ func Open(url, cacheDir, device string) (*Image, error) {
 	if parsed.Plists == nil || parsed.Plists.BuildManifest == nil {
 		return nil, errors.New("restore image has no BuildManifest.plist")
 	}
-	return &Image{OpenMember: OpenStoredMember, remote: remote, archive: archive, info: parsed, device: device,
-		volumes: map[string]*apfs.Reader{}}, nil
+	return &Image{remote: remote, archive: archive, info: parsed, device: device, volumes: map[string]*apfs.Reader{}}, nil
 }
 
 // Version is the product version in the build manifest, e.g. "15.6.1".
@@ -84,7 +81,7 @@ func (m *Image) image(name string) (*apfs.Reader, error) {
 	if member == nil {
 		return nil, fmt.Errorf("no ZIP member %s", name)
 	}
-	source, size, err := m.OpenMember(m.remote, member)
+	source, size, err := m.openMember(member)
 	if err != nil {
 		return nil, err
 	}

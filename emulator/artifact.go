@@ -75,7 +75,7 @@ func EnsureUnicorn(dir string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
-	// Concurrent dumps may install at once; each renames a complete, verified file into place.
+	// Concurrent runs may install at once; each renames a complete, verified file into place.
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".libunicorn-*")
 	if err != nil {
 		return "", err

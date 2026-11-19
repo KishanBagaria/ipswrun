@@ -174,7 +174,7 @@ type Config struct {
 	Dyld     []byte           // the build's /usr/lib/dyld
 	// System serves read-only files from the build's system volume; a lookup failure stops the run.
 	System func(path string) (SystemFile, error)
-	OS     map[string]string // "version", "build", "release" (and "ios") reported by sysctl
+	OS     map[string]string // "version", "build" and "release" reported by sysctl
 	Trace  bool              // print every system call to stderr
 	// Survey answers a system call or Mach trap nothing implements with an error (ENOSYS,
 	// KERN_INVALID_ARGUMENT) instead of stopping the run, so that one run finds them all.

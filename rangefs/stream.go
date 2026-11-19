@@ -14,20 +14,10 @@ import (
 
 // AllowStreaming lets the image read deflate-compressed disk image members. A deflate stream has
 // one exact entry point, its start, so such a member is downloaded front to back as one range
-// (requested again from the byte reached if the connection breaks) and inflated to a file: kept in the block cache directory when there is one
-// (later opens reuse it), otherwise unlinked as soon as it is created.
-func (m *Image) AllowStreaming() {
-	m.OpenMember = func(remote io.ReaderAt, member *zip.File) (io.ReaderAt, int64, error) {
-		if member.Method != zip.Deflate {
-			return OpenStoredMember(remote, member)
-		}
-		file, err := m.remote.inflated(member)
-		if err != nil {
-			return nil, 0, fmt.Errorf("stream %s: %w", member.Name, err)
-		}
-		return file, int64(member.UncompressedSize64), nil
-	}
-}
+// (requested again from the byte reached if the connection breaks) and inflated to a file: kept
+// in the cache directory when there is one (later opens reuse it), otherwise unlinked as soon as
+// it is created.
+func (m *Image) AllowStreaming() { m.streaming = true }
 
 func (r *rangeReader) inflated(member *zip.File) (*os.File, error) {
 	size := int64(member.UncompressedSize64)

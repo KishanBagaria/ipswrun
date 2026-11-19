@@ -437,7 +437,7 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			"kern.hv_vmm_present": n(0), "sysctl.proc_translated": n(0), "kern.osrelease": os("release", "22.1.0"),
 			"kern.osversion": os("build", "22A400"), "kern.osproductversion": os("version", "13.0.1"),
 			"kern.version": "Darwin Kernel Version (emulated)", "kern.osproductversioncompat": "10.16",
-			"kern.iossupportversion": os("ios", "16.1"), "hw.optional.arm64": n(1), "hw.optional.floatingpoint": n(1),
+			"kern.iossupportversion": "16.1", "hw.optional.arm64": n(1), "hw.optional.floatingpoint": n(1),
 			"hw.optional.neon": n(1), "hw.optional.armv8_1_atomics": n(1), "hw.optional.armv8_crc32": n(1),
 			"hw.optional.arm.FEAT_LSE": n(1), "hw.optional.arm.FEAT_CRC32": n(1), "hw.optional.AdvSIMD": n(1),
 			"hw.optional.arm.AdvSIMD": n(1), "security.mac.lockdown_mode_state": n(0), "kern.development": n(0),
