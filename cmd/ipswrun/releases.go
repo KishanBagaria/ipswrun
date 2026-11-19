@@ -19,7 +19,11 @@ import (
 	"github.com/blacktop/go-plist"
 )
 
-//go:embed releases.txt
+// releases.tsv is every release ipswrun resolves without asking anyone, oldest first: each restore
+// image Apple has published for Macmini9,1. Add a release when it ships; Apple's feed names it while
+// it is the current one, and after that only the index does.
+//
+//go:embed releases.tsv
 var releasesText string
 
 // release is a restore image to run against. One given as a bare URL has no version or build
@@ -41,12 +45,31 @@ func (r release) compressed() bool {
 	return strings.HasPrefix(r.Version, "13.") || strings.HasPrefix(r.Version, "14.")
 }
 
-// parseReleases reads releases.txt: one release a line, oldest first.
+// parseReleases reads releases.tsv: a line of column names, then one release a line.
 func parseReleases(text string) []release {
 	var out []release
-	for _, line := range strings.Split(text, "\n") {
-		if fields := strings.Split(line, "\t"); len(fields) == 3 && !strings.HasPrefix(line, "#") {
+	for _, line := range strings.Split(text, "\n")[1:] {
+		if fields := strings.Split(line, "\t"); len(fields) == 3 {
 			out = append(out, release{fields[0], fields[1], fields[2]})
+		}
+	}
+	return out
+}
+
+// sampled returns the first and last release of each major version: with the current one, what
+// "all" runs.
+func sampled(known []release) []release {
+	major := func(i int) string {
+		if i < 0 || i >= len(known) {
+			return ""
+		}
+		major, _, _ := strings.Cut(known[i].Version, ".")
+		return major
+	}
+	var out []release
+	for i, r := range known {
+		if major(i) != major(i-1) || major(i) != major(i+1) {
+			out = append(out, r)
 		}
 	}
 	return out
@@ -56,7 +79,8 @@ func parseReleases(text string) []release {
 // current release only.
 const feedURL = "https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml"
 
-// indexURL is where the releases neither releases.txt nor the feed names are looked up: ipsw.me's
+// indexURL is where the releases neither releases.tsv nor the feed names are looked up, which are
+// those of another --device and those that came and went after this ipswrun was built: ipsw.me's
 // list of every restore image Apple has published for a Mac. Apple publishes no such list itself.
 const indexURL = "https://api.ipsw.me/v4/device/%s?type=ipsw"
 
@@ -175,7 +199,7 @@ func fetchIndex(device string) ([]release, error) {
 	return parseIndex(data)
 }
 
-// withCurrent adds the releases Apple currently offers to those in releases.txt that lack them.
+// withCurrent adds the releases Apple currently offers to those of known that lack them.
 func withCurrent(known, current []release) []release {
 	out := slices.Clone(known)
 	for _, r := range current {
@@ -196,12 +220,12 @@ func filter(pool []release, keep func(release) bool) []release {
 }
 
 // selectReleases turns the first argument into the releases it names, in the order named and
-// each once. It is a comma-separated list of: "all", the releases in releases.txt and the current
-// one; "latest"; a major version ("15"), which is those of "all" under it; the version or build of
-// any release ("15.2", "24C101"); a version no release has ("11.0"), which is every release under
-// it; or the https URL of any image.
+// each once. It is a comma-separated list of: "all", the first and last release of each major
+// version and the current one; "latest"; a major version ("15"), which is those of "all" under it;
+// the version or build of any release ("15.2", "24C101"); a version no release has ("11.0"), which
+// is every release under it; or the https URL of any image.
 //
-// Nothing is fetched for a version or build in releases.txt. Any other name asks current, at
+// Nothing is fetched for a version or build in releases.tsv. Any other name asks current, at
 // most once, for what Apple offers now, and a version or build that this does not settle either
 // asks index, at most once, for every release there has been. When current fails and the names
 // can do without it, the failure comes back as note.
@@ -241,7 +265,7 @@ func selectReleases(known []release, selector string, current, index func() ([]r
 		case versionName.MatchString(part) || buildName.MatchString(part):
 			every, indexErr := index()
 			if indexErr != nil {
-				return nil, nil, fmt.Errorf("%q is not built in, so it is looked up in the index of every release at api.ipsw.me, which %w: %w\nfix: pass the https URL of its restore image instead", part, errSource, indexErr)
+				return nil, nil, fmt.Errorf("%q is not among the releases built in, so it is looked up in the index of every release at api.ipsw.me, which %w: %w\nfix: pass the https URL of its restore image instead", part, errSource, indexErr)
 			}
 			if matched = filter(every, exactly); len(matched) == 0 {
 				matched = filter(every, under)
@@ -255,7 +279,7 @@ func selectReleases(known []release, selector string, current, index func() ([]r
 				}
 			}
 		default: // "all", a major version, or nothing at all: only the releases with the feed's can say
-			if matched = withCurrent(known, offered()); part != "all" {
+			if matched = withCurrent(sampled(known), offered()); part != "all" {
 				matched = filter(matched, under)
 			}
 			note = cmp.Or(note, feedErr)

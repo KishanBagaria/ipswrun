@@ -383,7 +383,7 @@ URL of any restore image, or several of these separated by commas.`)
 	if *listReleases {
 		offered, err := current()
 		feedNote(err)
-		for _, r := range withCurrent(known, offered) {
+		for _, r := range withCurrent(sampled(known), offered) {
 			fmt.Printf("%s\t%s\t%s\n", r.Version, r.Build, r.URL)
 		}
 		return 0, nil

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -81,10 +82,10 @@ func TestReleasesByName(t *testing.T) {
 	builds := map[string]bool{}
 	for _, r := range known {
 		if builds[r.Build] {
-			t.Errorf("releases.txt: %s is listed twice", r.Build)
+			t.Errorf("releases.tsv: %s is listed twice", r.Build)
 		}
 		if !strings.HasPrefix(r.URL, "https://") || !strings.HasSuffix(r.URL, "_"+r.Version+"_"+r.Build+"_Restore.ipsw") {
-			t.Errorf("releases.txt: the URL of %s is not that release's image: %s", r.name(), r.URL)
+			t.Errorf("releases.tsv: the URL of %s is not that release's image: %s", r.name(), r.URL)
 		}
 		builds[r.Build] = true
 	}
@@ -100,11 +101,24 @@ func TestReleasesByName(t *testing.T) {
 	if err != nil || len(every) != 80 || every[0].Build != "20B29" || every[79].Build != "26B131" {
 		t.Fatalf("the index parsed to %d releases (error %v), want 80 from 20B29 to 26B131", len(every), err)
 	}
+	// Built in is all the index had that day, in its order; "all" is the ends of each major version.
+	if !slices.Equal(known, every) {
+		t.Errorf("releases.tsv has %d releases, and they are not the %d of the index oldest first", len(known), len(every))
+	}
+	var ends []string
+	for _, r := range sampled(known) {
+		ends = append(ends, r.Build)
+	}
+	if strings.Join(ends, " ") != everything {
+		t.Errorf("the first and last of each major version are %q, want %q", ends, everything)
+	}
 	for _, r := range every {
 		if !onApple(r.URL) {
 			t.Errorf("the index's %s is not taken to be on Apple's hosts", r.URL)
 		}
 	}
+	// What the index has once a release newer than those built in has come and gone.
+	every = append(every, release{"27.2.2", "26B140", "https://updates.cdn-apple.com/x/UniversalMac_27.2.2_26B140_Restore.ipsw"})
 	for _, c := range []struct {
 		selector, want             string
 		asks, down, looks, noIndex bool
@@ -124,23 +138,24 @@ func TestReleasesByName(t *testing.T) {
 		{selector: "latest,27.3,all", want: "26D50 " + everything, asks: true},
 		{selector: "all", want: everything + " 26D50", asks: true},
 		// A release neither the list nor the feed names is whichever the index says it is.
-		{selector: "15.2", want: "24C101", asks: true, looks: true},
-		{selector: "24c101", want: "24C101", asks: true, looks: true},
-		{selector: "27.2", want: "26B123", asks: true, looks: true},
-		{selector: "15.3", want: "24D60", asks: true, looks: true},
+		{selector: "15.2", want: "24C101"},
+		{selector: "24c101", want: "24C101"},
+		{selector: "27.2", want: "26B123"},
+		{selector: "15.2,24G90,24C101,26.3.1,15", want: "24C101 24G90 25D2128 24A335", asks: true},
+		{selector: "27.2.2", want: "26B140", asks: true, looks: true},
+		{selector: "26b140", want: "26B140", asks: true, looks: true},
 		{selector: "11.0", want: "20B29", asks: true, looks: true},
-		{selector: "13.5", want: "22G74", asks: true, looks: true},
-		{selector: "15.2,24G90,24C101,26.3.1,15", want: "24C101 24G90 25D2128 24A335", asks: true, looks: true},
+		{selector: "27.2.2,15,11.0", want: "26B140 24A335 24G90 20B29", asks: true, looks: true},
 		{selector: "9.9", asks: true, looks: true},
 		{selector: "24Z999", asks: true, looks: true},
-		{selector: "15.2", asks: true, looks: true, noIndex: true},
+		{selector: "27.2.2", asks: true, looks: true, noIndex: true},
 		// Without the feed the list still answers for what it has, and says what it went without.
 		{selector: "all", want: everything, asks: true, down: true},
 		{selector: "27", want: "26A428 26B131", asks: true, down: true},
 		{selector: "27.3", asks: true, down: true, looks: true},
 		{selector: "latest", asks: true, down: true},
 		{selector: "27.2.1", want: "26B131", down: true},
-		{selector: "15.2", want: "24C101", asks: true, down: true, looks: true},
+		{selector: "27.2.2", want: "26B140", asks: true, down: true, looks: true},
 	} {
 		asked, looked := 0, 0
 		selected, note, err := selectReleases(known, c.selector, func() ([]release, error) {
@@ -184,8 +199,8 @@ func TestReleasesByName(t *testing.T) {
 	}
 	// The index is someone else's: an image it places anywhere but on Apple's hosts is not fetched.
 	for _, bad := range []string{"http://updates.cdn-apple.com/x.ipsw", "https://example.invalid/x.ipsw", "https://updates.cdn-apple.com.example.invalid/x.ipsw", "https://apple.com@example.invalid/x.ipsw"} {
-		_, _, err := selectReleases(known, "15.2", func() ([]release, error) { return nil, nil },
-			func() ([]release, error) { return []release{{"15.2", "24C101", bad}}, nil })
+		_, _, err := selectReleases(known, "27.2.2", func() ([]release, error) { return nil, nil },
+			func() ([]release, error) { return []release{{"27.2.2", "26B140", bad}}, nil })
 		if err == nil || !strings.Contains(err.Error(), "not an https URL on a host of Apple's") {
 			t.Errorf("%s from the index: error %v, want it refused", bad, err)
 		}
