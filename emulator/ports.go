@@ -19,8 +19,8 @@ import (
 // port is a port, or a port set.
 type port struct {
 	m       *Machine
-	owner   *Process      // who holds its receive right: nobody while a message carries it, or launchd holds it
-	name    uint32        // what the owner calls it
+	owner   *Process // who holds its receive right: nobody while a message carries it, or launchd holds it
+	name    uint32   // what the owner calls it
 	set     bool
 	in      *port         // the set it is a member of, if any
 	queue   []machMessage // as they were sent
@@ -751,7 +751,10 @@ func (p *Process) hand(q *port, m message) int64 {
 		addr, _ := p.alloc(uint64(len(memory.data)), allocation{kind: fileRegion, data: memory.data, name: "out-of-line"})
 		le.PutUint64(data[memory.at:], addr)
 	}
-	uid, gid := p.m.user(next.sender)
+	var uid, gid uint32 // the kernel and launchd are root
+	if next.from != nil {
+		uid, gid = next.from.uid, next.from.gid
+	}
 	// The format (0) and size; a sequence number; the sender's user and group; its audit token;
 	// the port's context; and nothing of the access checks the last words are for.
 	tail := append(le32(0, uint32(trailer), 0, uid, gid, 0, uid, gid, uid, gid, next.sender, 100000, guestExecution), le64(q.context, 0)...)

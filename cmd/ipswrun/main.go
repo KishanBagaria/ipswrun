@@ -58,13 +58,28 @@ func checkArgs(known []release, args []string, current, index func() ([]release,
 		return nil, nil, fmt.Errorf("expected a release and a guest executable, got %d argument(s)", len(args))
 	}
 	// The guest first: a name may need looking up, and a mistyped path needs nothing.
-	switch st, err := os.Stat(args[1]); {
-	case err != nil:
+	if err := checkExecutable(args[1]); err != nil {
 		return nil, nil, fmt.Errorf("guest executable: %w", err)
-	case st.IsDir():
-		return nil, nil, fmt.Errorf("guest executable %s is a directory", args[1])
 	}
 	return selectReleases(known, args[0], current, index)
+}
+
+// checkExecutable says what is wrong with the path of an executable on the host. One that is
+// taken from the release (system:/usr/sbin/cfprefsd) is looked for when the release is open.
+func checkExecutable(path string) error {
+	if rest, ok := strings.CutPrefix(path, emulator.SystemPrefix); ok {
+		if !strings.HasPrefix(rest, "/") {
+			return fmt.Errorf("%s is not %s and an absolute path in the release", path, emulator.SystemPrefix)
+		}
+		return nil
+	}
+	switch st, err := os.Stat(path); {
+	case err != nil:
+		return err
+	case st.IsDir():
+		return fmt.Errorf("%s is a directory", path)
+	}
+	return nil
 }
 
 // feedNote says that Apple's feed could not be read, for a command that goes on without it.
@@ -104,21 +119,18 @@ func parseMounts(releases int, values []string) (mounts []emulator.Mount, err er
 	return mounts, nil
 }
 
-// parseDaemons reads each --daemon as <service>[,<service>...]=<executable>[ <argument>...].
-func parseDaemons(values []string) (daemons []emulator.Daemon, err error) {
+// parseDaemons reads each --daemon or --agent as <service>[,<service>...]=<executable>[ <argument>...].
+func parseDaemons(flag string, values []string, root bool) (daemons []emulator.Daemon, err error) {
 	for _, value := range values {
 		names, command, ok := strings.Cut(value, "=")
 		words := strings.Fields(command)
 		if !ok || names == "" || len(words) == 0 {
-			return nil, fmt.Errorf("--daemon %s is not <service>[,<service>...]=<executable> [arguments], as in --daemon 'com.example.echo=bin/echod --verbose'", value)
+			return nil, fmt.Errorf("--%s %s is not <service>[,<service>...]=<executable> [arguments], as in --%s 'com.example.echo=bin/echod --verbose'", flag, value, flag)
 		}
-		switch st, err := os.Stat(words[0]); {
-		case err != nil:
-			return nil, fmt.Errorf("--daemon %s: %w", value, err)
-		case st.IsDir():
-			return nil, fmt.Errorf("--daemon %s: %s is a directory", value, words[0])
+		if err := checkExecutable(words[0]); err != nil {
+			return nil, fmt.Errorf("--%s %s: %w", flag, value, err)
 		}
-		daemons = append(daemons, emulator.Daemon{Services: strings.Split(names, ","), Executable: words[0], Args: words[1:]})
+		daemons = append(daemons, emulator.Daemon{Services: strings.Split(names, ","), Executable: words[0], Args: words[1:], Root: root})
 	}
 	return daemons, nil
 }
@@ -436,8 +448,9 @@ URL of any restore image, or several of these separated by commas.`)
 		flag.PrintDefaults()
 	}
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
-	var env, system, mountValues, services, daemonValues list
-	flag.Var(&daemonValues, "daemon", "<service>[,<service>...]=<executable> [arguments]: another guest, started beside the first, that provides these Mach services to it (repeatable)")
+	var env, system, mountValues, services, daemonValues, agentValues list
+	flag.Var(&agentValues, "agent", "<service>[,<service>...]=<executable> [arguments]: another guest, started beside the first as the same user, that provides these Mach services to it (repeatable)")
+	flag.Var(&daemonValues, "daemon", "like --agent, for a guest that runs as root, as a daemon of the system does (repeatable)")
 	flag.Var(&services, "service", "name of a Mach service the guest provides, as a daemon does: it can check that name in, and look it up (repeatable)")
 	flag.Var(&mountValues, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
 	flag.Var(&env, "env", "KEY=VALUE added to the guest environment (repeatable)")
@@ -481,7 +494,12 @@ URL of any restore image, or several of these separated by commas.`)
 				mounts, err = parseMounts(len(releases), mountValues)
 			}
 			if err == nil {
-				daemons, err = parseDaemons(daemonValues)
+				daemons, err = parseDaemons("agent", agentValues, false)
+			}
+			if err == nil {
+				var asRoot []emulator.Daemon
+				asRoot, err = parseDaemons("daemon", daemonValues, true)
+				daemons = append(daemons, asRoot...)
 			}
 		}
 		if errors.Is(err, errSource) {

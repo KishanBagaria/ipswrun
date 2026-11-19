@@ -3,8 +3,9 @@
 // It starts a macOS build's own /usr/lib/dyld the way XNU would, lets it map that build's dyld
 // shared cache, and pages cache contents in on first touch. System calls and Mach traps are
 // implemented just far enough for libSystem, CoreFoundation, Foundation, the Objective-C and
-// Swift runtimes, Security, SQLite, libdispatch and XPC to run as one process on its own; anything
-// unimplemented stops the run with a message rather than guessing.
+// Swift runtimes, Security, SQLite, libdispatch and XPC to run, as one process or as several that
+// send each other Mach messages (see Machine); anything unimplemented stops the run with a
+// message rather than guessing.
 package emulator
 
 import (
@@ -52,7 +53,8 @@ const (
 	dyldInode   = 0x5105F2B
 	cacheInode  = 0x5105F30
 
-	// The user and machine a guest sees, however it asks, and the pid of the first process.
+	// The machine a guest sees, however it asks, the pid of the first process, and the user every
+	// process that is not root's runs as.
 	guestPID         = 4242
 	guestExecution   = 1 // how many programs the process has run: the version of its pid
 	guestUID         = 501
@@ -109,9 +111,10 @@ func thin(data []byte, subtypes ...types.CPUSubtype) ([]byte, error) {
 type regionKind uint8
 
 const (
-	zeroRegion  regionKind = iota // anonymous memory
-	fileRegion                    // a private copy of data, or of file from off, read on first touch
-	cacheRegion                   // dyld shared cache pages, rebased on first touch
+	zeroRegion   regionKind = iota // anonymous memory
+	fileRegion                     // a private copy of data, or of file from off, read on first touch
+	cacheRegion                    // dyld shared cache pages, rebased on first touch
+	sharedRegion                   // data from off is memory of the host's, which other mappings of it share (see shared.go)
 )
 
 // region is a reserved range of guest address space; its pages reach Unicorn on first touch.
@@ -167,6 +170,8 @@ func (e *StopError) Unwrap() error { return e.Cause }
 type SystemFile struct {
 	File dyldcache.File // a regular file, read as the guest reads or touches it
 	Dir  bool
+	// Real, of a directory reached through symbolic links, is its path without them.
+	Real string
 }
 
 // Config describes the machine the guests run on.
@@ -190,13 +195,16 @@ type Config struct {
 type Process struct {
 	m       *Machine
 	pid     uint32
+	uid     uint32 // the user it runs as, and its group
+	gid     uint32
 	label   string // what it is called in traces and diagnostics: the name of its executable
 	uc      *engine
 	cache   *dyldcache.Cache
 	dyld    []byte
 	mounts  []Mount // the home among them; longest guest path first
 	exe     []byte  // the guest executable
-	exePath string  // and where it is on the host
+	exePath string  // and where it is on the host, or what it is called if it is not a file there
+	hostExe bool
 	system  func(path string) (SystemFile, error)
 	os      map[string]string
 	trace   bool
@@ -321,13 +329,9 @@ func guard(err *error) {
 
 // newProcess gives the machine a process with a stack, the commpage and the MMU set up, ready for
 // load.
-func (m *Machine) newProcess(executable string) (p *Process, err error) {
-	exe, err := os.ReadFile(executable)
-	if err != nil {
-		return nil, err
-	}
+func (m *Machine) newProcess(executable string, exe []byte) (p *Process, err error) {
 	cfg := m.cfg
-	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), label: filepath.Base(executable), mounts: m.mounts, cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
+	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: guestUID, gid: guestGID, label: filepath.Base(executable), mounts: m.mounts, cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
 		system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
 		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},
@@ -360,6 +364,12 @@ func (m *Machine) newProcess(executable string) (p *Process, err error) {
 	p.setupCommpage()
 	if err := p.setupMMU(); err != nil {
 		return nil, err
+	}
+	// Two processes of one program are told apart by their pids.
+	for _, other := range m.procs {
+		if other.label == p.label {
+			p.label = fmt.Sprintf("%s.%d", p.label, p.pid)
+		}
 	}
 	m.procs = append(m.procs, p)
 	return p, nil
@@ -510,6 +520,12 @@ func (p *Process) materialize(addr uint64) bool {
 		b := a
 		for ; b < b1 && !p.isMapped(b); b += pageSize {
 			p.mapped[b/pageSize] = struct{}{}
+		}
+		if r.kind == sharedRegion {
+			o := r.off + (a - r.start)
+			p.uc.memMapHost(a, r.data[o:o+(b-a)])
+			a = b
+			continue
 		}
 		p.uc.memMap(a, b-a)
 		switch r.kind {

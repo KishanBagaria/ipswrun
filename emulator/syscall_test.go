@@ -125,8 +125,7 @@ func TestSystemCallNumbersMatchSDK(t *testing.T) {
 
 func TestConstantHandlers(t *testing.T) {
 	// These answer without looking at the process or the arguments.
-	for name, want := range map[string]int64{"getppid": 1, "getuid": guestUID, "geteuid": guestUID,
-		"getgid": guestGID, "getegid": guestGID, "issetugid": 0, "ioctl": -eNOTTY, "csrctl": -ePERM} {
+	for name, want := range map[string]int64{"getppid": 1, "issetugid": 0, "ioctl": -eNOTTY, "csrctl": -ePERM} {
 		if got := bsdHandlers[name].fn(nil, nil); got != want {
 			t.Errorf("%s() = %d, want %d", name, got, want)
 		}
@@ -174,13 +173,14 @@ func newProcess(t *testing.T) *Process {
 		var m *Machine
 		if m, err = NewMachine(Config{Unicorn: unicorn, Cache: &dyldcache.Cache{}, Home: t.TempDir(), Dyld: le32(0xFEEDFACF, cpuARM64, 0, 0, 0, 0, 0, 0),
 			OS: map[string]string{"build": "24G90", "version": "15.6.1"}}); err == nil {
-			p, err = m.newProcess(exe)
+			p, err = m.newProcess(exe, []byte("not run"))
 		}
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { onMain(p.Close) })
+	p.hostExe = true
+	t.Cleanup(func() { onMain(p.m.Close) })
 	p.m.deadline = time.Now().Add(time.Minute)
 	return p
 }

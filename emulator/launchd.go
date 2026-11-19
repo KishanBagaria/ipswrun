@@ -30,7 +30,11 @@ const (
 	routineLookUp       = 207
 	routineLookUpLegacy = 804 // the same question, as bootstrap_look_up asks it
 	routineCheckIn      = 805
-	routineCheckInMach  = 206 // the same, as bootstrap_check_in asks it: how a daemon that is not an XPC listener gets its port
+	routineJobValue     = 301 // a process asking for one of the values launchd keeps about its job, by number
+
+	jobManagerUID      = 3   // the user of the launchd domain the process is in
+	jobManagerName     = 6   // and the name of that domain
+	routineCheckInMach = 206 // the same, as bootstrap_check_in asks it: how a daemon that is not an XPC listener gets its port
 
 	noSuchService = 3 // ESRCH, as launchd says it
 	launchdPID    = 1
@@ -66,6 +70,22 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 	}
 	checkIn := routine == routineCheckIn || routine == routineCheckInMach
 	switch {
+	case routine == routineJobValue:
+		// Which of launchd's domains the process is in: the system's, or the one of a user who is
+		// logged in at the screen. cfprefsd takes from it whether it is the daemon or a user's agent.
+		switch key := request.uint("outgsk"); {
+		case !request.bool("get"):
+			reply.set("error", int64(noSuchService))
+		case key == jobManagerName && p.uid == 0:
+			reply.set("out", "System")
+		case key == jobManagerName:
+			reply.set("out", "Aqua")
+		case key == jobManagerUID:
+			reply.set("out", int64(p.uid))
+		default:
+			p.note("  to launchd, routine %d: %v", routine, request)
+			return false
+		}
 	case !checkIn && routine != routineLookUp && routine != routineLookUpLegacy:
 		p.note("  to launchd, routine %d: %v", routine, request)
 		return false

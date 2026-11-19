@@ -52,6 +52,7 @@ var api struct {
 	regRead  func(uc uintptr, id int32, value unsafe.Pointer) int32
 	regWrite func(uc uintptr, id int32, value unsafe.Pointer) int32
 	memMap   func(uc uintptr, address, size uint64, protection uint32) int32
+	memPtr   func(uc uintptr, address, size uint64, protection uint32, memory unsafe.Pointer) int32
 	memUnmap func(uc uintptr, address, size uint64) int32
 	memRead  func(uc uintptr, address uint64, bytes unsafe.Pointer, size uint64) int32
 	memWrite func(uc uintptr, address uint64, bytes unsafe.Pointer, size uint64) int32
@@ -103,6 +104,7 @@ func loadUnicorn(path string) error {
 		{library, "uc_query", &api.query}, {library, "uc_ctl", &ucCtl.set}, {library, "uc_ctl", &ucCtl.get},
 		{library, "uc_reg_read", &api.regRead}, {library, "uc_reg_write", &api.regWrite},
 		{library, "uc_mem_map", &api.memMap}, {library, "uc_mem_unmap", &api.memUnmap},
+		{library, "uc_mem_map_ptr", &api.memPtr},
 		{library, "uc_mem_read", &api.memRead}, {library, "uc_mem_write", &api.memWrite},
 		{library, "uc_emu_start", &api.emuStart}, {library, "uc_emu_stop", &api.emuStop},
 		{library, "uc_hook_add", &api.hookAdd},
@@ -273,6 +275,12 @@ func (e *engine) setCPReg(crn, crm, op0, op1, op2 uint32, v uint64) {
 
 func (e *engine) memMap(addr, size uint64) {
 	must(api.memMap(e.uc, addr, size, protAll), fmt.Sprintf("mem_map %#x+%#x", addr, size))
+}
+
+// memMapHost maps host memory, which every engine that maps it then shares. Its length is a
+// whole number of pages.
+func (e *engine) memMapHost(addr uint64, memory []byte) {
+	must(api.memPtr(e.uc, addr, uint64(len(memory)), protAll, unsafe.Pointer(&memory[0])), fmt.Sprintf("mem_map_ptr %#x+%#x", addr, len(memory)))
 }
 
 func (e *engine) memUnmap(addr, size uint64) {

@@ -108,6 +108,10 @@ for guest in ${guests//,/ }; do
 	[ "$guest" != objcinfo ] || args=(/System/Library/PrivateFrameworks/IMCore.framework/IMCore)
 	# service is run as the process that provides the service it then uses.
 	[ "$guest" != service ] || options=(--service com.example.ipswrun.echo)
+	# client is run beside the server whose services it uses, and prefs beside the release's own
+	# cfprefsd, in both of its roles.
+	[ "$guest" != client ] || options=(--agent com.example.ipswrun.echo,com.example.ipswrun.reverse=examples/bin/server)
+	[ "$guest" != prefs ] || options=(--agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon')
 
 	# At most $jobs at once: when that many are running, wait for the oldest.
 	pids=()

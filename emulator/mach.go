@@ -205,11 +205,19 @@ func (p *Process) send(m message) int64 {
 		m.bits, m.remote, m.local, m.id = le.Uint32(body), le.Uint32(body[8:]), le.Uint32(body[12:]), le.Uint32(body[20:])
 	}
 	if q := p.destination(m.remote); q != nil {
+		said := ""
+		if p.trace { // what an XPC message says, read before its rights are taken out of it
+			if ports, payload, ok := xpcBody(m.bits, body); ok {
+				if d, err := xpcDecode(payload, ports); err == nil {
+					said = ": " + d.String()
+				}
+			}
+		}
 		sent, ok := p.outgoing(m, body)
 		if !ok {
 			return sendTooSmall // shorter than what it says it carries
 		}
-		p.note("  mach_msg id %d to port %#x: %d bytes queued", m.id, m.remote, len(sent.data))
+		p.note("  mach_msg id %d to port %#x: %d bytes queued%s", m.id, m.remote, len(sent.data), said)
 		switch r := p.names[m.remote]; {
 		case m.bits&0x1F == makeSend:
 			q.made++
@@ -405,7 +413,7 @@ func migTaskInfo(p *Process, body []byte) migReply {
 	case 17: // TASK_DYLD_INFO
 		return counted(append(le64(p.imageInfo[:]...), le32(1)...))
 	case 15: // TASK_AUDIT_TOKEN
-		return counted(le32(0, guestUID, guestGID, guestUID, guestGID, p.pid, 100000, guestExecution))
+		return counted(le32(0, p.uid, p.gid, p.uid, p.gid, p.pid, 100000, guestExecution))
 	}
 	return migCode(kernInvalidArg)
 }
