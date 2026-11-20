@@ -2,8 +2,13 @@
 // it found there. Preferences are kept by a daemon, cfprefsd, which is another process: without
 // one nothing is remembered.
 //
-// Under ipswrun the release's own cfprefsd is started beside it (see the readme), and with a
-// --home that is kept, the second run finds what the first left.
+// Under ipswrun the release's own cfprefsd is started beside it, as the user's agent and as the
+// system's daemon, and the two variables are taken away by which ipswrun otherwise has
+// CoreFoundation keep preferences in the process itself:
+//
+//   ipswrun --agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' \
+//           --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon' \
+//           --env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME <release> examples/bin/prefs
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdio.h>
 

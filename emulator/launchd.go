@@ -77,7 +77,7 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 		reply.set("events", []any{})
 	case routine == routineJobValue:
 		// Which of launchd's domains the process is in: the system's, or the one of a user who is
-		// logged in at the screen. cfprefsd takes from it whether it is the daemon or a user's agent.
+		// logged in at the screen. A program that serves both takes from it which it is to be.
 		switch key := request.uint("outgsk"); {
 		case !request.bool("get"):
 			reply.set("error", int64(noSuchService))

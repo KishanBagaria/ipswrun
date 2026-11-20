@@ -115,7 +115,7 @@ The run is the first guest's: its output and its exit status. When it exits, the
 | `--service <name>` | a Mach service the guest provides, as a daemon started by launchd does: it can check that name in, and look it up as a client (repeatable). Without it no name can be checked in, as for any program run by hand |
 | `--agent <service>[,<service>…]=<executable> [arguments]` | another guest, started beside the first as the same user, that provides these Mach services (repeatable). Arguments are separated by spaces |
 | `--daemon <service>[,<service>…]=<executable> [arguments]` | the same, as root |
-| `--env KEY=VALUE` | added to the environment of every guest (repeatable) |
+| `--env KEY=VALUE` | added to the environment of every guest (repeatable). `--env KEY` takes a variable out of it |
 | `--system <path>` | system-volume file, or directory ending in `/`, the guest may read (repeatable). The default is feature flags, `SystemVersion.plist`, ICU data in `/usr/share/icu/` and `/usr/lib/libobjc-trampolines.dylib`; giving any replaces the default |
 | `--cache <dir>` | where downloads are kept between runs (default: `ipswrun-<uid>` in the system temporary directory, so cleared on reboot) |
 | `--stream-compressed` | allow downloading one compressed disk image member front to back, for macOS 13 and 14 |
