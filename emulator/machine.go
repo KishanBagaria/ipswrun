@@ -206,6 +206,14 @@ func (m *Machine) next() (*Process, *thread) {
 	return nil, nil
 }
 
+// earlier is the one of two times that comes first, a zero time being none.
+func earlier(a, b time.Time) time.Time {
+	if b.IsZero() || !a.IsZero() && !b.Before(a) {
+		return a
+	}
+	return b
+}
+
 // schedule is called between stretches of emulation once a thread gave up its turn: it brings in
 // the next thread that can run, of any process, sleeping until the nearest deadline if none can.
 // False is the end of the run: the guest has exited, and the others are at rest or out of time.
@@ -215,17 +223,12 @@ func (m *Machine) schedule() bool {
 	for {
 		now := m.clock.now()
 		var until time.Time
-		sooner := func(t time.Time) {
-			if !t.IsZero() && (until.IsZero() || t.Before(until)) {
-				until = t
-			}
-		}
 		live, stuck := false, false
 		for _, p := range m.procs {
 			if p.exited {
 				continue
 			}
-			sooner(p.serve(now))
+			until = earlier(until, p.serve(now))
 			ended := true
 			for _, t := range p.threads {
 				ended = ended && t.state == dead
@@ -242,7 +245,7 @@ func (m *Machine) schedule() bool {
 					t.answer = &late
 					t.wake()
 				default:
-					sooner(t.deadline)
+					until = earlier(until, t.deadline)
 				}
 			}
 			if ended {

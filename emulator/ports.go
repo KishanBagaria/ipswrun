@@ -242,11 +242,6 @@ func (p *Process) sendRight(q *port) uint32 {
 	return p.giveOut(carried{port: q, disposition: moveSend}, nil)
 }
 
-// sendOnce names, for the process, a new right to send to q once.
-func (p *Process) sendOnce(q *port) uint32 {
-	return p.giveOut(carried{port: q, disposition: moveSendOnce}, nil)
-}
-
 // enqueue queues on q a message that is not a guest's own: the kernel's (sender 0) or launchd's.
 func enqueue(q *port, bits, id uint32, body []byte, sender uint32) {
 	post(q, machMessage{data: append(header(bits, uint32(24+len(body)), 0, id), body...), sender: sender})
@@ -577,8 +572,8 @@ func (p *Process) fireTimers(now time.Time) (next time.Time) {
 		case !r.receive || q.due.IsZero():
 		case !q.due.After(now):
 			due = append(due, q)
-		case next.IsZero() || q.due.Before(next):
-			next = q.due
+		default:
+			next = earlier(next, q.due)
 		}
 	}
 	slices.SortFunc(due, func(a, b *port) int { return a.due.Compare(b.due) })
@@ -703,8 +698,7 @@ func post(q *port, m machMessage) {
 		if at == nil {
 			continue
 		}
-		if w := owner.waiters(waitPort, uint64(at.name)); len(w) > 0 {
-			t := w[0]
+		if t := owner.firstWaiter(waitPort, uint64(at.name)); t != nil {
 			// The room it gave may not be memory it has: that is its receive failing, not this send.
 			into := handler{fn: func(p *Process, _ []uint64) int64 { return p.hand(q, *t.receiving) }}
 			t.answer = &result{x0: uint64(owner.call(into, nil, rcvInvalidData))}

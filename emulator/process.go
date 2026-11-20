@@ -626,11 +626,8 @@ func (p *Process) read(addr, n uint64) []byte {
 	if n > vaLimit || addr+n > vaLimit {
 		panic(fault{fmt.Sprintf("kernel access to guest memory %#x+%#x", addr, n)})
 	}
-	p.ensure(addr, n)
-	data, err := p.uc.memRead(addr, int(n))
-	if err != nil {
-		panic(fault{fmt.Sprintf("kernel read of guest memory %#x: %v", addr, err)})
-	}
+	data := make([]byte, n)
+	p.readInto(data, addr)
 	return data
 }
 

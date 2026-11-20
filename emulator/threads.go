@@ -148,15 +148,26 @@ func (p *Process) waiters(kind waitKind, key uint64) []*thread {
 	return out
 }
 
+// firstWaiter is the thread that has waited longest on key, nil if none waits.
+func (p *Process) firstWaiter(kind waitKind, key uint64) *thread {
+	var first *thread
+	for _, t := range p.threads {
+		if t.state == waiting && t.kind == kind && t.key == key && (first == nil || t.order < first.order) {
+			first = t
+		}
+	}
+	return first
+}
+
 func (t *thread) wake() { t.state = runnable }
 
 // wakeOne wakes the thread that has waited longest on key, if any has.
 func (p *Process) wakeOne(kind waitKind, key uint64) bool {
-	w := p.waiters(kind, key)
-	if len(w) > 0 {
-		w[0].wake()
+	t := p.firstWaiter(kind, key)
+	if t != nil {
+		t.wake()
 	}
-	return len(w) > 0
+	return t != nil
 }
 
 // deliver puts the running thread's answer, if it has one, where its call's result goes.
@@ -298,24 +309,34 @@ func (p *Process) end(t *thread) {
 // sysYield offers the caller's turn, which is taken if anything else could use it: another thread
 // that can run, or a deadline, timer or event that may have come due.
 func sysYield(p *Process, a []uint64) int64 {
+	p.yield = p.yield || p.contended()
+	return 0
+}
+
+// contended reports whether anything but the running thread could use a turn.
+func (p *Process) contended() bool {
 	for _, t := range p.threads {
 		if t != p.current && (t.state == runnable || t.state == waiting && !t.deadline.IsZero()) {
-			p.yield = true
+			return true
 		}
 	}
 	for _, q := range p.kqueues {
-		if q.requested || len(q.ready) > 0 || len(q.timers) > 0 || len(q.ports) > 0 {
-			p.yield = true
+		if q.request != nil || len(q.ready) > 0 || len(q.timers) > 0 || len(q.ports) > 0 {
+			return true
 		}
 	}
 	for _, r := range p.names {
-		p.yield = p.yield || r.receive && !r.port.due.IsZero()
+		if r.receive && !r.port.due.IsZero() {
+			return true
+		}
 	}
 	// Another process may be able to run, and this one may be waiting for what it does.
 	for _, other := range p.m.procs {
-		p.yield = p.yield || other != p && !other.exited && slices.ContainsFunc(other.threads, func(t *thread) bool { return t.state == runnable })
+		if other != p && !other.exited && slices.ContainsFunc(other.threads, func(t *thread) bool { return t.state == runnable }) {
+			return true
+		}
 	}
-	return 0
+	return false
 }
 
 // sysSigsuspend waits for a signal. None is ever sent, so the thread is never heard from again.

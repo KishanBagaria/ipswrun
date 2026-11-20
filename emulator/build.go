@@ -217,19 +217,22 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		d.Env = env
 		guests = append(guests, d)
 	}
+	read := map[string][]byte{} // the system's executables, each read once however many guests run it
 	for _, g := range guests {
 		if path, ok := strings.CutPrefix(g.Executable, SystemPrefix); ok {
-			f, err := image.Open(rangefs.FileSystem, path)
-			if err == nil && f == nil {
-				err = fmt.Errorf("the system volume has no file %s", path)
+			if read[path] == nil {
+				f, err := image.Open(rangefs.FileSystem, path)
+				if err == nil && f == nil {
+					err = fmt.Errorf("the system volume has no file %s", path)
+				}
+				if err == nil {
+					read[path], err = f.ReadAll()
+				}
+				if err != nil {
+					return m, cache, fmt.Errorf("%s: %w", g.Executable, err)
+				}
 			}
-			if err == nil {
-				g.Image, err = f.ReadAll()
-			}
-			if err != nil {
-				return m, cache, fmt.Errorf("%s: %w", g.Executable, err)
-			}
-			g.Executable = path
+			g.Image, g.Executable = read[path], path
 		}
 		if _, err := m.Spawn(g); err != nil {
 			return m, cache, fmt.Errorf("%s: %w", g.Executable, err)
