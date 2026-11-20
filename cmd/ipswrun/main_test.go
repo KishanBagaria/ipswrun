@@ -161,7 +161,7 @@ func TestReleasesByName(t *testing.T) {
 		{selector: "27.2.2", want: "26B140", asks: true, down: true, looks: true},
 	} {
 		asked, looked := 0, 0
-		selected, note, err := selectReleases(known, c.selector, func() ([]release, error) {
+		selected, note, err := selectReleases(known, nil, c.selector, func() ([]release, error) {
 			asked++
 			if c.down {
 				return nil, errors.New("feed is down")
@@ -202,7 +202,7 @@ func TestReleasesByName(t *testing.T) {
 	}
 	// The index is someone else's: an image it places anywhere but on Apple's hosts is not fetched.
 	for _, bad := range []string{"http://updates.cdn-apple.com/x.ipsw", "https://example.invalid/x.ipsw", "https://updates.cdn-apple.com.example.invalid/x.ipsw", "https://apple.com@example.invalid/x.ipsw"} {
-		_, _, err := selectReleases(known, "27.2.2", func() ([]release, error) { return nil, nil },
+		_, _, err := selectReleases(known, nil, "27.2.2", func() ([]release, error) { return nil, nil },
 			func() ([]release, error) { return []release{{"27.2.2", "26B140", bad}}, nil })
 		if err == nil || !strings.Contains(err.Error(), "not an https URL on a host of Apple's") {
 			t.Errorf("%s from the index: error %v, want it refused", bad, err)
@@ -331,3 +331,18 @@ func TestProgressOnlyOnATerminal(t *testing.T) {
 // locked is a buffer the status goroutine and the test may both touch; progress serialises its
 // own writes, the test reads only after stop.
 type locked struct{ bytes.Buffer }
+
+// A beta is one of those built in for the device, or an error: nothing is fetched for it.
+func TestBetaSelectionOffline(t *testing.T) {
+	offline := func() ([]release, error) {
+		t.Fatal("beta selection attempted a network lookup")
+		return nil, nil
+	}
+	got, _, err := selectReleases(nil, parseBetas(betasText, "Macmini9,1"), "26c5047E", offline, offline)
+	if err != nil || len(got) != 1 || got[0].Build != "26C5047e" || !onApple(got[0].URL) {
+		t.Fatalf("beta selection returned %v, %v", got, err)
+	}
+	if _, _, err := selectReleases(nil, parseBetas(betasText, "unsupported"), "26C5047e", offline, offline); err == nil {
+		t.Fatal("accepted a beta for an unsupported device")
+	}
+}

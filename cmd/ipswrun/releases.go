@@ -199,6 +199,23 @@ func fetchIndex(device string) ([]release, error) {
 	return parseIndex(data)
 }
 
+// betas.tsv is a snapshot of AppleDB's macOS beta restore images: the columns of releases.tsv, then
+// the devices each image restores, separated by spaces.
+//
+//go:embed betas.tsv
+var betasText string
+
+// parseBetas reads betas.tsv, keeping the betas there are for device.
+func parseBetas(text, device string) []release {
+	var out []release
+	for _, line := range strings.Split(text, "\n")[1:] {
+		if fields := strings.Split(line, "\t"); len(fields) == 4 && slices.Contains(strings.Fields(fields[3]), device) {
+			out = append(out, release{fields[0], fields[1], fields[2]})
+		}
+	}
+	return out
+}
+
 // withCurrent adds the releases Apple currently offers to those of known that lack them.
 func withCurrent(known, current []release) []release {
 	out := slices.Clone(known)
@@ -213,6 +230,8 @@ func withCurrent(known, current []release) []release {
 var (
 	versionName = regexp.MustCompile(`^\d+(\.\d+)+$`)
 	buildName   = regexp.MustCompile(`^\d+[A-Za-z]\d+[a-z]?$`)
+	// betaBuildName is a build that ends in a letter, as a beta's does, in either case.
+	betaBuildName = regexp.MustCompile(`(?i)^\d+[a-z]\d+[a-z]$`)
 )
 
 func filter(pool []release, keep func(release) bool) []release {
@@ -223,13 +242,14 @@ func filter(pool []release, keep func(release) bool) []release {
 // each once. It is a comma-separated list of: "all", the first and last release of each major
 // version and the current one; "latest"; a major version ("15"), which is those of "all" under it;
 // the version or build of any release ("15.2", "24C101"); a version no release has ("11.0"), which
-// is every release under it; or the https URL of any image.
+// is every release under it; the build of a beta ("26C5047e"); or the https URL of any image.
 //
-// Nothing is fetched for a version or build in releases.tsv. Any other name asks current, at
+// Nothing is fetched for a version or build in releases.tsv, nor for the build of a beta, which
+// is one of betas or an error. Any other name asks current, at
 // most once, for what Apple offers now, and a version or build that this does not settle either
 // asks index, at most once, for every release there has been. When current fails and the names
 // can do without it, the failure comes back as note.
-func selectReleases(known []release, selector string, current, index func() ([]release, error)) (out []release, note error, err error) {
+func selectReleases(known, betas []release, selector string, current, index func() ([]release, error)) (out []release, note error, err error) {
 	current, index = sync.OnceValues(current), sync.OnceValues(index)
 	seen := map[string]bool{}
 	for _, part := range strings.Split(selector, ",") {
@@ -260,6 +280,10 @@ func selectReleases(known []release, selector string, current, index func() ([]r
 			}
 		case slices.ContainsFunc(known, exactly):
 			matched = filter(known, exactly)
+		case betaBuildName.MatchString(part):
+			if matched = filter(betas, exactly); len(matched) == 0 {
+				return nil, nil, noRelease("the betas built in for this --device")
+			}
 		case slices.ContainsFunc(offered(), exactly):
 			matched = filter(offered(), exactly)
 		case versionName.MatchString(part) || buildName.MatchString(part):

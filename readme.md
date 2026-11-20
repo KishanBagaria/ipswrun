@@ -57,6 +57,7 @@ The first argument chooses the releases:
 | Release | Runs against |
 | --- | --- |
 | `15.2` or `24C101` | that release: any since 11.0.1, by version or build |
+| `26C5047e` | a beta build from the bundled AppleDB snapshot, resolved locally for the selected device. For newer betas, pass the Apple IPSW URL |
 | `latest` | the release Apple currently offers |
 | `all` | the first and last release of every major version, and the current one |
 | `15` | those of `all` under it: 15.0 and 15.6.1 |

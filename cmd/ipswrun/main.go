@@ -53,7 +53,7 @@ const usage = "ipswrun [flags] <release> <guest executable> [guest arguments...]
 
 // checkArgs says what is wrong with the positional arguments, before anything is fetched for
 // them, or returns the releases the first one names.
-func checkArgs(known []release, args []string, current, index func() ([]release, error)) (selected []release, note error, err error) {
+func checkArgs(known, betas []release, args []string, current, index func() ([]release, error)) (selected []release, note error, err error) {
 	if len(args) < 2 {
 		return nil, nil, fmt.Errorf("expected a release and a guest executable, got %d argument(s)", len(args))
 	}
@@ -61,7 +61,7 @@ func checkArgs(known []release, args []string, current, index func() ([]release,
 	if err := checkExecutable(args[1]); err != nil {
 		return nil, nil, fmt.Errorf("guest executable: %w", err)
 	}
-	return selectReleases(known, args[0], current, index)
+	return selectReleases(known, betas, args[0], current, index)
 }
 
 // checkExecutable says what is wrong with the path of an executable on the host. One that is
@@ -488,7 +488,7 @@ URL of any restore image, or several of these separated by commas.`)
 			return 2, nil
 		}
 		var note, err error
-		if releases, note, err = checkArgs(known, flag.Args(), current, index); err == nil {
+		if releases, note, err = checkArgs(known, parseBetas(betasText, *device), flag.Args(), current, index); err == nil {
 			feedNote(note)
 			if err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath)); err == nil {
 				mounts, err = parseMounts(len(releases), mountValues)
