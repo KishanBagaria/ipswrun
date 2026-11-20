@@ -35,7 +35,7 @@ func mapSlow(t *testing.T, p *Process, f *slowFile) uint64 {
 // The clock does not move while the host is away, and nothing that is due by it comes due.
 func TestClockStandsStillWhileAway(t *testing.T) {
 	const gone, soon = 400 * time.Millisecond, 100 * time.Millisecond
-	c := newClock()
+	c := &clock{boot: time.Now()} // newClock asks the host its uptime, which on a Mac needs the library loaded
 	var rings atomic.Int32
 	now, ticks := c.now(), c.ticks()
 	off := c.alarm(now.Add(soon), func() { rings.Add(1) })
