@@ -224,12 +224,11 @@ func (p *Process) send(m message) int64 {
 	if q != nil {
 		said := ""
 		if p.trace { // what the message says, read before its rights are taken out of it
-			if ports, payload, ok := xpcBody(m.bits, body); ok {
-				if d, err := xpcDecode(payload, ports); err == nil {
-					said = ": " + d.String()
-				} else if len(body) <= 24+64 { // not XPC, and short: as it is
-					said = fmt.Sprintf(": %x", body[24:])
-				}
+			ports, payload, ok := xpcBody(m.bits, body)
+			if d, err := xpcDecode(payload, ports); ok && err == nil {
+				said = ": " + d.String()
+			} else { // not XPC: how it starts, as it is
+				said = fmt.Sprintf(": %x", body[24:min(len(body), 24+64)])
 			}
 		}
 		sent, ok := p.outgoing(m, body)
@@ -372,23 +371,20 @@ func migMakeMemoryEntry(p *Process, body []byte) migReply {
 	size, offset, how := le.Uint64(body[48:]), le.Uint64(body[56:]), le.Uint32(body[64:])
 	start := offset &^ (pageSize - 1)
 	size = align(offset+size, pageSize) - start
-	var memory []byte
-	ok := size > 0 && size <= 1<<30
-	switch {
-	case !ok:
-	case how&memNamedCreate != 0:
-		memory = p.m.hostMemory(size)
-	case how&memCopy != 0:
-		if memory = p.m.hostMemory(size); memory != nil {
-			copy(memory, p.read(start, size))
+	var entry *span
+	if how&(memNamedCreate|memCopy) == 0 {
+		entry = p.share(start, size)
+	} else if s := p.m.newShared(size); s != nil {
+		if how&memNamedCreate == 0 {
+			p.readInto(s.data[:size], start)
 		}
-	default:
-		memory, ok = p.share(start, size)
+		entry = &span{s, 0, size}
 	}
-	if !ok || memory == nil {
+	if entry == nil {
 		return migCode(kernInvalidArg)
 	}
-	name := p.sendRight(&port{m: p.m, memory: memory})
+	entry.of.retain()
+	name := p.sendRight(&port{m: p.m, memory: entry})
 	p.note("  mach_make_memory_entry(%#x, %#x, %#x) = %#x", offset, size, how, name)
 	return migReply{body: append(append(migPort(name).body, ndr...), le64(size)...), port: true}
 }
@@ -398,12 +394,12 @@ func migVMMap(p *Process, body []byte) migReply { // mach_vm_map
 	what := allocation{name: "vm_map"}
 	if r := p.names[le.Uint32(body[28:])]; r != nil && r.port.memory != nil {
 		entry, from, copied := r.port.memory, le.Uint64(body[76:]), le.Uint32(body[84:]) != 0
-		if from%pageSize != 0 || from > uint64(len(entry)) || align(size, pageSize) > uint64(len(entry))-from {
+		if from > entry.size || align(size, pageSize) > entry.size-from || !entry.of.window(entry.off+from, size) {
 			return migCode(kernInvalidArg)
 		}
-		what = allocation{kind: sharedRegion, data: entry, off: from, name: "memory entry"}
+		what = allocation{kind: sharedRegion, shared: entry.of, off: entry.off + from, name: "memory entry"}
 		if copied {
-			what = allocation{kind: fileRegion, data: slices.Clone(entry[from : from+align(size, pageSize)]), name: "memory entry"}
+			what = allocation{kind: fileRegion, data: slices.Clone(entry.of.data[what.off : what.off+align(size, pageSize)]), name: "memory entry"}
 		}
 	}
 	start, ok := p.vmMap(addr, size, mask, flags, what)
@@ -427,19 +423,16 @@ func migVMRemap(p *Process, body []byte) migReply {
 		p.note("  mach_vm_remap of %#x size %#x: not memory the process has", source, size)
 		return migCode(kernInvalidArg)
 	}
-	var what allocation
-	if file := r.kind == fileRegion || r.kind == cacheRegion; copied || file {
+	what := allocation{name: "vm_remap:" + r.name}
+	if copied || r.kind == fileRegion || r.kind == cacheRegion {
 		if r.end < source+size {
 			return migCode(kernInvalidArg)
 		}
-		what = allocation{kind: fileRegion, data: p.read(source, size), name: "vm_remap:" + r.name}
+		what.kind, what.data = fileRegion, p.read(source, size)
+	} else if shared := p.share(source, size); shared != nil {
+		what.kind, what.shared, what.off = sharedRegion, shared.of, shared.off
 	} else {
-		from := source &^ (pageSize - 1)
-		memory, ok := p.share(from, align(source+size, pageSize)-from)
-		if !ok {
-			return migCode(kernInvalidArg)
-		}
-		what = allocation{kind: sharedRegion, data: memory, name: "vm_remap:" + r.name}
+		return migCode(kernInvalidArg)
 	}
 	start, ok := p.vmMap(addr, size, mask, flags, what)
 	if !ok {

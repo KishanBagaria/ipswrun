@@ -289,10 +289,14 @@ func (e *engine) memUnmap(addr, size uint64) {
 
 func (e *engine) memRead(addr uint64, n int) ([]byte, error) {
 	out := make([]byte, n)
-	if n == 0 {
-		return out, nil
+	return out, e.memReadInto(addr, out)
+}
+
+func (e *engine) memReadInto(addr uint64, out []byte) error {
+	if len(out) == 0 {
+		return nil
 	}
-	return out, check(api.memRead(e.uc, addr, unsafe.Pointer(&out[0]), uint64(n)))
+	return check(api.memRead(e.uc, addr, unsafe.Pointer(&out[0]), uint64(len(out))))
 }
 
 func (e *engine) memWrite(addr uint64, data []byte) {

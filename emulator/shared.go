@@ -14,10 +14,23 @@ const (
 	mapShared = 0x1
 )
 
-// sharedMemory is the memory behind a name given to shm_open. It has no size until ftruncate
-// gives it one, and keeps that size.
+// sharedMemory is memory of the host's that mappings share. It is kept for as long as anything
+// refers to it: a mapping, a port that names it, or the name shm_open knows it by, which it
+// keeps for the whole run.
 type sharedMemory struct {
-	data []byte // a whole number of pages of the host's
+	data []byte // a whole number of pages
+	refs int
+}
+
+// newShared is shared memory of a size, zeroed, that nothing refers to yet. With no size it is
+// memory still to be given one (see resize). Nil if the host has none of that size to give.
+func (m *Machine) newShared(size uint64) *sharedMemory {
+	s := &sharedMemory{}
+	if size > 0 && s.resize(size) != 0 {
+		return nil
+	}
+	m.shared = append(m.shared, s)
+	return s
 }
 
 // resize is ftruncate: it gives the memory its size, once.
@@ -29,57 +42,24 @@ func (s *sharedMemory) resize(size uint64) int64 {
 	case s.data != nil || size == 0 || size > 1<<30:
 		return -eINVAL
 	}
-	if s.data = hostPages(size); s.data == nil {
+	data, err := syscall.Mmap(-1, 0, int(size), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_ANON|syscall.MAP_PRIVATE)
+	if err != nil {
 		return -eNOMEM
 	}
+	s.data = data
 	return 0
 }
 
-// hostPages is zeroed memory of the host's, a whole number of pages; nil if there is none to have.
-func hostPages(size uint64) []byte {
-	data, err := syscall.Mmap(-1, 0, int(align(size, pageSize)), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_ANON|syscall.MAP_PRIVATE)
-	if err != nil {
-		return nil
-	}
-	return data
+func (s *sharedMemory) retain() *sharedMemory {
+	s.refs++
+	return s
 }
 
-// hostMemory is host memory with no name, which the machine keeps until it is closed.
-func (m *Machine) hostMemory(size uint64) []byte {
-	data := hostPages(size)
-	if data != nil {
-		m.unnamed = append(m.unnamed, data)
+// release ends one reference, and with the last gives the memory back to the host.
+func (s *sharedMemory) release() {
+	if s.refs--; s.refs <= 0 {
+		s.free()
 	}
-	return data
-}
-
-// share makes whole pages of the process's memory memory that can be mapped again, and returns
-// it: what the pages hold moves to memory of the host's, which the pages then are. False for a
-// stretch that is not all memory the process has.
-func (p *Process) share(start, size uint64) ([]byte, bool) {
-	if size == 0 || size > 1<<30 || start+size < start {
-		return nil, false
-	}
-	first := p.findRegion(start)
-	if first != nil && first.kind == sharedRegion && start+size <= first.end {
-		from := first.off + (start - first.start)
-		return first.data[from : from+size], true // it is already
-	}
-	name := "shared"
-	for at := start; at < start+size; {
-		r := p.findRegion(at)
-		if r == nil {
-			return nil, false
-		}
-		at, name = r.end, r.name
-	}
-	host := p.m.hostMemory(size)
-	if host == nil {
-		return nil, false
-	}
-	copy(host, p.read(start, size))
-	p.alloc(size, allocation{addr: start, fixed: true, kind: sharedRegion, data: host, name: name})
-	return host, true
 }
 
 func (s *sharedMemory) free() {
@@ -89,17 +69,57 @@ func (s *sharedMemory) free() {
 	}
 }
 
+// window reports whether whole pages from off, length long, are all within the memory.
+func (s *sharedMemory) window(off, length uint64) bool {
+	return off%pageSize == 0 && length > 0 && off <= uint64(len(s.data)) && align(length, pageSize) <= uint64(len(s.data))-off
+}
+
+// span is a stretch of shared memory.
+type span struct {
+	of        *sharedMemory
+	off, size uint64
+}
+
+// share makes the pages a stretch of the process's memory is in memory that can be mapped again,
+// and returns it: what the pages hold moves to memory of the host's, which the pages then are.
+// Nil for a stretch that is not all memory the process has, that is of the shared cache, which
+// stays what it is, or that is shared in part already: making it one would cut the part that is
+// shared off from whoever shares it.
+func (p *Process) share(addr, size uint64) *span {
+	start := addr &^ (pageSize - 1)
+	size = align(addr+size, pageSize) - start
+	first := p.findRegion(start)
+	if first != nil && first.kind == sharedRegion && start+size <= first.end {
+		return &span{first.shared, first.off + (start - first.start), size} // it is already
+	}
+	name := "shared"
+	for at := start; at < start+size; {
+		r := p.findRegion(at)
+		if r == nil || r.kind == cacheRegion || r.kind == sharedRegion {
+			return nil
+		}
+		at, name = r.end, r.name
+	}
+	s := p.m.newShared(size)
+	if s == nil {
+		return nil
+	}
+	p.readInto(s.data[:size], start)
+	p.alloc(size, allocation{addr: start, fixed: true, kind: sharedRegion, shared: s, name: name})
+	return &span{s, 0, size}
+}
+
 // sysShmOpen opens memory by name, making it if asked to. Nothing has any before a guest makes it.
 func sysShmOpen(p *Process, a []uint64) int64 {
 	name := p.cstr(a[0])
-	s := p.m.shared[name]
+	s := p.m.named[name]
 	p.note("  shm_open %s", name)
 	switch {
 	case s == nil && a[1]&oCreate == 0:
 		return -eNOENT
 	case s == nil:
-		s = &sharedMemory{}
-		p.m.shared[name] = s
+		s = p.m.newShared(0).retain()
+		p.m.named[name] = s
 	case a[1]&oCreate != 0 && a[1]&oExcl != 0:
 		return -eEXIST
 	}
@@ -109,20 +129,19 @@ func sysShmOpen(p *Process, a []uint64) int64 {
 // sysShmUnlink takes the name away. Whoever has the memory open or mapped keeps it.
 func sysShmUnlink(p *Process, a []uint64) int64 {
 	name := p.cstr(a[0])
-	if p.m.shared[name] == nil {
+	if p.m.named[name] == nil {
 		return -eNOENT
 	}
-	delete(p.m.shared, name)
+	delete(p.m.named, name)
 	return 0
 }
 
 // mapShared is mmap of shared memory, shared: the mapping is the memory itself.
 func (p *Process) mapShared(s *sharedMemory, addr, length, off uint64, fixed bool) int64 {
-	length = align(length, pageSize)
-	if off%pageSize != 0 || length == 0 || off > uint64(len(s.data)) || length > uint64(len(s.data))-off {
+	if !s.window(off, length) {
 		return -eINVAL
 	}
-	start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, kind: sharedRegion, data: s.data, off: off, name: "shared memory"})
+	start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, kind: sharedRegion, shared: s, off: off, name: "shared memory"})
 	if !ok {
 		return -eNOMEM
 	}

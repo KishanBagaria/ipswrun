@@ -148,6 +148,25 @@ func TestProcesses(t *testing.T) {
 			t.Errorf("an entry for new memory was refused, or one for memory the process does not have was made")
 		}
 
+		// Shared memory is the host's until the last mapping and the last port are gone. Memory
+		// that is shared in part cannot be made one memory: the part's other mappings would lose it.
+		fresh, _ := p.alloc(3*pageSize, allocation{name: "fresh"})
+		part := entryOf(p, fresh, pageSize, 0)
+		backing := p.names[part].port.memory.of
+		second := mapEntry(p, part, pageSize, false)
+		if p.share(fresh, 3*pageSize) != nil {
+			t.Errorf("memory shared in part was shared as a whole")
+		}
+		p.unmap(fresh, fresh+3*pageSize)
+		p.unmap(second, second+pageSize)
+		if backing.data == nil {
+			t.Errorf("shared memory was given back while a port still named it")
+		}
+		p.releaseSend(part)
+		if backing.data != nil || backing.refs != 0 {
+			t.Errorf("shared memory nothing refers to is kept: %d references", backing.refs)
+		}
+
 		// Memory with a name is one memory in every process that maps it.
 		open, truncate, mmap := number(t, "shm_open"), number(t, "ftruncate"), number(t, "mmap")
 		p.write(msg, str("com.example.shared"))

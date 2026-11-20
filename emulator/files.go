@@ -185,12 +185,10 @@ func (p *Process) resolve(path string) (target, bool) {
 
 func (p *Process) lookup(path string) (target, bool) {
 	switch {
-	case path == p.path && p.hostExe:
+	case path == GuestExe && p.path == GuestExe: // a file of the host's
 		return target{kind: hostFD, host: p.exePath}, true
-	case path == p.path:
+	case path == p.path: // one of the build's
 		return target{kind: dataFD, data: p.exe}, true
-	case under(pathpkg.Dir(p.path), path): // on the way to it
-		return target{kind: dirFD}, true
 	case path == guestDyld:
 		return target{kind: dataFD, data: p.dyld}, true
 	case path == passwdFile:
@@ -230,6 +228,9 @@ func (p *Process) lookup(path string) (target, bool) {
 		if f.File != nil {
 			return target{kind: cacheFD, cache: f.File}, true
 		}
+	}
+	if under(pathpkg.Dir(p.path), path) { // on the way to its own executable
+		return target{kind: dirFD}, true
 	}
 	return target{}, false
 }

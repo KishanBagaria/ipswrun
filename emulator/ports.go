@@ -27,7 +27,7 @@ type port struct {
 	due     time.Time     // of a timer (mk_timer) that is armed: when; zero otherwise
 	context uint64        // what it was made or guarded with, which its owner reads back
 	dead    bool          // its receive right is gone
-	memory  []byte        // of a port that names memory (see migMakeMemoryEntry): a copy of it
+	memory  *span         // of a port that names memory (see migMakeMemoryEntry): which
 	object  kernelObject  // of a port the kernel receives on: what it stands for (see iokit.go)
 
 	sends     int    // send rights there are, in every process and in messages not yet received
@@ -264,9 +264,14 @@ func release(q *port) {
 	if q.sends > 0 {
 		q.sends--
 	}
-	if q.sends == 0 && q.object != nil && !q.dead {
+	switch {
+	case q.sends > 0 || q.dead:
+	case q.object != nil:
 		q.dead = true
 		q.object.released()
+	case q.memory != nil:
+		q.dead = true
+		q.memory.of.release()
 	}
 	if q.sends == 0 && q.noSenders != nil {
 		to := q.noSenders
