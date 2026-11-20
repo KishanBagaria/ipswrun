@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -23,7 +24,8 @@ type Machine struct {
 	running  *Process            // the process whose thread has, or last had, the turn
 	services map[string]*service // what launchd knows (see launchd.go)
 	shared   map[string]*sharedMemory
-	ioMain   *port // what IOKit's searches are sent to, once a process has asked for it
+	unnamed  [][]byte // host memory that mappings share without a name (see shared.go)
+	ioMain   *port    // what IOKit's searches are sent to, once a process has asked for it
 	deadline time.Time
 	settling time.Time // once the main guest has exited: when the daemons are no longer waited for
 }
@@ -106,6 +108,10 @@ func (m *Machine) Close() {
 	for _, s := range m.shared {
 		s.free()
 	}
+	for _, data := range m.unnamed {
+		syscall.Munmap(data)
+	}
+	m.unnamed = nil
 }
 
 // Run runs the guests until the main one exits. Any other end (a fault, something unimplemented,

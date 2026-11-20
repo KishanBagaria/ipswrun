@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -355,15 +356,38 @@ func migHostGetSpecialPort(p *Process, body []byte) migReply {
 	return migCode(kernInvalidArg)
 }
 
+// How mach_make_memory_entry is asked for memory that is not the caller's own as it stands.
+const (
+	memNamedCreate = 0x020000 // new memory, of no address
+	memCopy        = 0x200000 // a copy of the caller's, made now
+)
+
 // migMakeMemoryEntry (mach_make_memory_entry_64) names a stretch of memory with a port, by which
-// it can be mapped again: how large data is passed along without copying it into a message. The
-// entry is a copy made now, and a mapping of it, in this process or one the port is sent to, a
-// copy of that.
+// it can be mapped again, here or in a process the port is sent to: how large data is passed
+// along without copying it into a message. Unless a copy is asked for, the port names the
+// caller's memory itself, and a mapping of it that is not a copy is the same memory.
 func migMakeMemoryEntry(p *Process, body []byte) migReply {
-	size, offset := le.Uint64(body[48:]), le.Uint64(body[56:])
-	size = align(offset+size, pageSize) - offset&^(pageSize-1)
-	name := p.sendRight(&port{m: p.m, memory: p.read(offset&^(pageSize-1), size)})
-	p.note("  mach_make_memory_entry(%#x, %#x) = %#x", offset, size, name)
+	size, offset, how := le.Uint64(body[48:]), le.Uint64(body[56:]), le.Uint32(body[64:])
+	start := offset &^ (pageSize - 1)
+	size = align(offset+size, pageSize) - start
+	var memory []byte
+	ok := size > 0 && size <= 1<<30
+	switch {
+	case !ok:
+	case how&memNamedCreate != 0:
+		memory = p.m.hostMemory(size)
+	case how&memCopy != 0:
+		if memory = p.m.hostMemory(size); memory != nil {
+			copy(memory, p.read(start, size))
+		}
+	default:
+		memory, ok = p.share(start, size)
+	}
+	if !ok || memory == nil {
+		return migCode(kernInvalidArg)
+	}
+	name := p.sendRight(&port{m: p.m, memory: memory})
+	p.note("  mach_make_memory_entry(%#x, %#x, %#x) = %#x", offset, size, how, name)
 	return migReply{body: append(append(migPort(name).body, ndr...), le64(size)...), port: true}
 }
 
@@ -371,9 +395,14 @@ func migVMMap(p *Process, body []byte) migReply { // mach_vm_map
 	addr, size, mask, flags := le.Uint64(body[48:]), le.Uint64(body[56:]), le.Uint64(body[64:]), uint64(le.Uint32(body[72:]))
 	what := allocation{name: "vm_map"}
 	if r := p.names[le.Uint32(body[28:])]; r != nil && r.port.memory != nil {
-		entry := r.port.memory
-		from := min(le.Uint64(body[76:]), uint64(len(entry)))
-		what = allocation{kind: fileRegion, data: entry[from:], name: "memory entry"}
+		entry, from, copied := r.port.memory, le.Uint64(body[76:]), le.Uint32(body[84:]) != 0
+		if from%pageSize != 0 || from > uint64(len(entry)) || align(size, pageSize) > uint64(len(entry))-from {
+			return migCode(kernInvalidArg)
+		}
+		what = allocation{kind: sharedRegion, data: entry, off: from, name: "memory entry"}
+		if copied {
+			what = allocation{kind: fileRegion, data: slices.Clone(entry[from : from+align(size, pageSize)]), name: "memory entry"}
+		}
 	}
 	start, ok := p.vmMap(addr, size, mask, flags, what)
 	if !ok {
@@ -383,18 +412,34 @@ func migVMMap(p *Process, body []byte) migReply { // mach_vm_map
 	return migData(le64(start))
 }
 
-// migVMRemap (mach_vm_remap) gives the caller a second mapping of file-backed memory. It is a
-// copy made now, which is the same thing as long as neither mapping is written afterwards: true
-// of code, which is what gets remapped (the Objective-C runtime's block trampolines).
+// migVMRemap (mach_vm_remap) gives the caller a second mapping of memory it has. Of memory that
+// is a file's, it is a copy made now, which is the same thing as long as neither mapping is
+// written afterwards: true of code, which is what gets remapped that way (the Objective-C
+// runtime's block trampolines). Of any other memory it is the same memory, unless a copy was
+// asked for.
 func migVMRemap(p *Process, body []byte) migReply {
 	addr, size, mask, flags := le.Uint64(body[48:]), le.Uint64(body[56:]), le.Uint64(body[64:]), uint64(le.Uint32(body[72:]))
 	source, copied := le.Uint64(body[76:]), le.Uint32(body[84:]) != 0
 	r := p.findRegion(source)
-	if r == nil || r.end < source+size || r.kind == zeroRegion && !copied {
-		p.note("  mach_vm_remap of %#x size %#x: not file-backed memory", source, size)
+	if r == nil {
+		p.note("  mach_vm_remap of %#x size %#x: not memory the process has", source, size)
 		return migCode(kernInvalidArg)
 	}
-	start, ok := p.vmMap(addr, size, mask, flags, allocation{kind: fileRegion, data: p.read(source, size), name: "vm_remap:" + r.name})
+	var what allocation
+	if file := r.kind == fileRegion || r.kind == cacheRegion; copied || file {
+		if r.end < source+size {
+			return migCode(kernInvalidArg)
+		}
+		what = allocation{kind: fileRegion, data: p.read(source, size), name: "vm_remap:" + r.name}
+	} else {
+		from := source &^ (pageSize - 1)
+		memory, ok := p.share(from, align(source+size, pageSize)-from)
+		if !ok {
+			return migCode(kernInvalidArg)
+		}
+		what = allocation{kind: sharedRegion, data: memory, name: "vm_remap:" + r.name}
+	}
+	start, ok := p.vmMap(addr, size, mask, flags, what)
 	if !ok {
 		return migCode(kernNoSpace)
 	}
