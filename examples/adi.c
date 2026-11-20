@@ -19,7 +19,7 @@
 #include <string.h>
 #include <xpc/xpc.h>
 
-#define WAIT 60000 // milliseconds a wait may take before it is given up: a daemon takes its time to start
+#define WAIT 20000 // milliseconds a wait may take before it is given up: a daemon takes its time to start, the more so emulated
 
 // The request for a one-time password, as CoreADI sends it: a version, what is asked, and for
 // which account: -2, which is none in particular. All big-endian.
