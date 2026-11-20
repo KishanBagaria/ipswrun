@@ -317,8 +317,8 @@ func (o *options) runOne(r release, label string) (out outcome) {
 			} else {
 				who = process.Label()
 				stderr = labelled(who, process.Stdout()+stderr)
-				if code, exited := process.ExitCode(); exited {
-					stderr += fmt.Sprintf("ipswrun: %s exited with status %d\n", who, code)
+				if code, _ := process.ExitCode(); process.LeftEarly() {
+					stderr += fmt.Sprintf("ipswrun: %s exited with status %d while the guest was running\n", who, code)
 				}
 			}
 			if !o.trace { // tracing already echoed it
