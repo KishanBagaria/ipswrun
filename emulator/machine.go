@@ -25,7 +25,8 @@ type Machine struct {
 	shared   []*sharedMemory          // every memory of the host's that mappings share (see shared.go)
 	named    map[string]*sharedMemory // those shm_open knows by a name
 	ioMain   *port                    // what IOKit's searches are sent to, once a process has asked for it
-	deadline time.Time
+	clock    *clock
+	deadline time.Time // of the run, as every time here by the machine's clock
 	settling time.Time // once the main guest has exited: when the daemons are no longer waited for
 }
 
@@ -62,7 +63,7 @@ func NewMachine(cfg Config) (*Machine, error) {
 		mounts[i] = Mount{canonical(m.Guest), host}
 	}
 	slices.SortStableFunc(mounts, func(a, b Mount) int { return len(b.Guest) - len(a.Guest) })
-	return &Machine{cfg: cfg, dyld: dyld, mounts: mounts, services: map[string]*service{}, named: map[string]*sharedMemory{}}, nil
+	return &Machine{cfg: cfg, dyld: dyld, mounts: mounts, services: map[string]*service{}, named: map[string]*sharedMemory{}, clock: newClock()}, nil
 }
 
 // Spawn makes a process of a guest, ready to run from dyld's entry point. Two guests may not
@@ -114,10 +115,12 @@ func (m *Machine) Close() {
 }
 
 // Run runs the guests until the main one exits. Any other end (a fault, something unimplemented,
-// the timeout, nothing left that could run) is a *StopError, and Diagnostics describes it.
+// the timeout, nothing left that could run) is a *StopError, and Diagnostics describes it. The
+// timeout is time the guests had: what the host spends fetching for them is not counted (see
+// clock).
 func (m *Machine) Run(timeout time.Duration) (err error) {
 	defer guard(&err)
-	m.deadline = time.Now().Add(timeout)
+	m.deadline = m.clock.now().Add(timeout)
 	m.running = m.procs[0]
 	for {
 		p := m.running
@@ -143,7 +146,7 @@ func (m *Machine) exit(p *Process, how string) {
 	if p == m.procs[0] {
 		// The others are asked to end, as launchd asks its daemons when they are no longer
 		// wanted, and have a while to do what they do about that.
-		m.settling = time.Now().Add(settleTime)
+		m.settling = m.clock.now().Add(settleTime)
 		for _, other := range m.live() {
 			if other.signalled(sigTERM) {
 				other.note("sent SIGTERM")
@@ -218,7 +221,7 @@ func (m *Machine) schedule() bool {
 	m.running.yield = false
 	main := m.procs[0]
 	for {
-		now := time.Now()
+		now := m.clock.now()
 		var until time.Time
 		live, stuck := false, false
 		for _, p := range m.procs {
@@ -268,7 +271,7 @@ func (m *Machine) schedule() bool {
 		case !until.Before(m.deadline):
 			stopKind(StopTimeout, "timed out with every thread waiting")
 		}
-		time.Sleep(time.Until(until))
+		time.Sleep(until.Sub(m.clock.now()))
 	}
 }
 

@@ -21,7 +21,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/KishanBagaria/ipswrun/dyldcache"
 	"github.com/blacktop/go-macho"
@@ -550,14 +549,18 @@ func (p *Process) materialize(addr uint64) bool {
 		p.uc.memMap(a, b-a)
 		switch r.kind {
 		case cacheRegion:
-			data, err := p.cache.Page(a-p.slide, b-a, p.slide)
+			var data []byte
+			var err error
+			p.m.clock.away(func() { data, err = p.cache.Page(a-p.slide, b-a, p.slide) })
 			if err != nil {
 				stopf("shared cache page %#x: %v", a-p.slide, err)
 			}
 			p.uc.memWrite(a, data)
 		case fileRegion:
 			if o := r.off + (a - r.start); r.file != nil {
-				data, err := r.file.Pread(int64(o), int64(b-a))
+				var data []byte
+				var err error
+				p.m.clock.away(func() { data, err = r.file.Pread(int64(o), int64(b-a)) })
 				if err != nil {
 					stopf("page in %s: %v", r.name, err)
 				}
@@ -720,33 +723,17 @@ func (p *Process) setupMMU() error {
 	return nil
 }
 
-// The guest's clock is the host's uptime in the ticks of an Apple silicon Mac: 24 MHz, which
-// mach_timebase_info reports as 125/3 ns a tick and newer system libraries take for granted. The
-// emulated CPU's own counter runs at another rate, so the commpage tells libsystem not to read
-// it and to ask the kernel instead (see interrupt).
-
-// machTicks is the guest's mach_absolute_time now.
-func machTicks() uint64 { return uptimeNanos() * 3 / 125 }
-
-// tickDuration is how long a number of ticks lasts.
-func tickDuration(ticks int64) time.Duration { return time.Duration(ticks * 125 / 3) }
-
-// tickTime is when the guest's mach_absolute_time is, or was, ticks.
-func tickTime(ticks uint64) time.Time {
-	return time.Now().Add(tickDuration(int64(ticks - machTicks())))
-}
-
 func (p *Process) setupCommpage() {
 	for _, base := range []uint64{commPage, commPageRO} {
 		page := hostPage(base, pageSize)
 		if base == commPage {
 			clear(page[0x120:0x148]) // no timeofday fast path: forces the syscall
-			// The clock is machTicks and nothing else: no offset (the host's own, or that of the
-			// Mac a Linux host's page was taken from, would put mach_absolute_time anywhere,
-			// before zero included), no time asleep, no approximate time.
+			// The clock is the machine's (see clock) and nothing else: no offset (the host's own,
+			// or that of the Mac a Linux host's page was taken from, would put mach_absolute_time
+			// anywhere, before zero included), no time asleep, no approximate time.
 			clear(page[0x88:0x90]) // TIMEBASE_OFFSET
 			clear(page[0x98:0xB0]) // CONT_TIMEBASE, BOOTTIME_USEC, CONT_HW_TIMEBASE
-			le.PutUint64(page[0xA0:], uint64(time.Now().UnixMicro())-uptimeNanos()/1000)
+			le.PutUint64(page[0xA0:], uint64(p.m.clock.boot.UnixMicro()))
 			clear(page[0xC0:0xD0]) // APPROX_TIME and whether it is supported
 			page[0x90] = 0         // USER_TIMEBASE_NONE: mach_absolute_time is a trap, not the counter
 			page[0x91] = 0         // nor does the counter keep mach_continuous_time
@@ -962,17 +949,20 @@ func (p *Process) load(argv, env []string) error {
 // has to stop. False is a run that is over: the guest it was for has exited, and this process
 // used up the time the others had left.
 func (p *Process) step() bool {
-	// One uninterrupted emu_start per stretch: resuming after Unicorn's own timeout fires is not
-	// reliable, so the timeout is only ever the overall deadline and hitting it is fatal, whatever
-	// else happened in that stretch. Stops requested from inside a hook (exit, an emulated
-	// instruction) are safe to resume from.
+	// One uninterrupted emu_start per stretch: resuming after a stop that came from outside it is
+	// not reliable, so the only such stop is for the overall deadline and hitting it is fatal,
+	// whatever else happened in that stretch. Stops requested from inside a hook (exit, an emulated
+	// instruction) are safe to resume from. The deadline is one of the machine's clock, which
+	// stands still while the host fetches what a hook asked for, and Unicorn's own timeout counts
+	// the host's: so the clock's alarm stops the engine instead, as Unicorn's timer would.
 	p.resume = false
 	limit, settling := p.m.deadline, p.m.procs[0].exited
 	if settling && p.m.settling.Before(limit) {
 		limit = p.m.settling
 	}
-	left := max(time.Until(limit).Microseconds(), 1)
-	timedOut, err := p.uc.start(p.current.pc, 0, uint64(left))
+	off := p.m.clock.alarm(limit, p.uc.stop)
+	_, err := p.uc.start(p.current.pc, 0, 0)
+	timedOut := off()
 	pc := p.uc.reg(regPC)
 	if err != nil {
 		reason := p.fault
@@ -1022,7 +1012,7 @@ func (p *Process) interrupt(number uint32) {
 	case uint32(n) == 0xFFFFFFFD, uint32(n) == 0xFFFFFFFC:
 		// The fast traps -3 and -4, mach_absolute_time and mach_continuous_time: the same clock,
 		// as no time is spent asleep. They are made too often to be worth a line in the trace.
-		p.setX(0, machTicks())
+		p.setX(0, p.m.clock.ticks())
 	case n > 0 && n&0xFFFFFFFF == 0x80000000:
 		p.machdep()
 	case n < 0:

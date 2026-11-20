@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"time"
 )
 
 var machNames = map[int64]string{
@@ -447,8 +446,8 @@ func migVMRemap(p *Process, body []byte) migReply {
 	return migData(append(le64(start), le32(5, 7)...)) // current and maximum protection
 }
 
-func migClockGetTime(*Process, []byte) migReply {
-	now := time.Now()
+func migClockGetTime(p *Process, _ []byte) migReply {
+	now := p.m.clock.now()
 	return migData(le32(uint32(now.Unix()), uint32(now.Nanosecond())))
 }
 
