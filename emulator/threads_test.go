@@ -25,12 +25,7 @@ func TestThreads(t *testing.T) {
 	onMain(func() {
 		const lock, sem = dataAddr + 0x400, 0x5503
 		wait, wake := number(t, "ulock_wait"), number(t, "ulock_wake")
-		// schedule is the machine's, for the thread that stopped at pc; it returns where the next resumes.
-		schedule := func(pc uint64) uint64 {
-			p.current.pc, p.m.running = pc, p
-			p.m.schedule()
-			return p.current.pc
-		}
+		schedule := p.scheduleFrom
 
 		// A lock word that is not what the caller expects is not waited for.
 		p.write(lock, le32(7))

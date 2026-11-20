@@ -549,18 +549,14 @@ func (p *Process) materialize(addr uint64) bool {
 		p.uc.memMap(a, b-a)
 		switch r.kind {
 		case cacheRegion:
-			var data []byte
-			var err error
-			p.m.clock.away(func() { data, err = p.cache.Page(a-p.slide, b-a, p.slide) })
+			data, err := away(p.m.clock, func() ([]byte, error) { return p.cache.Page(a-p.slide, b-a, p.slide) })
 			if err != nil {
 				stopf("shared cache page %#x: %v", a-p.slide, err)
 			}
 			p.uc.memWrite(a, data)
 		case fileRegion:
 			if o := r.off + (a - r.start); r.file != nil {
-				var data []byte
-				var err error
-				p.m.clock.away(func() { data, err = r.file.Pread(int64(o), int64(b-a)) })
+				data, err := away(p.m.clock, func() ([]byte, error) { return r.file.Pread(int64(o), int64(b-a)) })
 				if err != nil {
 					stopf("page in %s: %v", r.name, err)
 				}
@@ -717,7 +713,7 @@ func (p *Process) setupMMU() error {
 	for i, v := range values {
 		p.setX(i, v)
 	}
-	if _, err := p.uc.start(stub, stub+4*uint64(len(code)), 0); err != nil {
+	if err := p.uc.start(stub, stub+4*uint64(len(code)), 0); err != nil {
 		return fmt.Errorf("MMU setup: %w", err)
 	}
 	for i := range values {
@@ -803,11 +799,18 @@ func (p *Process) where(addr uint64) string {
 		return fmt.Sprintf("%#x (%s+%#x)", addr, r.name, addr-r.start)
 	}
 	addr -= p.slide
-	switch path, offset, err := p.cache.Image(addr); {
+	type image struct {
+		path   string
+		offset uint64
+	}
+	switch in, err := away(p.m.clock, func() (image, error) { // its name is read from the cache
+		path, offset, err := p.cache.Image(addr)
+		return image{path, offset}, err
+	}); {
 	case err != nil:
 		return fmt.Sprintf("%#x (cache)", addr)
-	case path != "":
-		return fmt.Sprintf("%#x (%s+%#x)", addr, path[strings.LastIndexByte(path, '/')+1:], offset)
+	case in.path != "":
+		return fmt.Sprintf("%#x (%s+%#x)", addr, in.path[strings.LastIndexByte(in.path, '/')+1:], in.offset)
 	}
 	return fmt.Sprintf("%#x (cache data)", addr)
 }
@@ -964,7 +967,7 @@ func (p *Process) step() bool {
 		limit = p.m.settling
 	}
 	off := p.m.clock.alarm(limit, p.uc.stop)
-	_, err := p.uc.start(p.current.pc, 0, 0)
+	err := p.uc.start(p.current.pc, 0, 0)
 	timedOut := off()
 	pc := p.uc.reg(regPC)
 	if err != nil {

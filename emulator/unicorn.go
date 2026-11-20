@@ -33,7 +33,6 @@ const (
 	ctlCPUModel   = 7 | 1<<26 // UC_CTL_CPU_MODEL with one argument
 	ctlWrite      = 1 << 30
 	ctlRead       = 2 << 30
-	queryTimeout  = 4
 	hookInterrupt = 1 << 0
 	hookUnmapped  = 1<<4 | 1<<5 | 1<<6 // read, write, fetch
 	hookInvalid   = 1 << 14
@@ -48,7 +47,6 @@ var api struct {
 	strerror func(code int32) string
 	open     func(arch, mode int32, uc *uintptr) int32
 	close    func(uc uintptr) int32
-	query    func(uc uintptr, kind int32, result *uint64) int32
 	regRead  func(uc uintptr, id int32, value unsafe.Pointer) int32
 	regWrite func(uc uintptr, id int32, value unsafe.Pointer) int32
 	memMap   func(uc uintptr, address, size uint64, protection uint32) int32
@@ -101,7 +99,7 @@ func loadUnicorn(path string) error {
 	for _, symbol := range append([]symbol{
 		{library, "uc_version", &api.version}, {library, "uc_strerror", &api.strerror},
 		{library, "uc_open", &api.open}, {library, "uc_close", &api.close},
-		{library, "uc_query", &api.query}, {library, "uc_ctl", &ucCtl.set}, {library, "uc_ctl", &ucCtl.get},
+		{library, "uc_ctl", &ucCtl.set}, {library, "uc_ctl", &ucCtl.get},
 		{library, "uc_reg_read", &api.regRead}, {library, "uc_reg_write", &api.regWrite},
 		{library, "uc_mem_map", &api.memMap}, {library, "uc_mem_unmap", &api.memUnmap},
 		{library, "uc_mem_map_ptr", &api.memPtr},
@@ -305,17 +303,12 @@ func (e *engine) memWrite(addr uint64, data []byte) {
 	}
 }
 
-// start runs from begin until something stops the engine: until is reached, a hook calls stop,
-// the CPU faults (the only case that is an error), or timeoutMicros pass. Unicorn itself says
-// whether its timeout fired; after that the engine's state is not reliable and it must not be
-// started again.
-func (e *engine) start(begin, until, timeoutMicros uint64) (timedOut bool, err error) {
-	if err := check(api.emuStart(e.uc, begin, until, timeoutMicros, 0)); err != nil {
-		return false, err
-	}
-	var fired uint64
-	must(api.query(e.uc, queryTimeout, &fired), "query")
-	return fired != 0, nil
+// start runs from begin until something stops the engine: until is reached, stop is called, the
+// CPU faults (the only case that is an error), or timeoutMicros of the host's time pass, if that
+// is not zero. After a stop that no hook asked for (the timeout's, or one from another goroutine)
+// the engine's state is not reliable and it must not be started again.
+func (e *engine) start(begin, until, timeoutMicros uint64) error {
+	return check(api.emuStart(e.uc, begin, until, timeoutMicros, 0))
 }
 
 func (e *engine) stop() { api.emuStop(e.uc) }
