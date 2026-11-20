@@ -120,7 +120,7 @@ The run is the first guest's: its output and its exit status. When it exits, the
 | `--cache <dir>` | where downloads are kept between runs (default: `ipswrun-<uid>` in the system temporary directory, so cleared on reboot) |
 | `--stream-compressed` | allow downloading one compressed disk image member front to back, for macOS 13 and 14 |
 | `--report <file>` | write a JSON summary: version, build, shared cache UUID, exit code, pages mapped, requests, bytes and seconds. `{build}` and `{version}` as in `--home` |
-| `--timeout <seconds>` | how long the guest may run on each release, counted from when it starts (default 900) |
+| `--timeout <seconds>` | how long the guest may run on each release, counted from when it starts (default 900). Time the host spends fetching is not counted, here or on any clock the guests see |
 | `--trace` | print every emulated system call |
 | `--missing` | answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all, with how often each was made and from where, when the guest ends |
 | `--device <product>` | Mac model the disk images and the releases looked up are picked for (default `Macmini9,1`) |

@@ -180,7 +180,7 @@ func newProcess(t *testing.T) *Process {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { onMain(p.m.Close) })
-	p.m.deadline = time.Now().Add(time.Minute)
+	p.m.deadline = p.m.clock.now().Add(time.Minute)
 	return p
 }
 

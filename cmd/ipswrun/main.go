@@ -145,7 +145,7 @@ func fix(err error, timeout float64, stream bool) string {
 	case errors.Is(err, rangefs.ErrCompressedMember) && !stream:
 		return "fix: rerun with --stream-compressed, which downloads that member whole (3.6-4.5 GB for macOS 13 and 14)"
 	case errors.As(err, &stopped) && stopped.Kind == emulator.StopTimeout:
-		return fmt.Sprintf("fix: rerun with a larger --timeout (it was %g seconds); what the guest waits for while its pages are fetched counts, and a rerun reuses what --cache kept", timeout)
+		return fmt.Sprintf("fix: rerun with a larger --timeout (it was %g seconds); the guest had all of it, as time spent fetching its pages is not counted", timeout)
 	case errors.As(err, &stopped) && stopped.Kind == emulator.StopUnimplemented:
 		return "fix: none on your side, and retrying will not help: the emulator does not implement this call yet. Report it with the output above at " + issues
 	}
@@ -458,7 +458,7 @@ URL of any restore image, or several of these separated by commas.`)
 	device := flag.String("device", "Macmini9,1", "BuildManifest product used to pick disk images")
 	cache := flag.String("cache", "", "directory that keeps what was downloaded between runs (default: one in the system temporary directory, cleared on reboot)")
 	stream := flag.Bool("stream-compressed", false, "download a compressed disk image member front to back when it cannot be read by range")
-	timeout := flag.Float64("timeout", 900, "seconds the guest may run on each release, counted from when it starts (opening the image is not counted)")
+	timeout := flag.Float64("timeout", 900, "seconds the guest may run on each release, counted from when it starts (opening the image and fetching its pages are not counted)")
 	trace := flag.Bool("trace", false, "print every emulated system call")
 	missing := flag.Bool("missing", false, "answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all when the guest ends")
 	reportPath := flag.String("report", "", "write a JSON summary of the run (build, cache UUID, exit code, transfer) to this file; {build} and {version} in it become the release's")

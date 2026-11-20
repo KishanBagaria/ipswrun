@@ -550,7 +550,7 @@ func (p *Process) armTimer(name uint32, ticks uint64) int64 {
 	if q == nil {
 		return kernInvalidArg
 	}
-	q.due = tickTime(ticks)
+	q.due = p.m.clock.tickTime(ticks)
 	return 0
 }
 
@@ -800,7 +800,7 @@ func (p *Process) receive(m message) int64 {
 		if m.timeout == 0 {
 			return rcvTimedOut
 		}
-		deadline = time.Now().Add(time.Duration(m.timeout) * time.Millisecond)
+		deadline = p.m.clock.now().Add(time.Duration(m.timeout) * time.Millisecond)
 	}
 	p.note("  mach_msg waits for a message on %#x", m.rcvName)
 	p.current.receiving = &m

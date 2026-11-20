@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // handler implements one system call or Mach trap. args is how many registers it takes, which is
@@ -148,7 +147,7 @@ func sysMmap(p *Process, a []uint64) int64 {
 		what.file, what.off = f.cache, off
 	} else {
 		var errno int64
-		if what.data, errno = f.pread(off, length); errno != 0 {
+		if what.data, errno = p.pread(f, off, length); errno != 0 {
 			return errno
 		}
 	}
@@ -363,7 +362,7 @@ func (p *Process) selectNothing(a []uint64, nanoseconds uint64) int64 {
 	if a[4] == 0 {
 		return sysSigsuspend(p, a)
 	}
-	if deadline := after(relative(p.u64(a[4]), p.u64(a[4]+8)*nanoseconds)); !deadline.IsZero() {
+	if deadline := p.after(relative(p.u64(a[4]), p.u64(a[4]+8)*nanoseconds)); !deadline.IsZero() {
 		p.wait(waitSleep, 0, deadline, result{})
 	}
 	return 0
@@ -397,12 +396,12 @@ func sysGetrlimit(p *Process, a []uint64) int64 {
 }
 
 func sysGettimeofday(p *Process, a []uint64) int64 {
-	now := time.Now()
+	now := p.m.clock.now()
 	if a[0] != 0 {
 		p.write(a[0], le64(uint64(now.Unix()), uint64(now.Nanosecond()/1000)))
 	}
 	if a[2] != 0 {
-		p.write(a[2], le64(machTicks()))
+		p.write(a[2], le64(p.m.clock.ticks()))
 	}
 	return 0
 }

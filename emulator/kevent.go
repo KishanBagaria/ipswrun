@@ -205,13 +205,13 @@ func (p *Process) timerDeadline(c kevent) time.Time {
 	}
 	switch {
 	case c.fflags&noteAbsolute == 0 && unit == 0:
-		return time.Now().Add(tickDuration(c.data))
+		return p.m.clock.now().Add(tickDuration(c.data))
 	case c.fflags&noteAbsolute == 0:
-		return time.Now().Add(time.Duration(c.data) * unit)
+		return p.m.clock.now().Add(time.Duration(c.data) * unit)
 	case unit != 0:
 		return time.Unix(0, c.data*int64(unit)) // the wall clock
 	}
-	return tickTime(uint64(c.data)) // either Mach clock: no time is spent asleep to tell them apart
+	return p.m.clock.tickTime(uint64(c.data)) // either Mach clock: no time is spent asleep to tell them apart
 }
 
 func (p *Process) changeWorkloop(q *kqueue, c kevent) {

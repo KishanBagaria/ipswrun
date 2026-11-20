@@ -94,8 +94,8 @@ func TestThreads(t *testing.T) {
 		// A timer on the work queue's kqueue is due when its deadline on the guest's clock is.
 		q := p.kqueue(0)
 		p.changeTimer(q, kevent{ident: 1, filter: filterTimer, flags: evAdd | evOneshot, fflags: noteAbsolute | noteMachTime,
-			data: int64(machTicks() + 24_000_000)})
-		if due := time.Until(q.timers[1].deadline); due < 900*time.Millisecond || due > 1100*time.Millisecond {
+			data: int64(p.m.clock.ticks() + 24_000_000)})
+		if due := q.timers[1].deadline.Sub(p.m.clock.now()); due < 900*time.Millisecond || due > 1100*time.Millisecond {
 			t.Errorf("a timer a second of ticks away is due in %v", due)
 		}
 		// A signal that is watched for is an event when it is sent, and one that is not is nothing.
@@ -104,7 +104,7 @@ func TestThreads(t *testing.T) {
 			t.Errorf("after SIGTERM: %+v", q.ready)
 		}
 		q.ready = nil
-		if next := p.serve(time.Now()); next.IsZero() || len(q.ready) != 0 {
+		if next := p.serve(p.m.clock.now()); next.IsZero() || len(q.ready) != 0 {
 			t.Errorf("a timer that is not due: next %v, %d events ready", next, len(q.ready))
 		}
 	})

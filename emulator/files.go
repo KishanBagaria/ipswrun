@@ -67,8 +67,8 @@ func (f *fd) size() int64 {
 	return int64(len(f.data))
 }
 
-// pread returns up to n bytes at off, or a negated errno.
-func (f *fd) pread(off, n uint64) ([]byte, int64) {
+// pread returns up to n bytes of a file at off, or a negated errno.
+func (p *Process) pread(f *fd, off, n uint64) ([]byte, int64) {
 	switch f.kind {
 	case hostFD:
 		data := hostBuffer(n)
@@ -78,7 +78,9 @@ func (f *fd) pread(off, n uint64) ([]byte, int64) {
 		}
 		return data[:got], 0
 	case cacheFD:
-		data, err := f.cache.Pread(int64(min(off, 1<<62)), int64(min(n, 1<<40)))
+		var data []byte
+		var err error
+		p.m.clock.away(func() { data, err = f.cache.Pread(int64(min(off, 1<<62)), int64(min(n, 1<<40))) })
 		if err != nil {
 			stopf("read %s: %v", f.path, err)
 		}
@@ -218,7 +220,9 @@ func (p *Process) lookup(path string) (target, bool) {
 		return target{kind: dirFD}, true
 	}
 	if p.system != nil {
-		f, err := p.system(path)
+		var f SystemFile
+		var err error
+		p.m.clock.away(func() { f, err = p.system(path) })
 		if err != nil {
 			stopf("%v", err)
 		}
@@ -389,7 +393,7 @@ func sysRead(p *Process, a []uint64) int64 {
 		data = data[:n]
 	} else {
 		var errno int64
-		if data, errno = f.pread(uint64(max(f.pos, 0)), a[2]); errno != 0 {
+		if data, errno = p.pread(f, uint64(max(f.pos, 0)), a[2]); errno != 0 {
 			return errno
 		}
 		f.pos += int64(len(data))
@@ -403,7 +407,7 @@ func sysPread(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	data, errno := f.pread(a[3], a[2])
+	data, errno := p.pread(f, a[3], a[2])
 	if errno != 0 {
 		return errno
 	}

@@ -200,7 +200,7 @@ func (p *Process) threadList() string {
 		case waiting:
 			what = fmt.Sprintf("waiting for %s (%#x)", waitNames[t.kind], t.key)
 			if !t.deadline.IsZero() {
-				what += fmt.Sprintf(", for at most %.1fs more", time.Until(t.deadline).Seconds())
+				what += fmt.Sprintf(", for at most %.1fs more", t.deadline.Sub(p.m.clock.now()).Seconds())
 			}
 		}
 		pc, lr := t.pc, uint64(0)
@@ -220,11 +220,11 @@ func relative(sec, nsec uint64) time.Duration {
 }
 
 // after is the time a relative timeout ends; zero for none.
-func after(d time.Duration) time.Time {
+func (p *Process) after(d time.Duration) time.Time {
 	if d <= 0 {
 		return time.Time{}
 	}
-	return time.Now().Add(d)
+	return p.m.clock.now().Add(d)
 }
 
 // ---- creating and ending threads ----
@@ -332,7 +332,7 @@ func sysSemwaitSignal(p *Process, a []uint64) int64 {
 	}
 	var deadline time.Time
 	if timed {
-		deadline = time.Now().Add(relative(a[4], a[5]))
+		deadline = p.m.clock.now().Add(relative(a[4], a[5]))
 	}
 	switch {
 	case cond != 0:
@@ -358,7 +358,7 @@ func ulockWait(p *Process, a []uint64, timeout time.Duration) int64 {
 	if value != want {
 		return 0 // it changed before the caller got here: nothing to wait for
 	}
-	p.wait(waitUlock, addr, after(timeout), ulockError(op, eTIMEDOUT))
+	p.wait(waitUlock, addr, p.after(timeout), ulockError(op, eTIMEDOUT))
 	return 0
 }
 
@@ -425,7 +425,7 @@ func sysPsynchCvwait(p *Process, a []uint64) int64 {
 	if mutex != 0 {
 		p.mutexDrop(mutex)
 	}
-	p.wait(waitCond, cond, after(relative(a[6], a[7])), timedOut)
+	p.wait(waitCond, cond, p.after(relative(a[6], a[7])), timedOut)
 	return 0
 }
 
@@ -609,7 +609,7 @@ func machSemaphoreTimedwait(p *Process, a []uint64) int64 {
 	if timeout <= 0 && p.semaphores[uint32(a[0])] == 0 {
 		return kernTimedOut
 	}
-	p.semWait(uint32(a[0]), time.Now().Add(timeout), result{x0: kernTimedOut})
+	p.semWait(uint32(a[0]), p.m.clock.now().Add(timeout), result{x0: kernTimedOut})
 	return 0
 }
 
