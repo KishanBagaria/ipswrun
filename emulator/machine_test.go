@@ -111,6 +111,43 @@ func TestProcesses(t *testing.T) {
 			t.Errorf("status of no process: %d carry %v", x0, carry)
 		}
 
+		// Memory that a port names is the same memory wherever the port is mapped without a copy,
+		// in the process that named it and in one the port was sent to.
+		entryOf := func(in *Process, addr, size uint64, how uint32) uint32 {
+			body := make([]byte, 68)
+			le.PutUint64(body[48:], size)
+			le.PutUint64(body[56:], addr)
+			le.PutUint32(body[64:], how)
+			reply := migMakeMemoryEntry(in, body)
+			if !reply.port {
+				t.Fatalf("mach_make_memory_entry: % x", reply.body)
+			}
+			return le.Uint32(reply.body[4:])
+		}
+		mapEntry := func(in *Process, entry uint32, size uint64, copied bool) uint64 {
+			body := make([]byte, 100)
+			le.PutUint32(body[28:], entry)
+			le.PutUint64(body[56:], size)
+			le.PutUint32(body[72:], 1) // anywhere
+			le.PutUint32(body[84:], uint32(truth(copied)))
+			reply := migVMMap(in, body)
+			if le.Uint32(reply.body[8:]) != 0 {
+				t.Fatalf("mach_vm_map of an entry: % x", reply.body)
+			}
+			return le.Uint64(reply.body[12:])
+		}
+		p.write(far, []byte("named"))
+		entry := entryOf(p, far, pageSize, 0)
+		elsewhere := r.giveOut(p.takeIn(entry, copySend), p)
+		again, theirs, kept := mapEntry(p, entry, pageSize, false), mapEntry(r, elsewhere, pageSize, false), mapEntry(r, elsewhere, pageSize, true)
+		r.write(theirs, []byte("by the other"))
+		if string(p.read(far, 12)) != "by the other" || string(p.read(again, 12)) != "by the other" || string(r.read(kept, 5)) != "named" {
+			t.Errorf("memory by an entry: %q in its owner, %q mapped again, %q copied", p.read(far, 12), p.read(again, 12), r.read(kept, 5))
+		}
+		if entryOf(p, 0, 2*pageSize, memNamedCreate) == 0 || le.Uint32(migMakeMemoryEntry(p, append(make([]byte, 48), le64(pageSize, nowhere, 0)...)).body[8:]) != kernInvalidArg {
+			t.Errorf("an entry for new memory was refused, or one for memory the process does not have was made")
+		}
+
 		// Memory with a name is one memory in every process that maps it.
 		open, truncate, mmap := number(t, "shm_open"), number(t, "ftruncate"), number(t, "mmap")
 		p.write(msg, str("com.example.shared"))

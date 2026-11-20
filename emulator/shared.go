@@ -2,10 +2,11 @@ package emulator
 
 import "syscall"
 
-// Memory that processes share is the host's: each engine that maps it is given the same pages,
-// so what one process writes there the others read. It is what shm_open names, and what a
-// daemon and its clients keep the counters in by which a client sees, without asking, that
-// something has changed.
+// Memory that is shared is the host's: each mapping of it, in one process or in several, is
+// given the same pages, so what is written through one is read through the others. It is what
+// shm_open names, where a daemon and its clients keep the counters by which a client sees,
+// without asking, that something has changed. And it is what memory becomes once a port names
+// it (mach_make_memory_entry) or it is mapped a second time (mach_vm_remap).
 
 const (
 	oCreate   = 0x200
@@ -28,12 +29,57 @@ func (s *sharedMemory) resize(size uint64) int64 {
 	case s.data != nil || size == 0 || size > 1<<30:
 		return -eINVAL
 	}
-	data, err := syscall.Mmap(-1, 0, int(size), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_ANON|syscall.MAP_PRIVATE)
-	if err != nil {
+	if s.data = hostPages(size); s.data == nil {
 		return -eNOMEM
 	}
-	s.data = data
 	return 0
+}
+
+// hostPages is zeroed memory of the host's, a whole number of pages; nil if there is none to have.
+func hostPages(size uint64) []byte {
+	data, err := syscall.Mmap(-1, 0, int(align(size, pageSize)), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_ANON|syscall.MAP_PRIVATE)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+// hostMemory is host memory with no name, which the machine keeps until it is closed.
+func (m *Machine) hostMemory(size uint64) []byte {
+	data := hostPages(size)
+	if data != nil {
+		m.unnamed = append(m.unnamed, data)
+	}
+	return data
+}
+
+// share makes whole pages of the process's memory memory that can be mapped again, and returns
+// it: what the pages hold moves to memory of the host's, which the pages then are. False for a
+// stretch that is not all memory the process has.
+func (p *Process) share(start, size uint64) ([]byte, bool) {
+	if size == 0 || size > 1<<30 || start+size < start {
+		return nil, false
+	}
+	first := p.findRegion(start)
+	if first != nil && first.kind == sharedRegion && start+size <= first.end {
+		from := first.off + (start - first.start)
+		return first.data[from : from+size], true // it is already
+	}
+	name := "shared"
+	for at := start; at < start+size; {
+		r := p.findRegion(at)
+		if r == nil {
+			return nil, false
+		}
+		at, name = r.end, r.name
+	}
+	host := p.m.hostMemory(size)
+	if host == nil {
+		return nil, false
+	}
+	copy(host, p.read(start, size))
+	p.alloc(size, allocation{addr: start, fixed: true, kind: sharedRegion, data: host, name: name})
+	return host, true
 }
 
 func (s *sharedMemory) free() {
