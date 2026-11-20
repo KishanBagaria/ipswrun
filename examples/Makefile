@@ -1,4 +1,5 @@
 # Guests for ipswrun. Chained fixups are turned off so that every release's dyld can load them.
+# ipswrun builds a source file it is given with these flags too: see compiler in cmd/ipswrun/main.go.
 TARGET = -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains
 GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service client prefs adi
 # What a guest is run beside, and not by itself.
@@ -10,6 +11,7 @@ bin/guest: LIBS = -lsqlite3
 bin/crypto: LIBS = -framework Security
 bin/ipc: LIBS = -framework CoreFoundation
 bin/prefs: LIBS = -framework CoreFoundation
+bin/client bin/service bin/ipc bin/adi: xpc_request.h
 bin/server bin/client: service.h
 bin/client: | bin/server
 

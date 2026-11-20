@@ -7,24 +7,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <xpc/xpc.h>
 
 #include "service.h"
+#include "xpc_request.h"
 
 #define WAIT 5000 // milliseconds a wait may take before it is given up
 #define SIZE 70000
-
-// xpc_connection_send_message_with_reply_sync waits for as long as it takes, so it is called on
-// another thread, which is left behind if no reply comes in time.
-static xpc_object_t request(xpc_connection_t connection, xpc_object_t query) {
-    dispatch_semaphore_t done = dispatch_semaphore_create(0);
-    __block xpc_object_t reply = NULL;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
-        reply = xpc_connection_send_message_with_reply_sync(connection, query);
-        dispatch_semaphore_signal(done);
-    });
-    return dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, WAIT * NSEC_PER_MSEC)) == 0 ? reply : NULL;
-}
 
 static void echo(void) {
     xpc_connection_t client = xpc_connection_create_mach_service(ECHO_SERVICE, NULL, 0);
@@ -33,7 +21,7 @@ static void echo(void) {
     for (int i = 1; i <= 2; i++) {
         xpc_object_t query = xpc_dictionary_create(NULL, NULL, 0);
         xpc_dictionary_set_string(query, "text", i == 1 ? "hello, server" : "and again");
-        xpc_object_t reply = request(client, query);
+        xpc_object_t reply = request_with_timeout(client, query, WAIT);
         if (reply == NULL) {
             printf("echo %d: no answer in time\n", i);
         } else if (xpc_get_type(reply) != XPC_TYPE_DICTIONARY) {

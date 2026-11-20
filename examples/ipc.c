@@ -14,7 +14,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <xpc/xpc.h>
+
+#include "xpc_request.h"
 
 // Not in any header: a port to be answered on, and the timers CFRunLoop itself used to be built on.
 mach_port_name_t mach_reply_port(void);
@@ -430,18 +431,6 @@ static const char *xpc_name(xpc_object_t object) {
     return "something else";
 }
 
-// xpc_connection_send_message_with_reply_sync waits for as long as it takes, so it is called on
-// another thread, which is left behind (with everything it holds) if no reply comes in time.
-static xpc_object_t request(xpc_connection_t connection, xpc_object_t query) {
-    dispatch_semaphore_t done = dispatch_semaphore_create(0);
-    __block xpc_object_t reply = NULL;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
-        reply = xpc_connection_send_message_with_reply_sync(connection, query);
-        dispatch_semaphore_signal(done);
-    });
-    return dispatch_semaphore_wait(done, patience()) == 0 ? reply : NULL;
-}
-
 // i. A listener without a name is reached through an endpoint, which could travel in a message
 // to another process; here the client is in the same one.
 static void xpc_in_process(void) {
@@ -492,7 +481,7 @@ static void xpc_in_process(void) {
     xpc_dictionary_set_string(query, "text", "hello over xpc");
     xpc_dictionary_set_int64(query, "number", 41);
     xpc_dictionary_set_data(query, "data", data, sizeof data);
-    xpc_object_t reply = request(client, query);
+    xpc_object_t reply = request_with_timeout(client, query, WAIT);
     if (reply == NULL || xpc_get_type(reply) != XPC_TYPE_DICTIONARY) {
         printf("xpc      sync reply: %s\n", xpc_name(reply));
     } else {
@@ -544,7 +533,7 @@ static void xpc_no_service(void) {
 
     xpc_object_t query = xpc_dictionary_create(NULL, NULL, 0);
     xpc_dictionary_set_string(query, "text", "anyone there?");
-    xpc_object_t reply = request(connection, query);
+    xpc_object_t reply = request_with_timeout(connection, query, WAIT);
     long timed_out = dispatch_semaphore_wait(told, patience());
     printf("xpc      no such service: reply %s, handler got %s timed out %ld\n", xpc_name(reply), xpc_name(first_event),
            timed_out);

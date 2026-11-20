@@ -17,7 +17,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <xpc/xpc.h>
+
+#include "xpc_request.h"
 
 #define WAIT 20000 // milliseconds a wait may take before it is given up: a daemon takes its time to start, the more so emulated
 
@@ -87,13 +88,8 @@ int main(void) {
     xpc_object_t query = xpc_dictionary_create(NULL, NULL, 0);
     xpc_dictionary_set_data(query, "data", request, sizeof request);
 
-    dispatch_semaphore_t done = dispatch_semaphore_create(0);
-    __block xpc_object_t reply = NULL;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
-        reply = xpc_connection_send_message_with_reply_sync(adid, query);
-        dispatch_semaphore_signal(done);
-    });
-    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, WAIT * NSEC_PER_MSEC)) != 0) {
+    xpc_object_t reply = request_with_timeout(adid, query, WAIT);
+    if (reply == NULL) {
         printf("adid: no answer in time\n");
         return 1;
     }
