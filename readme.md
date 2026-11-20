@@ -109,17 +109,17 @@ The other guest can be the release's own daemon. Preferences are kept by `cfpref
           --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon' 27.2.1 examples/bin/prefs
 ```
 
-A daemon decides whom it serves by what the client's code signature says, and a guest is whatever it was signed as. [`examples/adi.c`](examples/adi.c) is signed with the entitlement that `adid`, the daemon behind an Apple ID's one-time passwords, asks its clients for, and is answered:
+A daemon decides whom it serves by what the client's code signature says, and a guest is whatever it was signed as. [`examples/adi.c`](examples/adi.c) asks `adid`, the daemon behind an Apple ID's one-time passwords, for one. Since macOS 15 `adid` wants its client entitled to ask, so the guest is signed as one that is, and is answered:
 
 ```sh
 ./ipswrun --daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid 27.2.1 examples/bin/adi
 ```
 
 ```
-adid: status -45061 (not provisioned), 4 bytes
+adid, by XPC: status -45061 (not provisioned), 4 bytes
 ```
 
-That is as far as it goes: to provision, `adid` needs a kernel extension (see [Drivers](#what-does-not-work)).
+On macOS 11 and 12 `adid` is a plain Mach service that asks nothing of its client, and the guest puts the same question in a message of its own. That is as far as it goes on any release: provisioning takes what Apple's servers send, and a guest has no network. From macOS 15 `adid` would also need a kernel extension (see [Drivers](#what-does-not-work)); the `adid` of macOS 11 calls no driver at all.
 
 The run is the first guest's: its output, its exit status, and it ends when that guest exits. The others are then sent SIGTERM, as launchd's daemons are when they are no longer wanted, and the run is over once they have finished what they were doing, or five seconds have passed. What another guest writes to its standard output or error is shown on standard error under its name. `--trace` shows the calls of every guest, each under its name, and what the XPC messages between them say.
 
