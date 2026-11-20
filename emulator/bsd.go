@@ -472,7 +472,7 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 		p.write(buf, append(info, le64(fixedMtime, 0)...))
 		return 136
 	case callnum == 2 && flavor == 11: // PROC_PIDPATHINFO
-		p.write(buf, str(GuestExe))
+		p.write(buf, str(about.path))
 		return 0
 	case callnum == 2 && flavor == 17 && size >= 56: // PROC_PIDUNIQIDENTIFIERINFO
 		p.write(buf, append(make([]byte, 16), le64(uint64(about.pid), 1, 0, 0, 0)...))

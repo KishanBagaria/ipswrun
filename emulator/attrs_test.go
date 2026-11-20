@@ -109,7 +109,7 @@ func TestOnlyTheHomeCanBeChanged(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("not run"), 0o666); err != nil {
 		t.Fatal(err)
 	}
-	p := &Process{mounts: []Mount{{GuestHome, t.TempDir()}}, exePath: exe, hostExe: true, fds: map[uint64]*fd{}, nextFD: 3}
+	p := &Process{mounts: []Mount{{GuestHome, t.TempDir()}}, exePath: exe, path: GuestExe, hostExe: true, fds: map[uint64]*fd{}, nextFD: 3}
 	if n := p.doOpen(GuestHome+"/file", 0x201, 0o644); n != 3 { // O_WRONLY|O_CREAT
 		t.Fatalf("creating a file under the home: %d", n)
 	}

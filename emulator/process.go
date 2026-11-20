@@ -45,7 +45,8 @@ const (
 
 	// GuestHome is the emulated user's home directory; it is backed by Config.Home on the host.
 	GuestHome = "/Users/emu"
-	// GuestExe is the path the guest executable has inside the guest.
+	// GuestExe is the path a guest executable of the host's has inside the guest. One of the
+	// build's own is at its path there.
 	GuestExe    = "/emu/guest"
 	guestDyld   = "/usr/lib/dyld"
 	cryptex     = "/System/Volumes/Preboot/Cryptexes/OS"
@@ -206,6 +207,7 @@ type Process struct {
 	dyld    []byte
 	mounts  []Mount // the home among them; longest guest path first
 	exe     []byte  // the guest executable
+	path    string  // where the guest finds it: only this process does, and no other finds it there
 	exePath string  // and where it is on the host, or what it is called if it is not a file there
 	hostExe bool
 	// What the executable's code signature says of it, if it has one: the name it was signed
@@ -335,14 +337,14 @@ func guard(err *error) {
 
 // newProcess gives the machine a process with a stack, the commpage and the MMU set up, ready for
 // load.
-func (m *Machine) newProcess(executable string, exe []byte) (p *Process, err error) {
+func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Process, err error) {
 	cfg := m.cfg
-	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: guestUID, gid: guestGID, name: filepath.Base(executable), label: filepath.Base(executable), mounts: m.mounts, cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
+	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: guestUID, gid: guestGID, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
 		system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
 		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},
 		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
-		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{GuestExe: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
+		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{path: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
 	for _, v := range volumes { // their roots, for fsgetpath
 		p.seen[fileID{v.dev, rootInode}] = v.mount
 	}
@@ -896,7 +898,7 @@ func (p *Process) load(argv, env []string) error {
 		}
 		p.entitlements, p.entitlementsDER = signed.Entitlements, signed.EntitlementsDER
 	}
-	apple := []string{"executable_path=" + GuestExe, "", "", "", "ptr_munge=0x7a3c5e9b1d2f4a68",
+	apple := []string{"executable_path=" + p.path, "", "", "", "ptr_munge=0x7a3c5e9b1d2f4a68",
 		fmt.Sprintf("main_stack=%#x,%#x,%#x,%#x", uint64(stackTop), uint64(stackSize), uint64(stackTop), uint64(stackSize)),
 		fmt.Sprintf("executable_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(exeInode)),
 		fmt.Sprintf("dyld_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(dyldInode)),

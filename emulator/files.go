@@ -185,10 +185,12 @@ func (p *Process) resolve(path string) (target, bool) {
 
 func (p *Process) lookup(path string) (target, bool) {
 	switch {
-	case path == GuestExe && p.hostExe:
+	case path == p.path && p.hostExe:
 		return target{kind: hostFD, host: p.exePath}, true
-	case path == GuestExe:
+	case path == p.path:
 		return target{kind: dataFD, data: p.exe}, true
+	case under(pathpkg.Dir(p.path), path): // on the way to it
+		return target{kind: dirFD}, true
 	case path == guestDyld:
 		return target{kind: dataFD, data: p.dyld}, true
 	case path == passwdFile:

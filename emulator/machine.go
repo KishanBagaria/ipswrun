@@ -33,7 +33,7 @@ type Machine struct {
 // Guest is one program to run as a process.
 type Guest struct {
 	Executable string   // host path of the Mach-O (arm64, linked against the cache); for RunBuild, with SystemPrefix its path in the build
-	Image      []byte   // the Mach-O itself, if it is not a file of the host's: Executable is then only its name
+	Image      []byte   // the Mach-O itself, if it is one of the build's and not a file of the host's: Executable is then its path in the guest
 	Args       []string // after argv[0]
 	Env        []string // its whole environment
 	// Services are the Mach services it provides: the names it may check in with launchd, which
@@ -80,7 +80,11 @@ func (m *Machine) Spawn(g Guest) (p *Process, err error) {
 			return nil, err
 		}
 	}
-	if p, err = m.newProcess(g.Executable, image); err != nil {
+	path := GuestExe
+	if g.Image != nil {
+		path = canonical(g.Executable)
+	}
+	if p, err = m.newProcess(g.Executable, image, path); err != nil {
 		return nil, err
 	}
 	p.hostExe = g.Image == nil
@@ -91,7 +95,7 @@ func (m *Machine) Spawn(g Guest) (p *Process, err error) {
 		m.services[name] = &service{provider: p}
 	}
 	defer guard(&err)
-	return p, p.load(append([]string{GuestExe}, g.Args...), g.Env)
+	return p, p.load(append([]string{p.path}, g.Args...), g.Env)
 }
 
 // Main is the guest the run is for: the first one started.

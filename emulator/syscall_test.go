@@ -173,7 +173,7 @@ func newProcess(t *testing.T) *Process {
 		var m *Machine
 		if m, err = NewMachine(Config{Unicorn: unicorn, Cache: &dyldcache.Cache{}, Home: t.TempDir(), Dyld: le32(0xFEEDFACF, cpuARM64, 0, 0, 0, 0, 0, 0),
 			OS: map[string]string{"build": "24G90", "version": "15.6.1"}}); err == nil {
-			p, err = m.newProcess(exe, []byte("not run"))
+			p, err = m.newProcess(exe, []byte("not run"), GuestExe)
 		}
 	})
 	if err != nil {
