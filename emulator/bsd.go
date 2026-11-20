@@ -59,7 +59,7 @@ func init() {
 		"setrlimit": {2, constant(0)}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
-		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpid}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpid}, "gethostuuid": {2, sysGethostuuid}, "chdir": {1, sysChdir}, "fchdir": {1, sysFchdir}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
 	}
 	for name, v := range trivial {
 		bsdHandlers[name] = handler{4, constant(v)}
@@ -73,7 +73,7 @@ var trivial = map[string]int64{
 	"kqueue_workloop_ctl": 0, "necp_open": -eNOSYS, "socket": -eACCES, "umask": 0o22,
 	"audit_session_self": 0, "getaudit_addr": -eNOSYS, "coalition_info": -eNOSYS, "persona": -eNOSYS,
 	"debug_syscall_reject_config": 0, "debug_syscall_reject": 0, "setattrlist": 0, "fsetattrlist": 0, "chmod": 0, "fchmod": 0,
-	"flock": 0, "setxattr": 0, "fsetxattr": 0, "getxattr": -eNOATTR, "fgetxattr": -eNOATTR, "listxattr": 0, "flistxattr": 0, "chdir": 0,
+	"flock": 0, "setxattr": 0, "fsetxattr": 0, "getxattr": -eNOATTR, "fgetxattr": -eNOATTR, "listxattr": 0, "flistxattr": 0,
 	"memorystatus_get_level": 0, "record_system_event": 0, "log_data": 0, "oslog_coproc_reg": 0, "oslog_coproc": 0, "setpriority": 0,
 	"getpriority": 0, "setsid": 0, "setitimer": 0, "utimes": 0, "futimes": 0, "fchown": 0, "chown": 0, "sync": 0,
 }
@@ -241,11 +241,16 @@ func sysGetpid(p *Process, a []uint64) int64 { return int64(p.pid) }
 func sysGetuid(p *Process, a []uint64) int64 { return int64(p.uid) }
 func sysGetgid(p *Process, a []uint64) int64 { return int64(p.gid) }
 
-// hostUUID is the machine's own identifier: the same on every run, as everything else about it is.
-var hostUUID = [16]byte{0x1F, 0x5A, 0xE3, 0x70, 0x9C, 0x42, 0x4D, 0x1B, 0x8E, 0x6D, 0x49, 0x50, 0x53, 0x57, 0x52, 0x4E}
+// DefaultMachineUUID is the machine's own identifier unless Config gives another: the same on
+// every run, as everything else about it is.
+var DefaultMachineUUID = [16]byte{0x1F, 0x5A, 0xE3, 0x70, 0x9C, 0x42, 0x4D, 0x1B, 0x8E, 0x6D, 0x49, 0x50, 0x53, 0x57, 0x52, 0x4E}
 
 func sysGethostuuid(p *Process, a []uint64) int64 {
-	p.write(a[0], hostUUID[:])
+	id := DefaultMachineUUID
+	if p.m != nil && p.m.cfg.MachineUUID != [16]byte{} {
+		id = p.m.cfg.MachineUUID
+	}
+	p.write(a[0], id[:])
 	return 0
 }
 

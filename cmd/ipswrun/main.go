@@ -4,6 +4,7 @@ package main
 
 import (
 	"cmp"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -247,6 +248,7 @@ type options struct {
 	mounts                    []emulator.Mount // the host side may contain {build} and {version}
 	stream, trace, showStatus bool
 	missing                   bool
+	machine                   [16]byte // the machine's UUID; zero for the emulator's own
 	timeout                   float64
 }
 
@@ -302,7 +304,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	}
 	status.set(label+out.name, image.Stats)
 	machine, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Mounts: mounts, Services: o.services, Executable: o.guest, Args: o.args,
-		Daemons: o.daemons, Env: o.env, System: o.system, Timeout: time.Duration(o.timeout * float64(time.Second)), Trace: o.trace, Survey: o.missing, Notes: status})
+		Daemons: o.daemons, Env: o.env, System: o.system, Timeout: time.Duration(o.timeout * float64(time.Second)), Trace: o.trace, Survey: o.missing, MachineUUID: o.machine, Notes: status})
 	status.stop()
 	pages := 0
 	if machine != nil {
@@ -461,6 +463,7 @@ URL of any restore image, or several of these separated by commas.`)
 	timeout := flag.Float64("timeout", 900, "seconds the guest may run on each release, counted from when it starts (opening the image is not counted)")
 	trace := flag.Bool("trace", false, "print every emulated system call")
 	missing := flag.Bool("missing", false, "answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all when the guest ends")
+	machineUUID := flag.String("machine-uuid", "", "UUID the guests are told is the machine's (default: one that is the same for every ipswrun); what a daemon keeps for the machine is of no use under another")
 	reportPath := flag.String("report", "", "write a JSON summary of the run (build, cache UUID, exit code, transfer) to this file; {build} and {version} in it become the release's")
 	unicornDir := flag.String("unicorn", "", "directory the pinned libunicorn is kept in (default: the user cache directory)")
 	setup := flag.Bool("setup", false, "only fetch and verify libunicorn")
@@ -482,6 +485,7 @@ URL of any restore image, or several of these separated by commas.`)
 	var releases []release
 	var mounts []emulator.Mount
 	var daemons []emulator.Guest
+	var machine [16]byte
 	if !*setup {
 		if flag.NArg() == 0 {
 			flag.Usage()
@@ -503,6 +507,9 @@ URL of any restore image, or several of these separated by commas.`)
 				var more []emulator.Guest
 				more, err = parseDaemons(given.flag, given.values)
 				daemons = append(daemons, more...)
+			}
+			if err == nil && *machineUUID != "" {
+				machine, err = parseUUID(*machineUUID)
 			}
 		}
 		if errors.Is(err, errSource) {
@@ -538,7 +545,7 @@ URL of any restore image, or several of these separated by commas.`)
 		}
 	}
 	o := &options{unicorn: unicorn, cache: *cache, device: *device, home: *home, report: *reportPath, guest: flag.Arg(1), args: flag.Args()[2:],
-		env: env, system: system, mounts: mounts, services: services, daemons: daemons, stream: *stream, trace: *trace, missing: *missing, showStatus: showStatus, timeout: *timeout}
+		env: env, system: system, mounts: mounts, services: services, daemons: daemons, stream: *stream, trace: *trace, missing: *missing, machine: machine, showStatus: showStatus, timeout: *timeout}
 	return o.runAll(releases)
 }
 
@@ -549,4 +556,17 @@ func main() {
 		os.Exit(70)
 	}
 	os.Exit(code)
+}
+
+// parseUUID reads --machine-uuid: 32 hexadecimal digits, with or without the usual hyphens.
+func parseUUID(value string) (id [16]byte, err error) {
+	digits, err := hex.DecodeString(strings.ReplaceAll(value, "-", ""))
+	if err != nil || len(digits) != len(id) || len(value) != 32 && len(value) != 36 {
+		return id, fmt.Errorf("--machine-uuid %q: want a UUID, such as 1F5AE370-9C42-4D1B-8E6D-49505357524E", value)
+	}
+	copy(id[:], digits)
+	if id == [16]byte{} {
+		return id, fmt.Errorf("--machine-uuid %q: want one that is not all zeros", value)
+	}
+	return id, nil
 }

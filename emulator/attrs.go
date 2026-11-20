@@ -327,7 +327,7 @@ func (p *Process) getattrPath(path string, a []uint64) int64 {
 	return p.getattr(&attrContext{info, p, t.path}, a)
 }
 
-func sysGetattrlist(p *Process, a []uint64) int64   { return p.getattrPath(p.cstr(a[0]), a[1:]) }
+func sysGetattrlist(p *Process, a []uint64) int64   { return p.getattrPath(p.pathArg(a[0]), a[1:]) }
 func sysGetattrlistat(p *Process, a []uint64) int64 { return p.getattrPath(p.at(a[0], a[1]), a[2:]) }
 
 func sysFgetattrlist(p *Process, a []uint64) int64 {

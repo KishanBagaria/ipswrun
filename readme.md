@@ -123,6 +123,7 @@ The run is the first guest's: its output and its exit status. When it exits, the
 | `--timeout <seconds>` | how long the guest may run on each release, counted from when it starts (default 900) |
 | `--trace` | print every emulated system call |
 | `--missing` | answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all, with how often each was made and from where, when the guest ends |
+| `--machine-uuid <uuid>` | the identifier the guests are told is the machine's (default: one that is the same for every ipswrun). What a daemon keeps for one machine is of no use under another |
 | `--device <product>` | Mac model the disk images and the releases looked up are picked for (default `Macmini9,1`) |
 | `--unicorn <dir>` | where the pinned `libunicorn` is kept (default: the user cache directory) |
 | `--releases` | print the releases `all` stands for (version, build, URL), then exit |

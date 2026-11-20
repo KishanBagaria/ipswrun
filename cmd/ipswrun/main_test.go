@@ -63,6 +63,7 @@ func TestArgumentsAreCheckedBeforeAnythingIsFetched(t *testing.T) {
 		"shared mount":  {[]string{"--mount", "/var/db=out", "15.0,24G90", guest}, "as in --mount '/var/db=out-{build}'"},
 		"mount no host": {[]string{"--mount", "/var/db", url, guest}, "--mount /var/db is not <guest dir>=<host dir>"},
 		"mount on home": {[]string{"--mount", "/Users/emu=out", url, guest}, "--mount: a mount at /Users/emu: that is the guest's home"},
+		"machine uuid":  {[]string{"--machine-uuid", "1F5AE370", url, guest}, `--machine-uuid "1F5AE370": want a UUID`},
 		"shared report": {[]string{"--report", "r.json", "11.0.1,11.6,12.6", guest}, "as in --report 'r-{build}.json'"},
 		"missing guest": {[]string{url, guest + "-typo"}, "guest executable: stat " + guest + "-typo: no such file or directory"},
 		"guest is dir":  {[]string{url, filepath.Dir(guest)}, "is a directory"},

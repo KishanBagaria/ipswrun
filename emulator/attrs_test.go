@@ -3,6 +3,7 @@ package emulator
 import (
 	"bytes"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -166,5 +167,36 @@ func TestMounts(t *testing.T) {
 		if errno >= 0 {
 			t.Errorf("%s: %d, want an errno", name, errno)
 		}
+	}
+}
+
+// The working directory starts at the root, moves only to a directory that exists, and is where
+// a relative path starts from.
+func TestChdir(t *testing.T) {
+	home := t.TempDir()
+	p := &Process{mounts: []Mount{{GuestHome, home}}, fds: map[uint64]*fd{}, nextFD: 3, inodes: map[string]uint64{}, seen: map[fileID]string{}}
+	if err := os.WriteFile(filepath.Join(home, "file"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if dir := p.workingDir(); dir != "/" {
+		t.Errorf("the working directory starts at %s", dir)
+	}
+	for path, want := range map[string]int64{GuestHome + "/absent": -eNOENT, GuestHome + "/file": -eNOTDIR, GuestHome + "/": 0} {
+		if errno := p.doChdir(path); errno != want {
+			t.Errorf("chdir %s: %d, want %d", path, errno, want)
+		}
+	}
+	if dir := p.workingDir(); dir != GuestHome {
+		t.Fatalf("the working directory is %s after chdir to the home", dir)
+	}
+	if errno := p.doMkdir(pathpkg.Join(p.workingDir(), "sub"), 0o700); errno != 0 {
+		t.Fatalf("mkdir: %d", errno)
+	}
+	if errno := p.doChdir(pathpkg.Join(p.workingDir(), "sub/..//sub")); errno != 0 || p.workingDir() != GuestHome+"/sub" {
+		t.Errorf("chdir by a relative path: %d, to %s", errno, p.workingDir())
+	}
+	n := p.doOpen(p.workingDir(), 0, 0)
+	if f := p.fds[uint64(n)]; f == nil || f.path != GuestHome+"/sub" {
+		t.Errorf("opening the working directory gave %d, %+v", n, f)
 	}
 }

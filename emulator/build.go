@@ -52,7 +52,9 @@ type Run struct {
 	Timeout time.Duration // for the whole run
 	Trace   bool          // print every system call to stderr
 	Survey  bool          // answer calls nothing implements with an error instead of stopping (see Config.Survey)
-	Notes   io.Writer     // told about a cache location that could not be read, unless the release has none there; os.Stderr if nil
+	// MachineUUID is the machine's identifier (see Config.MachineUUID); DefaultMachineUUID if zero.
+	MachineUUID [16]byte
+	Notes       io.Writer // told about a cache location that could not be read, unless the release has none there; os.Stderr if nil
 }
 
 var leadingDigits = regexp.MustCompile(`^\d+`)
@@ -199,7 +201,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 	}
 
 	build := image.Build()
-	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, System: system, Trace: run.Trace, Survey: run.Survey,
+	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, System: system, Trace: run.Trace, Survey: run.Survey, MachineUUID: run.MachineUUID,
 		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0"}})
 	if err != nil {
 		return nil, cache, err

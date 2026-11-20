@@ -272,8 +272,8 @@ func (p *Process) doStat(path string, buf uint64, follow bool) int64 {
 	return p.putStat(buf, info, errno)
 }
 
-func sysStat64(p *Process, a []uint64) int64  { return p.doStat(p.cstr(a[0]), a[1], true) }
-func sysLstat64(p *Process, a []uint64) int64 { return p.doStat(p.cstr(a[0]), a[1], false) }
+func sysStat64(p *Process, a []uint64) int64  { return p.doStat(p.pathArg(a[0]), a[1], true) }
+func sysLstat64(p *Process, a []uint64) int64 { return p.doStat(p.pathArg(a[0]), a[1], false) }
 
 func sysFstatat64(p *Process, a []uint64) int64 {
 	return p.doStat(p.at(a[0], a[1]), a[2], a[3]&0x20 == 0)
@@ -329,7 +329,8 @@ func (p *Process) newFD(f *fd) uint64 {
 	return n
 }
 
-// at resolves a path argument relative to a directory descriptor.
+// at resolves a path argument relative to a directory descriptor, or to the working directory
+// when the descriptor is AT_FDCWD.
 func (p *Process) at(dirfd, path uint64) string {
 	s := p.cstr(path)
 	if s == "" {
@@ -339,19 +340,63 @@ func (p *Process) at(dirfd, path uint64) string {
 		dir := "/"
 		if f := p.fds[dirfd&0xFFFFFFFF]; f != nil && f.path != "" {
 			dir = f.path
+		} else if int32(dirfd) == atFDCWD {
+			dir = p.workingDir()
 		}
-		if !strings.HasSuffix(dir, "/") {
-			dir += "/"
-		}
-		s = dir + s
+		s = pathpkg.Join(dir, s)
 	}
 	return s
 }
 
-func sysOpen(p *Process, a []uint64) int64   { return p.doOpen(p.cstr(a[0]), a[1], a[2]) }
+const atFDCWD = -2
+
+// workingDir is the directory relative paths start from: the root, as for a daemon launchd
+// started, until the process changes it.
+func (p *Process) workingDir() string {
+	if p.cwd == "" {
+		return "/"
+	}
+	return p.cwd
+}
+
+// pathArg reads a path argument, relative to the working directory unless it is absolute.
+func (p *Process) pathArg(addr uint64) string {
+	s := p.cstr(addr)
+	if s == "" || strings.HasPrefix(s, "/") {
+		return s
+	}
+	return pathpkg.Join(p.workingDir(), s)
+}
+
+func sysChdir(p *Process, a []uint64) int64 { return p.doChdir(p.pathArg(a[0])) }
+
+func sysFchdir(p *Process, a []uint64) int64 {
+	f := p.fds[a[0]]
+	if f == nil {
+		return -eBADF
+	}
+	if f.path == "" {
+		return -eNOTDIR
+	}
+	return p.doChdir(f.path)
+}
+
+func (p *Process) doChdir(path string) int64 {
+	_, info, errno := p.describePath("chdir", path, true)
+	if errno != 0 {
+		return errno
+	}
+	if info.mode&syscall.S_IFMT != syscall.S_IFDIR {
+		return -eNOTDIR
+	}
+	p.cwd = canonical(path)
+	return 0
+}
+
+func sysOpen(p *Process, a []uint64) int64   { return p.doOpen(p.pathArg(a[0]), a[1], a[2]) }
 func sysOpenat(p *Process, a []uint64) int64 { return p.doOpen(p.at(a[0], a[1]), a[2], a[3]) }
 
-func sysGuardedOpen(p *Process, a []uint64) int64 { return p.doOpen(p.cstr(a[0]), a[3], a[4]) }
+func sysGuardedOpen(p *Process, a []uint64) int64 { return p.doOpen(p.pathArg(a[0]), a[3], a[4]) }
 
 func sysGuardedClose(p *Process, a []uint64) int64 { return sysClose(p, a[:1]) }
 func sysGuardedWrite(p *Process, a []uint64) int64 { return sysWrite(p, []uint64{a[0], a[2], a[3]}) }
@@ -521,7 +566,7 @@ func (p *Process) doAccess(path string) int64 {
 	return 0
 }
 
-func sysAccess(p *Process, a []uint64) int64    { return p.doAccess(p.cstr(a[0])) }
+func sysAccess(p *Process, a []uint64) int64    { return p.doAccess(p.pathArg(a[0])) }
 func sysFaccessat(p *Process, a []uint64) int64 { return p.doAccess(p.at(a[0], a[1])) }
 
 // hostPath resolves a guest path to the host file behind it. ok says that it is under the home or a mount:
@@ -551,8 +596,8 @@ func (p *Process) doUnlink(path string, dir bool) int64 {
 	return hostCall(syscall.Unlink(host))
 }
 
-func sysUnlink(p *Process, a []uint64) int64 { return p.doUnlink(p.cstr(a[0]), false) }
-func sysRmdir(p *Process, a []uint64) int64  { return p.doUnlink(p.cstr(a[0]), true) }
+func sysUnlink(p *Process, a []uint64) int64 { return p.doUnlink(p.pathArg(a[0]), false) }
+func sysRmdir(p *Process, a []uint64) int64  { return p.doUnlink(p.pathArg(a[0]), true) }
 func sysUnlinkat(p *Process, a []uint64) int64 {
 	return p.doUnlink(p.at(a[0], a[1]), a[2]&0x80 != 0) // AT_REMOVEDIR
 }
@@ -565,7 +610,7 @@ func (p *Process) doMkdir(path string, mode uint64) int64 {
 	return hostCall(syscall.Mkdir(host, uint32(mode&0o777)))
 }
 
-func sysMkdir(p *Process, a []uint64) int64   { return p.doMkdir(p.cstr(a[0]), a[1]) }
+func sysMkdir(p *Process, a []uint64) int64   { return p.doMkdir(p.pathArg(a[0]), a[1]) }
 func sysMkdirat(p *Process, a []uint64) int64 { return p.doMkdir(p.at(a[0], a[1]), a[2]) }
 
 func (p *Process) doRename(from, to string) int64 {
@@ -577,7 +622,7 @@ func (p *Process) doRename(from, to string) int64 {
 	return hostCall(syscall.Rename(hostFrom, hostTo))
 }
 
-func sysRename(p *Process, a []uint64) int64 { return p.doRename(p.cstr(a[0]), p.cstr(a[1])) }
+func sysRename(p *Process, a []uint64) int64 { return p.doRename(p.pathArg(a[0]), p.pathArg(a[1])) }
 
 func sysRenameat(p *Process, a []uint64) int64 { return p.doRename(p.at(a[0], a[1]), p.at(a[2], a[3])) }
 
@@ -590,7 +635,7 @@ func sysRenameatx(p *Process, a []uint64) int64 {
 }
 
 func sysTruncate(p *Process, a []uint64) int64 {
-	host, ok := p.hostPath(p.cstr(a[0]))
+	host, ok := p.hostPath(p.pathArg(a[0]))
 	if !ok {
 		return -eACCES
 	}
@@ -612,7 +657,7 @@ func (p *Process) doReadlink(path string, buf, size uint64) int64 {
 	return int64(n)
 }
 
-func sysReadlink(p *Process, a []uint64) int64   { return p.doReadlink(p.cstr(a[0]), a[1], a[2]) }
+func sysReadlink(p *Process, a []uint64) int64   { return p.doReadlink(p.pathArg(a[0]), a[1], a[2]) }
 func sysReadlinkat(p *Process, a []uint64) int64 { return p.doReadlink(p.at(a[0], a[1]), a[2], a[3]) }
 
 // list reads the names in an open directory, once. Only directories under the home or a mount have any.
@@ -768,7 +813,7 @@ func (p *Process) statfs(path string, buf uint64) int64 {
 }
 
 func sysStatfs64(p *Process, a []uint64) int64 {
-	path := p.cstr(a[0])
+	path := p.pathArg(a[0])
 	t, ok := p.resolve(path)
 	if !ok {
 		p.note("  ENOENT statfs %s", path)

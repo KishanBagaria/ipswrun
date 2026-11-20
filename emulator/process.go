@@ -193,6 +193,9 @@ type Config struct {
 	// Survey answers a system call or Mach trap nothing implements with an error (ENOSYS,
 	// KERN_INVALID_ARGUMENT) instead of stopping the run, so that one run finds them all.
 	Survey bool
+	// MachineUUID is what gethostuuid answers; DefaultMachineUUID if zero. What a daemon keeps
+	// for this machine (adid's provisioning, for one) is of no use under another.
+	MachineUUID [16]byte
 }
 
 // Process is one emulated process.
@@ -264,6 +267,7 @@ type Process struct {
 	stdout  strings.Builder
 	stderr  strings.Builder
 
+	cwd        string // the working directory, once changed (see workingDir)
 	cacheDir   string
 	cachePaths map[string]dyldcache.File
 	inodes     map[string]uint64
