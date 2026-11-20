@@ -69,8 +69,16 @@ Every release Apple had published when ipswrun was built is built in ([`releases
 ## Usage
 
 ```sh
-ipswrun [flags] <release> <guest executable> [guest arguments...]
+ipswrun [flags] <release> <guest executable or source> [guest arguments...]
 ```
+
+On macOS with Xcode command line tools, pass a single C, Objective-C, or Swift file directly:
+
+```sh
+./ipswrun all examples/foundation.m
+```
+
+ipswrun compiles the file once into a temporary arm64 executable targeting macOS 11, with the flags of [`examples/Makefile`](examples/Makefile): Objective-C guests get ARC and Foundation. The executable of an `--agent` or `--daemon` may be a source file too. For extra libraries, custom compiler flags, or entitlements, pass a prebuilt executable.
 
 The program you run, the guest, is an ordinary executable built on a Mac:
 

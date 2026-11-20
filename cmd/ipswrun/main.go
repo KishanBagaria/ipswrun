@@ -10,11 +10,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -49,7 +52,7 @@ func formatUUID(u [16]byte) string {
 	return strings.ToUpper(fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16]))
 }
 
-const usage = "ipswrun [flags] <release> <guest executable> [guest arguments...]"
+const usage = "ipswrun [flags] <release> <guest executable or source> [guest arguments...]"
 
 // checkArgs says what is wrong with the positional arguments, before anything is fetched for
 // them, or returns the releases the first one names.
@@ -64,8 +67,9 @@ func checkArgs(known, betas []release, args []string, current, index func() ([]r
 	return selectReleases(known, betas, args[0], current, index)
 }
 
-// checkExecutable says what is wrong with the path of an executable on the host. One that is
-// taken from the release (system:/usr/libexec/dirhelper) is looked for when the release is open.
+// checkExecutable says what is wrong with the path of an executable on the host, or of a source
+// file to build one from. One that is taken from the release (system:/usr/libexec/dirhelper) is
+// looked for when the release is open.
 func checkExecutable(path string) error {
 	if rest, ok := strings.CutPrefix(path, emulator.SystemPrefix); ok {
 		if !strings.HasPrefix(rest, "/") {
@@ -78,8 +82,94 @@ func checkExecutable(path string) error {
 		return err
 	case st.IsDir():
 		return fmt.Errorf("%s is a directory", path)
+	case compiler(path) != nil && runtime.GOOS != "darwin":
+		return fmt.Errorf("compiling %s requires macOS; pass a prebuilt arm64 Mach-O on this host", path)
 	}
 	return nil
+}
+
+// compiler is the command that builds an executable from a single source file, or nil for a path
+// that is not one. The flags are those of examples/Makefile, and are to be kept the same as its.
+func compiler(path string) []string {
+	if strings.HasPrefix(path, emulator.SystemPrefix) {
+		return nil
+	}
+	clang := []string{"clang", "-arch", "arm64", "-mmacosx-version-min=11.0", "-Wl,-no_fixup_chains"}
+	switch filepath.Ext(path) {
+	case ".c":
+		return clang
+	case ".m":
+		return append(clang, "-fobjc-arc", "-O1", "-framework", "Foundation")
+	case ".swift":
+		return []string{"swiftc", "-target", "arm64-apple-macos11.0", "-O", "-Xlinker", "-no_fixup_chains"}
+	}
+	return nil
+}
+
+// compile returns the path of an executable built from path, if that is a source file, and path
+// itself if not. It is built once, for every release it is to run on.
+func compile(path string) (string, error) {
+	build := compiler(path)
+	if build == nil {
+		return path, nil
+	}
+	// A directory each, as two sources may share a name, and under the name make would give it.
+	dir, err := tempDir("build-")
+	if err != nil {
+		return "", err
+	}
+	binary := filepath.Join(dir, strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
+	cmd := exec.Command("xcrun", append(build, "-o", binary, path)...)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("compiling %s with %s: %w", path, build[0], err)
+	}
+	return binary, nil
+}
+
+// temps is the directory every temporary one of this process is in, made when the first is.
+var temps struct {
+	sync.Mutex
+	root string
+}
+
+// tempDir makes a temporary directory, which removeTemps removes if nothing does before.
+func tempDir(pattern string) (dir string, err error) {
+	temps.Lock()
+	defer temps.Unlock()
+	if temps.root == "" {
+		if temps.root, err = os.MkdirTemp("", "ipswrun-"); err != nil {
+			return "", err
+		}
+	}
+	return os.MkdirTemp(temps.root, pattern)
+}
+
+// removeTemps removes every temporary directory, at the end of the process.
+func removeTemps() {
+	temps.Lock()
+	defer temps.Unlock()
+	if temps.root != "" {
+		os.RemoveAll(temps.root)
+	}
+}
+
+// dieOnSignal ends the process at Ctrl-C or a request to terminate, as the signal alone would,
+// but leaving no temporary directory behind.
+func dieOnSignal() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		received := (<-signals).(syscall.Signal)
+		removeTemps()
+		// To die of the signal is what tells a shell to stop its loop. The exit is for a
+		// process that was started with the signal ignored, as a background job is, and waits
+		// because the signal is not taken at once.
+		signal.Reset(received)
+		syscall.Kill(os.Getpid(), received)
+		time.Sleep(time.Second)
+		os.Exit(128 + int(received))
+	}()
 }
 
 // feedNote says that Apple's feed could not be read, for a command that goes on without it.
@@ -288,7 +378,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	perRelease := strings.NewReplacer("{build}", image.Build(), "{version}", image.Version())
 	home := perRelease.Replace(o.home)
 	if home == "" {
-		if home, err = os.MkdirTemp("", "ipswrun-home-"); err != nil {
+		if home, err = tempDir("home-"); err != nil {
 			return failed(err)
 		}
 		defer os.RemoveAll(home)
@@ -449,7 +539,7 @@ URL of any restore image, or several of these separated by commas.`)
 	}
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
 	var env, system, mountValues, services, daemonValues, agentValues list
-	flag.Var(&agentValues, "agent", "<service>[,<service>...]=<executable> [arguments]: another guest, started beside the first as the same user, that provides these Mach services to it (repeatable)")
+	flag.Var(&agentValues, "agent", "<service>[,<service>...]=<executable> [arguments]: another guest, started beside the first as the same user, that provides these Mach services to it; its executable may be a source file, as the first's may (repeatable)")
 	flag.Var(&daemonValues, "daemon", "like --agent, for a guest that runs as root, as a daemon of the system does (repeatable)")
 	flag.Var(&services, "service", "name of a Mach service the guest provides, as a daemon does: it can check that name in, and look it up (repeatable)")
 	flag.Var(&mountValues, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
@@ -480,6 +570,7 @@ URL of any restore image, or several of these separated by commas.`)
 	}
 	// Nothing is fetched for a command line that cannot run. --setup takes no arguments.
 	var releases []release
+	var guest string
 	var mounts []emulator.Mount
 	var daemons []emulator.Guest
 	if !*setup {
@@ -509,6 +600,14 @@ URL of any restore image, or several of these separated by commas.`)
 			fmt.Fprintf(os.Stderr, "ipswrun: %v\nusage: %s (--help lists the flags)\n", err, usage)
 			return 2, nil
 		}
+		if guest, err = compile(flag.Arg(1)); err != nil {
+			return 0, err
+		}
+		for i := range daemons {
+			if daemons[i].Executable, err = compile(daemons[i].Executable); err != nil {
+				return 0, err
+			}
+		}
 	}
 	// The status line is for someone watching a terminal: never when stderr is redirected, and
 	// not under --trace, which writes there throughout.
@@ -534,13 +633,15 @@ URL of any restore image, or several of these separated by commas.`)
 			return 0, err
 		}
 	}
-	o := &options{unicorn: unicorn, cache: *cache, device: *device, home: *home, report: *reportPath, guest: flag.Arg(1), args: flag.Args()[2:],
+	o := &options{unicorn: unicorn, cache: *cache, device: *device, home: *home, report: *reportPath, guest: guest, args: flag.Args()[2:],
 		env: env, system: system, mounts: mounts, services: services, daemons: daemons, stream: *stream, trace: *trace, missing: *missing, showStatus: showStatus, timeout: *timeout}
 	return o.runAll(releases)
 }
 
 func main() {
+	dieOnSignal()
 	code, err := run()
+	removeTemps()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ipswrun: %v\n", err)
 		os.Exit(70)

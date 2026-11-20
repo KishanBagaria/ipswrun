@@ -80,6 +80,17 @@ func TestArgumentsAreCheckedBeforeAnythingIsFetched(t *testing.T) {
 	}
 }
 
+func TestCompilerBySuffix(t *testing.T) {
+	for path, want := range map[string]string{
+		"guest": "", "bin/guest.o": "", "system:/usr/share/x.c": "",
+		"guest.c": "clang", "dir.d/guest.m": "clang", "guest.swift": "swiftc",
+	} {
+		if got := append(compiler(path), "")[0]; got != want {
+			t.Errorf("compiler(%q) runs %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestReleasesByName(t *testing.T) {
 	known := parseReleases(releasesText)
 	builds := map[string]bool{}
