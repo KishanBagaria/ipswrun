@@ -41,24 +41,19 @@ func (c *clock) now() time.Time {
 	return t.Add(-c.lost)
 }
 
-// away runs what the host does for a guest that is not the guest's time: reading what backs its
-// memory and its system files. The clock is where it was when that returns.
-func (c *clock) away(fetch func()) {
+// away is what the host fetches for a guest, and not the guest's time: what backs its memory and
+// its system files. The clock is where it was when that returns.
+func away[T any](c *clock, fetch func() (T, error)) (T, error) {
 	c.mu.Lock()
-	nested := !c.stopped.IsZero()
-	if !nested {
-		c.stopped = time.Now()
-	}
+	c.stopped = time.Now()
 	c.mu.Unlock()
-	if !nested {
-		defer func() {
-			c.mu.Lock()
-			c.lost += time.Since(c.stopped)
-			c.stopped = time.Time{}
-			c.mu.Unlock()
-		}()
-	}
-	fetch()
+	defer func() {
+		c.mu.Lock()
+		c.lost += time.Since(c.stopped)
+		c.stopped = time.Time{}
+		c.mu.Unlock()
+	}()
+	return fetch()
 }
 
 // ticks is the guests' mach_absolute_time now.
@@ -68,9 +63,7 @@ func (c *clock) ticks() uint64 { return uint64(c.now().Sub(c.boot)) * 3 / 125 }
 func tickDuration(ticks int64) time.Duration { return time.Duration(ticks * 125 / 3) }
 
 // tickTime is when the guests' mach_absolute_time is, or was, ticks.
-func (c *clock) tickTime(ticks uint64) time.Time {
-	return c.now().Add(tickDuration(int64(ticks - c.ticks())))
-}
+func (c *clock) tickTime(ticks uint64) time.Time { return c.boot.Add(tickDuration(int64(ticks))) }
 
 // alarm calls ring once the clock has reached t, and again every millisecond for as long as it
 // is left on: what it rings for may not have started yet. The function returned turns it off,
@@ -85,13 +78,11 @@ func (c *clock) alarm(t time.Time, ring func()) (off func() bool) {
 				due = true
 				ring()
 			}
-			timer := time.NewTimer(max(left, time.Millisecond))
 			select {
 			case <-quit:
-				timer.Stop()
 				rang <- due
 				return
-			case <-timer.C:
+			case <-time.After(max(left, time.Millisecond)):
 			}
 		}
 	}()

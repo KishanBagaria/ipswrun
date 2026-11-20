@@ -83,9 +83,7 @@ func (p *Process) pread(f *fd, off, n uint64) ([]byte, int64) {
 		}
 		return data[:got], 0
 	case cacheFD:
-		var data []byte
-		var err error
-		p.m.clock.away(func() { data, err = f.cache.Pread(int64(min(off, 1<<62)), int64(min(n, 1<<40))) })
+		data, err := away(p.m.clock, func() ([]byte, error) { return f.cache.Pread(int64(min(off, 1<<62)), int64(min(n, 1<<40))) })
 		if err != nil {
 			stopf("read %s: %v", f.path, err)
 		}
@@ -222,9 +220,7 @@ func (p *Process) lookup(path string) (target, bool) {
 		return target{kind: dirFD}, true
 	}
 	if p.system != nil {
-		var f SystemFile
-		var err error
-		p.m.clock.away(func() { f, err = p.system(path) })
+		f, err := away(p.m.clock, func() (SystemFile, error) { return p.system(path) })
 		if err != nil {
 			stopf("%v", err)
 		}

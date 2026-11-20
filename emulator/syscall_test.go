@@ -207,10 +207,17 @@ func (p *Process) trap(number int64, args ...uint64) (x0 uint64, carry bool, sto
 		p.setX(i, a)
 	}
 	p.uc.setReg(regX0+16, uint64(number))
-	if _, err := p.uc.start(codeAddr, codeAddr+4, 10_000_000); err != nil && p.fault == "" {
+	if err := p.uc.start(codeAddr, codeAddr+4, 10_000_000); err != nil && p.fault == "" {
 		p.fault = err.Error()
 	}
 	return p.x(0), p.uc.reg(regNZCV)&carryFlag != 0, p.fault
+}
+
+// scheduleFrom is the machine's schedule, for the thread that stopped at pc; it returns where the next resumes.
+func (p *Process) scheduleFrom(pc uint64) uint64 {
+	p.current.pc, p.m.running = pc, p
+	p.m.schedule()
+	return p.current.pc
 }
 
 func TestDispatch(t *testing.T) {
