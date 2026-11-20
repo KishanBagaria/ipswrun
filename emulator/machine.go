@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -21,11 +20,11 @@ type Machine struct {
 	dyld     []byte  // the build's dyld, as the emulated CPU runs it
 	mounts   []Mount // the home among them; longest guest path first
 	procs    []*Process
-	running  *Process            // the process whose thread has, or last had, the turn
-	services map[string]*service // what launchd knows (see launchd.go)
-	shared   map[string]*sharedMemory
-	unnamed  [][]byte // host memory that mappings share without a name (see shared.go)
-	ioMain   *port    // what IOKit's searches are sent to, once a process has asked for it
+	running  *Process                 // the process whose thread has, or last had, the turn
+	services map[string]*service      // what launchd knows (see launchd.go)
+	shared   []*sharedMemory          // every memory of the host's that mappings share (see shared.go)
+	named    map[string]*sharedMemory // those shm_open knows by a name
+	ioMain   *port                    // what IOKit's searches are sent to, once a process has asked for it
 	deadline time.Time
 	settling time.Time // once the main guest has exited: when the daemons are no longer waited for
 }
@@ -63,7 +62,7 @@ func NewMachine(cfg Config) (*Machine, error) {
 		mounts[i] = Mount{canonical(m.Guest), host}
 	}
 	slices.SortStableFunc(mounts, func(a, b Mount) int { return len(b.Guest) - len(a.Guest) })
-	return &Machine{cfg: cfg, dyld: dyld, mounts: mounts, services: map[string]*service{}, shared: map[string]*sharedMemory{}}, nil
+	return &Machine{cfg: cfg, dyld: dyld, mounts: mounts, services: map[string]*service{}, named: map[string]*sharedMemory{}}, nil
 }
 
 // Spawn makes a process of a guest, ready to run from dyld's entry point. Two guests may not
@@ -87,7 +86,6 @@ func (m *Machine) Spawn(g Guest) (p *Process, err error) {
 	if p, err = m.newProcess(g.Executable, image, path); err != nil {
 		return nil, err
 	}
-	p.hostExe = g.Image == nil
 	if g.Root {
 		p.uid, p.gid = 0, 0
 	}
@@ -112,10 +110,7 @@ func (m *Machine) Close() {
 	for _, s := range m.shared {
 		s.free()
 	}
-	for _, data := range m.unnamed {
-		syscall.Munmap(data)
-	}
-	m.unnamed = nil
+	m.shared = nil
 }
 
 // Run runs the guests until the main one exits. Any other end (a fault, something unimplemented,
@@ -141,15 +136,16 @@ func (m *Machine) Run(timeout time.Duration) (err error) {
 // exit is what follows a process's end, however it came to it: its rights end with it, and if
 // it is the guest the run is for, the others have only a while longer.
 func (m *Machine) exit(p *Process, how string) {
-	p.exited, p.early = true, !m.procs[0].exited
+	p.early = p != m.procs[0] && !m.procs[0].exited
+	p.exited = true
 	p.note("exited %s", how)
 	p.reap()
 	if p == m.procs[0] {
 		// The others are asked to end, as launchd asks its daemons when they are no longer
 		// wanted, and have a while to do what they do about that.
 		m.settling = time.Now().Add(settleTime)
-		for _, other := range m.procs {
-			if !other.exited && other.signalled(sigTERM) {
+		for _, other := range m.live() {
+			if other.signalled(sigTERM) {
 				other.note("sent SIGTERM")
 			}
 		}

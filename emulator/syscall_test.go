@@ -179,7 +179,6 @@ func newProcess(t *testing.T) *Process {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.hostExe = true
 	t.Cleanup(func() { onMain(p.m.Close) })
 	p.m.deadline = time.Now().Add(time.Minute)
 	return p

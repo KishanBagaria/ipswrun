@@ -116,7 +116,7 @@ const (
 	zeroRegion   regionKind = iota // anonymous memory
 	fileRegion                     // a private copy of data, or of file from off, read on first touch
 	cacheRegion                    // dyld shared cache pages, rebased on first touch
-	sharedRegion                   // data from off is memory of the host's, which other mappings of it share (see shared.go)
+	sharedRegion                   // shared from off is memory of the host's, which other mappings of it share (see shared.go)
 )
 
 // region is a reserved range of guest address space; its pages reach Unicorn on first touch.
@@ -125,6 +125,7 @@ type region struct {
 	kind       regionKind
 	data       []byte
 	file       dyldcache.File
+	shared     *sharedMemory
 	off        uint64
 	name       string
 }
@@ -209,7 +210,6 @@ type Process struct {
 	exe     []byte  // the guest executable
 	path    string  // where the guest finds it: only this process does, and no other finds it there
 	exePath string  // and where it is on the host, or what it is called if it is not a file there
-	hostExe bool
 	// What the executable's code signature says of it, if it has one: the name it was signed
 	// under, and the entitlements it was signed with, as a property list and as DER.
 	identity, entitlements string
@@ -429,6 +429,9 @@ func (p *Process) MappedPages() int { return len(p.mapped) }
 func (p *Process) addRegion(r *region) *region {
 	i := sort.Search(len(p.regions), func(i int) bool { return p.regions[i].start >= r.start })
 	p.regions = slices.Insert(p.regions, i, r)
+	if r.shared != nil {
+		r.shared.retain()
+	}
 	return r
 }
 
@@ -469,6 +472,9 @@ func (p *Process) unmap(start, end uint64) {
 			tail.start, tail.off = end, r.off+(end-r.start)
 			p.addRegion(&tail)
 		}
+		if r.shared != nil {
+			defer r.shared.release() // once the engine no longer maps it
+		}
 	}
 	for a := start; a < end; {
 		if !p.isMapped(a) {
@@ -491,6 +497,7 @@ type allocation struct {
 	kind      regionKind
 	data      []byte
 	file      dyldcache.File // instead of data: read from off as pages are touched
+	shared    *sharedMemory  // instead of either: the mapping is this memory, from off
 	off       uint64
 	name      string
 	keepOther bool // a fixed request fails instead of replacing what is there
@@ -513,7 +520,7 @@ func (p *Process) alloc(size uint64, a allocation) (uint64, bool) {
 		start = align(p.brk, max(a.mask+1, pageSize))
 		p.brk = start + size + pageSize
 	}
-	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, file: a.file, off: a.off, name: a.name})
+	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, file: a.file, shared: a.shared, off: a.off, name: a.name})
 	return start, true
 }
 
@@ -536,7 +543,7 @@ func (p *Process) materialize(addr uint64) bool {
 		}
 		if r.kind == sharedRegion {
 			o := r.off + (a - r.start)
-			p.uc.memMapHost(a, r.data[o:o+(b-a)])
+			p.uc.memMapHost(a, r.shared.data[o:o+(b-a)])
 			a = b
 			continue
 		}
@@ -626,6 +633,18 @@ func (p *Process) read(addr, n uint64) []byte {
 		panic(fault{fmt.Sprintf("kernel read of guest memory %#x: %v", addr, err)})
 	}
 	return data
+}
+
+// readInto fills dst with the guest memory at addr.
+func (p *Process) readInto(dst []byte, addr uint64) {
+	addr &= tbiMask
+	if n := uint64(len(dst)); n > vaLimit || addr+n > vaLimit {
+		panic(fault{fmt.Sprintf("kernel access to guest memory %#x+%#x", addr, n)})
+	}
+	p.ensure(addr, uint64(len(dst)))
+	if err := p.uc.memReadInto(addr, dst); err != nil {
+		panic(fault{fmt.Sprintf("kernel read of guest memory %#x: %v", addr, err)})
+	}
 }
 
 func (p *Process) write(addr uint64, data []byte) {
