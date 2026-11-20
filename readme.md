@@ -79,7 +79,7 @@ clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains -o guest guest.
 
 `-no_fixup_chains` is what lets every release's dyld load it. A binary with only arm64e code, as Apple's own are, is loaded too. [`examples/Makefile`](examples/Makefile) has the flags for Objective-C and Swift too.
 
-An executable can also be one of the release's own: `system:` and its path there, as in `system:/usr/sbin/cfprefsd`, takes it from the release that is being run. It finds itself at that path, where no other guest finds it. A guest of your own is `/emu/guest` to itself.
+An executable can also be the release's own, by `system:` and its path there: `system:/usr/sbin/cfprefsd`.
 
 What the guest gets:
 
@@ -90,7 +90,7 @@ What the guest gets:
 
 ## Several guests
 
-A guest can be given other guests to talk to: each is a process of its own on the same emulated machine, started beside it to provide Mach services, as launchd starts an agent for a user or a daemon for the system. [`examples/client.c`](examples/client.c) uses two services of [`examples/server.c`](examples/server.c), an XPC service and a plain Mach port:
+Other guests can be started beside the first to provide Mach services to it, each a process of its own: `--agent` as the same user, `--daemon` as root. [`examples/client.c`](examples/client.c) uses an XPC service and a plain Mach port of [`examples/server.c`](examples/server.c):
 
 ```sh
 ./ipswrun --agent com.example.ipswrun.echo,com.example.ipswrun.reverse=examples/bin/server 27.2.1 examples/bin/client
@@ -102,14 +102,14 @@ echo 2: "AND AGAIN", the server's request 2; it is another process: 1, and it kn
 reverse: answer 101 with 70000 bytes, reversed: 1, in memory of its own: 1; the server knows this process: 1
 ```
 
-The other guest can be the release's own daemon. Preferences are kept by `cfprefsd`, which runs once as root for the system's and once for the user's. [`examples/prefs.c`](examples/prefs.c) then has its preferences from the daemon that shipped with that release:
+The other guest can be the release's own daemon. [`examples/prefs.c`](examples/prefs.c) keeps its preferences with that release's `cfprefsd`:
 
 ```sh
 ./ipswrun --agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' \
           --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon' 27.2.1 examples/bin/prefs
 ```
 
-A daemon decides whom it serves by what the client's code signature says, and a guest is whatever it was signed as. [`examples/adi.c`](examples/adi.c) asks `adid`, the daemon behind an Apple ID's one-time passwords, for one. Since macOS 15 `adid` wants its client entitled to ask, so the guest is signed as one that is, and is answered:
+[`examples/adi.c`](examples/adi.c) asks `adid`, the daemon behind an Apple ID's one-time passwords, for one. Since macOS 15 `adid` serves only a client signed as entitled to ask, so the guest is:
 
 ```sh
 ./ipswrun --daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid 27.2.1 examples/bin/adi
@@ -119,9 +119,7 @@ A daemon decides whom it serves by what the client's code signature says, and a 
 adid, by XPC: status -45061 (not provisioned), 4 bytes
 ```
 
-On macOS 11 and 12 `adid` is a plain Mach service that asks nothing of its client, and the guest puts the same question in a message of its own. That is as far as it goes on any release: provisioning takes what Apple's servers send, and a guest has no network. From macOS 15 `adid` would also need a kernel extension (see [Drivers](#what-does-not-work)); the `adid` of macOS 11 calls no driver at all.
-
-The run is the first guest's: its output, its exit status, and it ends when that guest exits. Those of the others that watch for SIGTERM are then sent it, as launchd's daemons are when they are no longer wanted, and the run is over once every other guest has finished what it was doing, or five seconds have passed. What another guest writes to its standard output or error is shown on standard error under its name. `--trace` shows the calls of every guest, each under its name, and what the XPC messages between them say.
+The run is the first guest's: its output and its exit status. When it exits, the others are sent SIGTERM if they watch for it and have five seconds to finish. What they wrote is shown on standard error under their names, and `--trace` shows every guest's calls and what the messages between them say.
 
 ## Options
 
@@ -130,8 +128,8 @@ The run is the first guest's: its output, its exit status, and it ends when that
 | `--home <dir>` | host directory the guest sees as its home, `/Users/emu` (default: a temporary one, deleted afterwards). `{build}` and `{version}` are filled in per release, and one is required with several |
 | `--mount <guest dir>=<host dir>` | another host directory the guest sees and may change, at that guest path, such as `--mount /var/db=out/db` (repeatable). `{build}` and `{version}` in the host directory as in `--home` |
 | `--service <name>` | a Mach service the guest provides, as a daemon started by launchd does: it can check that name in, and look it up as a client (repeatable). Without it no name can be checked in, as for any program run by hand |
-| `--agent <service>[,<service>…]=<executable> [arguments]` | another guest, started beside the first as the same user, that provides these Mach services to it (repeatable). The executable is a file, or `system:` and a path in the release. Arguments are separated by spaces |
-| `--daemon <service>[,<service>…]=<executable> [arguments]` | like `--agent`, for a guest that runs as root, as a daemon of the system does (repeatable) |
+| `--agent <service>[,<service>…]=<executable> [arguments]` | another guest, started beside the first as the same user, that provides these Mach services (repeatable). Arguments are separated by spaces |
+| `--daemon <service>[,<service>…]=<executable> [arguments]` | the same, as root |
 | `--env KEY=VALUE` | added to the environment of every guest (repeatable) |
 | `--system <path>` | system-volume file, or directory ending in `/`, the guest may read (repeatable). The default is feature flags, `SystemVersion.plist`, ICU data in `/usr/share/icu/` and `/usr/lib/libobjc-trampolines.dylib`; giving any replaces the default |
 | `--cache <dir>` | where downloads are kept between runs (default: `ipswrun-<uid>` in the system temporary directory, so cleared on reboot) |
@@ -155,10 +153,10 @@ The run is the first guest's: its output, its exit status, and it ends when that
 ## What does not work
 
 - **Threads that never wait.** Threads take turns, those of every guest together: one runs until it waits for something (a lock, a condition, a semaphore, a queue, a timer), yields or ends, and only then does another. POSIX threads and libdispatch queues, groups, semaphores and timers work this way. A thread that spins without a system call until another thread does something waits forever, and a run where no thread can go on stops and lists what each was waiting for. Read-write locks that have to wait, signals between threads and thread cancellation are not there.
-- **Processes nobody started, and the network.** The processes are the guests the command line names: a guest cannot start another (`fork`, `posix_spawn`). Between them, and inside each, Mach messages are real: ports and port sets, messages that wait to be received and receives that wait for them, memory and rights sent along, the notifications of a port losing its senders or its receiver, and on top of those libdispatch's Mach sources, `CFRunLoop` with its timers and ports, and XPC connections between a listener and a client. A service looked up with launchd exists if a guest provides it (`--service`, `--agent`, `--daemon`), and no other does. A guest is told who sent a message (its pid, and its user: root or the one user there is), and what that process's code signature says of it: the name it was signed under and its entitlements. Nothing checks a signature, so a guest is whatever it was signed as. Of the events libdispatch can wait for, timers and Mach messages happen, and the one signal there is anyone to send: not files, sockets or processes. `select` finds nothing ready.
-- **Drivers.** A guest can ask IOKit for the kernel's services, open one and call its methods (`IOServiceGetMatchingServices`, `IOServiceOpen`, `IOConnectCallMethod` and what is built on them), but the kernel here has none: every search finds nothing, as on a Mac where the driver is not loaded. A program that uses the [`emulator`](emulator) package can give the machine drivers of its own (`Driver`); `ipswrun` gives it none. What needs a kernel extension to answer, as `fairplayd` needs FairPlayIOKit, stops there.
-- **Memory sent in a message.** Memory mapped a second time is one memory: opened by name (`shm_open`), named by a port (`mach_make_memory_entry`) or remapped (`mach_vm_remap`), in one guest or in several. Two stretches cannot be made so: memory of the shared cache, and memory of which a part is shared already. Memory sent out of line in a Mach message arrives as a copy, which is what it is on a Mac until one side writes to it.
-- **Anything that needs a daemon that is not there.** Without `cfprefsd`, `NSUserDefaults` reads back nothing. With it (see [Several guests](#several-guests)), preferences are set and read back through the daemon, but it does not write them to the home: it makes the file and removes it again, for a reason not yet found. On macOS 11 to 12.0.1 the daemon also reports that synchronizing failed. `SecKeyCreateRandomKey` fails unless the key is made the iOS way (`kSecUseDataProtectionKeychain`, not permanent), because the macOS default is the legacy CDSA stack behind `securityd`.
+- **Processes nobody started, and the network.** The processes are the guests the command line names: a guest cannot start another (`fork`, `posix_spawn`). Between them, and inside each, Mach messages are real: ports and port sets, messages that wait to be received and receives that wait for them, memory and rights sent along, the notifications of a port losing its senders or its receiver, and on top of those libdispatch's Mach sources, `CFRunLoop` with its timers and ports, and XPC connections. A service exists if a guest provides it (`--service`, `--agent`, `--daemon`). A guest is told the sender's pid and user (root, or the one user there is) and what its code signature says: nothing checks a signature, so a guest is whatever it was signed as. Of the events libdispatch can wait for, timers, Mach messages and the SIGTERM at the end of a run happen: not files, sockets or processes. `select` finds nothing ready.
+- **Drivers.** A guest can search IOKit, open a service and call its methods, but the kernel here has no services: every search finds nothing, as where the driver is not loaded. A program using the [`emulator`](emulator) package can give the machine a `Driver`; `ipswrun` gives it none. So `fairplayd` exits, and `adid` from macOS 13.6 on cannot provision. On any release provisioning also takes what Apple's servers send, and a guest has no network.
+- **Memory sent in a message** arrives as a copy. Memory mapped a second time is one memory (`shm_open`, `mach_make_memory_entry`, `mach_vm_remap`), in one guest or several, except memory of the shared cache or already shared in part.
+- **Anything that needs a daemon that is not there.** Without `cfprefsd`, `NSUserDefaults` reads back nothing. With it, preferences are set and read back but never reach the home, for a reason not yet found, and on macOS 11 to 12.0.1 synchronizing reports failure. `SecKeyCreateRandomKey` fails unless the key is made the iOS way (`kSecUseDataProtectionKeychain`, not permanent), because the macOS default is the legacy CDSA stack behind `securityd`.
 - **Files outside the home.** What the guest writes outside `--home` and the `--mount` directories never reaches the host, and it can read system files only from the `--system` allowlist.
 - **macOS 13 and 14 by range.** Their images keep the shared cache in a deflate-compressed ZIP member, which cannot be read by range. `--stream-compressed` downloads that one member (3.6–4.5 GB).
 - **`mach_vm_remap` of a file's memory.** It copies instead of sharing: enough for code (the Objective-C block trampolines), wrong for a mapped file that is written afterwards.
@@ -167,7 +165,7 @@ The run is the first guest's: its output, its exit status, and it ends when that
 
 ## What is tested
 
-Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency, Mach messages with what is built on them (libdispatch sources, `CFRunLoop`, XPC), a Mach service with its client in one process and in two, preferences kept by the release's `cfprefsd`, and the release's `adid` answering a client entitled to ask it. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
+Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency, Mach messages with what is built on them (libdispatch sources, `CFRunLoop`, XPC), a Mach service with its client in one process and in two, and the release's own `cfprefsd` and `adid` serving a client. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
 
 ## How it works
 
