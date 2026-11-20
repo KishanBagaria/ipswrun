@@ -1,0 +1,55 @@
+package emulator
+
+// Research hook, never for master. With FIXEDCLOCK=<unix seconds> every clock a guest can read is
+// a counter of that process's own, which starts there and advances a microsecond each time the
+// process reads it. Two runs of the same guest then see the same times whatever the other guests
+// and the host do (entropy is reproducible already), so a daemon's answer to the same request is
+// the same bytes, and an exchange with a server can be replayed from its kept responses.
+
+import (
+	"os"
+	"strconv"
+	"time"
+)
+
+var fixedClock, _ = strconv.ParseInt(os.Getenv("FIXEDCLOCK"), 10, 64)
+var fixedReads = map[*Process]uint64{}
+
+const fixedUptime = 1000 * 1000 * 1000 * 1000 // the machine has been up 1000 s, in nanoseconds
+
+// guestNow is the wall clock p reads.
+func guestNow(p *Process) time.Time {
+	if fixedClock == 0 {
+		return time.Now()
+	}
+	fixedReads[p]++
+	return time.Unix(fixedClock, int64(fixedReads[p])*1000)
+}
+
+// guestTicks is the mach_absolute_time p reads.
+func guestTicks(p *Process) uint64 {
+	if fixedClock == 0 {
+		return machTicks()
+	}
+	fixedReads[p]++
+	return (fixedUptime + fixedReads[p]*1000) * 3 / 125
+}
+
+// guestTickTime is when the guests' mach_absolute_time is, or was, ticks: under the fixed clock,
+// as if it had not moved since the run began.
+func guestTickTime(ticks uint64) time.Time {
+	if fixedClock == 0 {
+		return tickTime(ticks)
+	}
+	return time.Now().Add(tickDuration(int64(ticks - fixedUptime*3/125)))
+}
+
+// HOSTUUID=<32 hex digits> gives the machine another identifier, to see what depends on it.
+func init() {
+	if id := os.Getenv("HOSTUUID"); len(id) == 32 {
+		for i := range hostUUID {
+			b, _ := strconv.ParseUint(id[2*i:2*i+2], 16, 8)
+			hostUUID[i] = byte(b)
+		}
+	}
+}

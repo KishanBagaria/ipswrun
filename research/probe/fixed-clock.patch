@@ -1,0 +1,98 @@
+diff --git a/emulator/bsd.go b/emulator/bsd.go
+index a3d637e..742a3ac 100644
+--- a/emulator/bsd.go
++++ b/emulator/bsd.go
+@@ -7,7 +7,6 @@ import (
+ 	"slices"
+ 	"strconv"
+ 	"strings"
+-	"time"
+ )
+ 
+ // handler implements one system call or Mach trap. args is how many registers it takes, which is
+@@ -397,12 +396,12 @@ func sysGetrlimit(p *Process, a []uint64) int64 {
+ }
+ 
+ func sysGettimeofday(p *Process, a []uint64) int64 {
+-	now := time.Now()
++	now := guestNow(p)
+ 	if a[0] != 0 {
+ 		p.write(a[0], le64(uint64(now.Unix()), uint64(now.Nanosecond()/1000)))
+ 	}
+ 	if a[2] != 0 {
+-		p.write(a[2], le64(machTicks()))
++		p.write(a[2], le64(guestTicks(p)))
+ 	}
+ 	return 0
+ }
+diff --git a/emulator/kevent.go b/emulator/kevent.go
+index de928d3..4576ab7 100644
+--- a/emulator/kevent.go
++++ b/emulator/kevent.go
+@@ -211,7 +211,7 @@ func (p *Process) timerDeadline(c kevent) time.Time {
+ 	case unit != 0:
+ 		return time.Unix(0, c.data*int64(unit)) // the wall clock
+ 	}
+-	return tickTime(uint64(c.data)) // either Mach clock: no time is spent asleep to tell them apart
++	return guestTickTime(uint64(c.data)) // either Mach clock: no time is spent asleep to tell them apart
+ }
+ 
+ func (p *Process) changeWorkloop(q *kqueue, c kevent) {
+diff --git a/emulator/mach.go b/emulator/mach.go
+index cdb9a2b..480b63f 100644
+--- a/emulator/mach.go
++++ b/emulator/mach.go
+@@ -4,7 +4,6 @@ import (
+ 	"fmt"
+ 	"slices"
+ 	"strconv"
+-	"time"
+ )
+ 
+ var machNames = map[int64]string{
+@@ -442,8 +441,8 @@ func migVMRemap(p *Process, body []byte) migReply {
+ 	return migData(append(le64(start), le32(5, 7)...)) // current and maximum protection
+ }
+ 
+-func migClockGetTime(*Process, []byte) migReply {
+-	now := time.Now()
++func migClockGetTime(p *Process, _ []byte) migReply {
++	now := guestNow(p)
+ 	return migData(le32(uint32(now.Unix()), uint32(now.Nanosecond())))
+ }
+ 
+diff --git a/emulator/ports.go b/emulator/ports.go
+index b7437e8..0498555 100644
+--- a/emulator/ports.go
++++ b/emulator/ports.go
+@@ -550,7 +550,7 @@ func (p *Process) armTimer(name uint32, ticks uint64) int64 {
+ 	if q == nil {
+ 		return kernInvalidArg
+ 	}
+-	q.due = tickTime(ticks)
++	q.due = guestTickTime(ticks)
+ 	return 0
+ }
+ 
+diff --git a/emulator/process.go b/emulator/process.go
+index 3238874..abb3766 100644
+--- a/emulator/process.go
++++ b/emulator/process.go
+@@ -749,7 +749,7 @@ func (p *Process) setupCommpage() {
+ 			// before zero included), no time asleep, no approximate time.
+ 			clear(page[0x88:0x90]) // TIMEBASE_OFFSET
+ 			clear(page[0x98:0xB0]) // CONT_TIMEBASE, BOOTTIME_USEC, CONT_HW_TIMEBASE
+-			le.PutUint64(page[0xA0:], uint64(time.Now().UnixMicro())-uptimeNanos()/1000)
++			le.PutUint64(page[0xA0:], uint64(guestNow(p).UnixMicro())-guestTicks(p)*125/3/1000)
+ 			clear(page[0xC0:0xD0]) // APPROX_TIME and whether it is supported
+ 			page[0x90] = 0         // USER_TIMEBASE_NONE: mach_absolute_time is a trap, not the counter
+ 			page[0x91] = 0         // nor does the counter keep mach_continuous_time
+@@ -1025,7 +1025,7 @@ func (p *Process) interrupt(number uint32) {
+ 	case uint32(n) == 0xFFFFFFFD, uint32(n) == 0xFFFFFFFC:
+ 		// The fast traps -3 and -4, mach_absolute_time and mach_continuous_time: the same clock,
+ 		// as no time is spent asleep. They are made too often to be worth a line in the trace.
+-		p.setX(0, machTicks())
++		p.setX(0, guestTicks(p))
+ 	case n > 0 && n&0xFFFFFFFF == 0x80000000:
+ 		p.machdep()
+ 	case n < 0:

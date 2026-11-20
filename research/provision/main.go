@@ -14,6 +14,8 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -41,6 +43,7 @@ var (
 	akd     = flag.String("akd", "1.0", "CFBundleShortVersionString of its akd")
 	network = flag.String("cfnetwork", "", "CFBundleVersion of its CFNetwork.framework")
 	darwin  = flag.String("darwin", "", "its kern.osrelease")
+	root    = flag.String("root", "", "Apple Root CA as DER, from https://www.apple.com/appleca/AppleIncRootCertificate.cer: the service's certificate is under it, not under a public root")
 	offline = flag.Bool("offline", false, "fail instead of making a request that is not cached")
 )
 
@@ -83,7 +86,10 @@ func finish(cpimFile string) error {
 		return err
 	}
 	// The plist's strings are the base64 text itself, as the service sent spim.
-	response, err := call("finish", url, map[string]any{"cpim": string(bytes.TrimSpace(cpim))})
+	// Kept under the client challenge it answers: another challenge is another request.
+	cpim = bytes.TrimSpace(cpim)
+	sum := sha256.Sum256(cpim)
+	response, err := call("finish-"+hex.EncodeToString(sum[:4]), url, map[string]any{"cpim": string(cpim)})
 	if err != nil {
 		return err
 	}
@@ -113,13 +119,12 @@ func serviceURL(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var lookup struct {
-		URLs map[string]string `plist:"urls"`
-	}
+	var lookup map[string]any
 	if _, err := plist.Unmarshal(body, &lookup); err != nil {
 		return "", fmt.Errorf("lookup: %w", err)
 	}
-	url := lookup.URLs[name]
+	urls, _ := lookup["urls"].(map[string]any)
+	url, _ := urls[name].(string)
 	if !strings.HasPrefix(url, "https://gsa.apple.com/") {
 		return "", fmt.Errorf("lookup: %s is %q, not a URL of the service", name, url)
 	}
@@ -142,17 +147,36 @@ func call(name, url string, request map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var answer struct {
-		Response map[string]any `plist:"Response"`
-	}
+	var answer map[string]any
 	if _, err := plist.Unmarshal(body, &answer); err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
-	status, _ := answer.Response["Status"].(map[string]any)
+	response, _ := answer["Response"].(map[string]any)
+	status, _ := response["Status"].(map[string]any)
 	if code := fmt.Sprint(status["ec"]); code != "0" {
 		return nil, fmt.Errorf("%s: the service answered status %s (%v): stopping, see %s", name, code, status["em"], filepath.Join(*dir, name+".response"))
 	}
-	return answer.Response, nil
+	return response, nil
+}
+
+// appleRootHash is the SHA-256 of Apple Root CA, the only root the service is trusted under here.
+const appleRootHash = "b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024"
+
+func appleRoot() (*x509.CertPool, error) {
+	der, err := os.ReadFile(*root)
+	if err != nil {
+		return nil, fmt.Errorf("--root: %w", err)
+	}
+	if sum := sha256.Sum256(der); hex.EncodeToString(sum[:]) != appleRootHash {
+		return nil, errors.New("--root is not Apple Root CA")
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(certificate)
+	return pool, nil
 }
 
 // cached returns the kept response body of the named request, or makes it once and keeps what
@@ -196,7 +220,12 @@ func cached(name string, request func() (*http.Request, error)) ([]byte, error) 
 		return nil, err
 	}
 	fmt.Fprintln(os.Stderr, name+":", r.Method, r.URL)
-	response, err := (&http.Client{Timeout: 60 * time.Second}).Do(r)
+	roots, err := appleRoot()
+	if err != nil {
+		return nil, err
+	}
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{RootCAs: roots}}
+	response, err := (&http.Client{Timeout: 60 * time.Second, Transport: transport}).Do(r)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
