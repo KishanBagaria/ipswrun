@@ -59,6 +59,6 @@ jobs:
           path: ${{ runner.temp }}/ipswrun-matrix
           key: matrix-${{ runner.os }}-${{ hashFiles('examples/*.c', 'examples/*.m', 'examples/*.swift', 'examples/Makefile') }}
           restore-keys: matrix-${{ runner.os }}-
-      - run: examples/matrix.sh --guest=crypto,threads,swiftasync,ipc,service,client,prefs 15.0 27.2
+      - run: examples/matrix.sh --guest=crypto,threads,swiftasync,ipc,service,client,prefs,adi 15.0 27.2
         env:
           IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix

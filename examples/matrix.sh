@@ -111,6 +111,8 @@ for guest in ${guests//,/ }; do
 	# client is run beside the server whose services it uses, and prefs beside the release's own
 	# cfprefsd, in both of its roles.
 	[ "$guest" != client ] || options=(--agent com.example.ipswrun.echo,com.example.ipswrun.reverse=examples/bin/server)
+	# adi is run beside the release's adid, the daemon it asks.
+	[ "$guest" != adi ] || options=(--daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid)
 	[ "$guest" != prefs ] || options=(--agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon')
 
 	# At most $jobs at once: when that many are running, wait for the oldest.

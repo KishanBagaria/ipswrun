@@ -109,6 +109,18 @@ The other guest can be the release's own daemon. Preferences are kept by `cfpref
           --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon' 27.2.1 examples/bin/prefs
 ```
 
+A daemon decides whom it serves by what the client's code signature says, and a guest is whatever it was signed as. [`examples/adi.c`](examples/adi.c) is signed with the entitlement that `adid`, the daemon behind an Apple ID's one-time passwords, asks its clients for, and is answered:
+
+```sh
+./ipswrun --daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid 27.2.1 examples/bin/adi
+```
+
+```
+adid: status -45061 (not provisioned), 4 bytes
+```
+
+That is as far as it goes: to provision, `adid` needs a kernel extension (see [Drivers](#what-does-not-work)).
+
 The run is the first guest's: its output, its exit status, and it ends when that guest exits, once the others have finished what they were doing or five seconds have passed. What another guest writes to its standard output or error is shown on standard error under its name. `--trace` shows the calls of every guest, each under its name, and what the XPC messages between them say.
 
 ## Options
@@ -155,7 +167,7 @@ The run is the first guest's: its output, its exit status, and it ends when that
 
 ## What is tested
 
-Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency, Mach messages with what is built on them (libdispatch sources, `CFRunLoop`, XPC), a Mach service with its client in one process and in two, and preferences kept by the release's `cfprefsd`. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
+Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency, Mach messages with what is built on them (libdispatch sources, `CFRunLoop`, XPC), a Mach service with its client in one process and in two, preferences kept by the release's `cfprefsd`, and the release's `adid` answering a client entitled to ask it. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
 
 ## How it works
 
