@@ -34,12 +34,6 @@ const (
 var machHandlers map[string]handler
 
 func init() {
-	portOut := func(arg int) func(*Process, []uint64) int64 {
-		return func(p *Process, a []uint64) int64 {
-			p.write(a[arg], le32(p.newPort()))
-			return 0
-		}
-	}
 	machHandlers = map[string]handler{
 		"task_self": {0, constant(0x203)}, "thread_self": {0, machThreadSelf}, "host_self": {0, constant(hostPort)},
 		"reply_port": {0, machNewReceive}, "thread_get_special_reply_port": {0, machSpecialReplyPort},
@@ -52,7 +46,7 @@ func init() {
 		"port_request_notification":         {7, machPortRequestNotification},
 		"task_dyld_process_info_notify_get": {2, constant(kernFailure)}, // nobody is watching
 		"timebase_info":                     {1, machTimebaseInfo}, "generate_activity_id": {3, machGenerateActivityID},
-		"host_create_mach_voucher": {4, portOut(3)}, "swtch_pri": {1, sysYield}, "swtch": {0, sysYield}, "thread_switch": {3, sysYield},
+		"host_create_mach_voucher": {4, machVoucher}, "swtch_pri": {1, sysYield}, "swtch": {0, sysYield}, "thread_switch": {3, sysYield},
 		"mk_timer_create": {0, machNewReceive}, "mk_timer_destroy": {1, machTimerDestroy}, "mk_timer_arm": {2, machTimerArm},
 		"mk_timer_arm_leeway": {4, machTimerArmLeeway}, "mk_timer_cancel": {2, machTimerCancel}, "semaphore_signal": {1, machSemaphoreSignal},
 		"semaphore_signal_all": {1, machSemaphoreSignalAll}, "semaphore_wait": {1, machSemaphoreWait},
@@ -287,6 +281,12 @@ func migCode(code uint32) migReply {
 func migData(out []byte) migReply { return migReply{body: append(migCode(0).body, out...)} }
 
 // migPort is a reply moving one port right.
+// machVoucher (host_create_mach_voucher) gives out a name for a voucher, which is nothing more.
+func machVoucher(p *Process, a []uint64) int64 {
+	p.write(a[3], le32(p.newPort()))
+	return 0
+}
+
 func migPort(name uint32) migReply {
 	return migReply{body: append(le32(1), portDescriptor(name, moveSend)...), port: true}
 }

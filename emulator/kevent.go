@@ -99,12 +99,11 @@ type kqueue struct {
 	ports   map[watchKey]kevent // the ports and sets it watches (see ports.go)
 	ready   []kevent            // events that happened and have not been handed to a thread yet
 
-	// Of a workloop: its request for a thread, whether that is waiting to be answered, the thread
-	// that answered the last one, and the turns given to threads that had not asked yet.
-	request   *kevent
-	requested bool
-	servicer  *thread
-	woken     map[uint64]bool
+	// Of a workloop: its request for a thread while that waits to be answered, the thread that
+	// answered the last one, and the turns given to threads that had not asked yet.
+	request  *kevent
+	servicer *thread
+	woken    map[uint64]bool
 }
 
 type timer struct {
@@ -221,14 +220,14 @@ func (p *Process) timerDeadline(c kevent) time.Time {
 func (p *Process) changeWorkloop(q *kqueue, c kevent) {
 	switch {
 	case c.fflags&noteThreadRequest != 0 && c.flags&evDelete != 0:
-		q.request, q.requested = nil, false
+		q.request = nil
 	case c.fflags&noteThreadRequest != 0 && p.stale(c):
 		// The queue is no longer in the state its owner asked for a thread in: another thread
 		// took the work meanwhile, and one started now would find a queue that is not its own.
 		p.note("  the workloop's state has changed since: no thread")
 	case c.fflags&noteThreadRequest != 0:
 		request := c
-		q.request, q.requested = &request, true
+		q.request = &request
 	case c.fflags&noteSyncWake != 0:
 		// The thread given the workloop may not have asked for it yet.
 		for _, t := range p.waiters(waitWorkloop, q.id) {
@@ -298,11 +297,11 @@ func (p *Process) serve(now time.Time) (next time.Time) {
 			}
 		}
 		p.watched(q)
-		if q.servicer != nil || !q.requested && len(q.ready) == 0 {
+		if q.servicer != nil || q.request == nil && len(q.ready) == 0 {
 			continue
 		}
 		events, priority := q.ready, uint64(0)
-		if q.requested {
+		if q.request != nil {
 			events = append([]kevent{*q.request}, events...)
 		}
 		later := events[min(len(events), workerEvents):] // more than a thread is given at once
@@ -311,7 +310,7 @@ func (p *Process) serve(now time.Time) (next time.Time) {
 			priority = max(priority, uint64(event.qos))
 		}
 		if t := p.startWorker(priority, q, events); t != nil {
-			q.ready, q.requested = slices.Clone(later), false
+			q.ready, q.request = slices.Clone(later), nil
 			if q.id != 0 {
 				q.servicer = t
 			}

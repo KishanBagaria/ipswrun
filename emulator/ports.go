@@ -242,11 +242,6 @@ func (p *Process) sendRight(q *port) uint32 {
 	return p.giveOut(carried{port: q, disposition: moveSend}, nil)
 }
 
-// sendOnce names, for the process, a new right to send to q once.
-func (p *Process) sendOnce(q *port) uint32 {
-	return p.giveOut(carried{port: q, disposition: moveSendOnce}, nil)
-}
-
 // enqueue queues on q a message that is not a guest's own: the kernel's (sender 0) or launchd's.
 func enqueue(q *port, bits, id uint32, body []byte, sender uint32) {
 	post(q, machMessage{data: append(header(bits, uint32(24+len(body)), 0, id), body...), sender: sender})

@@ -58,13 +58,18 @@ type fd struct {
 }
 
 func (f *fd) size() int64 {
-	switch {
-	case f.kind == cacheFD:
+	if f.kind == cacheFD {
 		return f.cache.Size()
-	case f.shared != nil:
-		return int64(len(f.shared.data))
 	}
-	return int64(len(f.data))
+	return int64(len(f.bytes()))
+}
+
+// bytes are what a descriptor of bytes holds: the shared memory it names, if it names any.
+func (f *fd) bytes() []byte {
+	if f.shared != nil {
+		return f.shared.data
+	}
+	return f.data
 }
 
 // pread returns up to n bytes at off, or a negated errno.
@@ -84,10 +89,7 @@ func (f *fd) pread(off, n uint64) ([]byte, int64) {
 		}
 		return data, 0
 	case dataFD:
-		data := f.data
-		if f.shared != nil {
-			data = f.shared.data
-		}
+		data := f.bytes()
 		off = min(off, uint64(len(data)))
 		return data[off:min(off+min(n, 1<<40), uint64(len(data)))], 0
 	}

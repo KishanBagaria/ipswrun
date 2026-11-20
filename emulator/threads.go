@@ -321,7 +321,7 @@ func (p *Process) contended() bool {
 		}
 	}
 	for _, q := range p.kqueues {
-		if q.requested || len(q.ready) > 0 || len(q.timers) > 0 || len(q.ports) > 0 {
+		if q.request != nil || len(q.ready) > 0 || len(q.timers) > 0 || len(q.ports) > 0 {
 			return true
 		}
 	}

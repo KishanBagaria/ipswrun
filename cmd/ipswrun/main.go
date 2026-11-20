@@ -493,15 +493,12 @@ URL of any restore image, or several of these separated by commas.`)
 			if err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath)); err == nil {
 				mounts, err = parseMounts(len(releases), mountValues)
 			}
-			for _, given := range []struct {
-				flag   string
-				values list
-			}{{"agent", agentValues}, {"daemon", daemonValues}} {
-				if err != nil {
-					break
-				}
+			if err == nil {
+				daemons, err = parseDaemons("agent", agentValues)
+			}
+			if err == nil {
 				var more []emulator.Guest
-				more, err = parseDaemons(given.flag, given.values)
+				more, err = parseDaemons("daemon", daemonValues)
 				daemons = append(daemons, more...)
 			}
 		}
