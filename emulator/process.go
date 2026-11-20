@@ -228,6 +228,7 @@ type Process struct {
 	nextPort uint32
 
 	exited    bool
+	early     bool // it exited while the guest the run is for was still running
 	exitCode  int
 	fault     string
 	faultKind StopKind // of the stop that set fault, carried out of the hook it happened in
@@ -409,6 +410,10 @@ func (p *Process) Label() string { return p.label }
 
 // ExitCode is the guest's exit status; ok is false if it never exited.
 func (p *Process) ExitCode() (code int, ok bool) { return p.exitCode, p.exited }
+
+// LeftEarly reports whether a guest that was started beside the main one exited before it did:
+// not when it was asked to, at the end, but while it may still have been needed.
+func (p *Process) LeftEarly() bool { return p.early }
 
 // Stdout is everything the guest wrote to file descriptor 1.
 func (p *Process) Stdout() string { return p.stdout.String() }

@@ -27,6 +27,7 @@ type kevent struct {
 const (
 	keventSize = 72
 
+	filterSignal   = -6
 	filterTimer    = -7
 	filterMachport = -8
 	filterUser     = -10
@@ -87,11 +88,12 @@ func (k kevent) bytes() []byte {
 
 // kqueue is the work queue's kqueue (id 0) or a workloop's.
 type kqueue struct {
-	id     uint64
-	timers map[uint64]*timer
-	users  map[uint64]kevent   // events that happen when the guest says so
-	ports  map[watchKey]kevent // the ports and sets it watches (see ports.go)
-	ready  []kevent            // events that happened and have not been handed to a thread yet
+	id      uint64
+	timers  map[uint64]*timer
+	users   map[uint64]kevent   // events that happen when the guest says so
+	signals map[uint64]kevent   // the signals it is to be told of, by number
+	ports   map[watchKey]kevent // the ports and sets it watches (see ports.go)
+	ready   []kevent            // events that happened and have not been handed to a thread yet
 
 	// Of a workloop: its request for a thread, whether that is waiting to be answered, the thread
 	// that answered the last one, and the turns given to threads that had not asked yet.
@@ -110,7 +112,7 @@ type timer struct {
 func (p *Process) kqueue(id uint64) *kqueue {
 	q := p.kqueues[id]
 	if q == nil {
-		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, ports: map[watchKey]kevent{}, woken: map[uint64]bool{}}
+		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, signals: map[uint64]kevent{}, ports: map[watchKey]kevent{}, woken: map[uint64]bool{}}
 		p.kqueues[id] = q
 	}
 	return q
@@ -157,6 +159,12 @@ func (p *Process) change(q *kqueue, changes []kevent) {
 			}
 			if ok && c.fflags&noteTrigger != 0 {
 				q.ready = append(q.ready, registered)
+			}
+		case filterSignal:
+			if c.flags&evDelete != 0 {
+				delete(q.signals, c.ident)
+			} else if c.flags&evAdd != 0 {
+				q.signals[c.ident] = c
 			}
 		case filterMachport:
 			p.changeMachport(q, c)
@@ -241,6 +249,22 @@ func (p *Process) changeWorkloop(q *kqueue, c kevent) {
 func (p *Process) stale(c kevent) bool {
 	addr, mask, value := c.ext[1], c.ext[2], c.ext[3]
 	return addr != 0 && p.u64(addr)&mask != value&mask
+}
+
+// signalled tells every kqueue of the process that watches for a signal that it was sent, and
+// reports whether any does. The only signal there is anyone to send is the one that asks a
+// process to end (see Machine.exit): nothing is done to a process that does not watch for it.
+func (p *Process) signalled(number uint64) bool {
+	told := false
+	for _, q := range p.kqueues {
+		if event, ok := q.signals[number]; ok {
+			event.flags &^= evAdd | evEnable
+			event.data = 1 // how many times
+			q.ready = append(q.ready, event)
+			told = true
+		}
+	}
+	return told
 }
 
 // serve starts work queue threads for the kqueues that have something for one, and reports when

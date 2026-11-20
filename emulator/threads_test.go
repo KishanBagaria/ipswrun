@@ -98,6 +98,12 @@ func TestThreads(t *testing.T) {
 		if due := time.Until(q.timers[1].deadline); due < 900*time.Millisecond || due > 1100*time.Millisecond {
 			t.Errorf("a timer a second of ticks away is due in %v", due)
 		}
+		// A signal that is watched for is an event when it is sent, and one that is not is nothing.
+		p.change(q, []kevent{{ident: sigTERM, filter: filterSignal, flags: evAdd | evEnable, udata: 9}})
+		if p.signalled(3) || !p.signalled(sigTERM) || len(q.ready) != 1 || q.ready[0].udata != 9 || q.ready[0].data != 1 || q.ready[0].flags&evAdd != 0 {
+			t.Errorf("after SIGTERM: %+v", q.ready)
+		}
+		q.ready = nil
 		if next := p.serve(time.Now()); next.IsZero() || len(q.ready) != 0 {
 			t.Errorf("a timer that is not due: next %v, %d events ready", next, len(q.ready))
 		}

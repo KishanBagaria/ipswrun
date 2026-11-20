@@ -141,13 +141,22 @@ func (m *Machine) Run(timeout time.Duration) (err error) {
 // exit is what follows a process's end, however it came to it: its rights end with it, and if
 // it is the guest the run is for, the others have only a while longer.
 func (m *Machine) exit(p *Process, how string) {
-	p.exited = true
+	p.exited, p.early = true, !m.procs[0].exited
 	p.note("exited %s", how)
 	p.reap()
 	if p == m.procs[0] {
+		// The others are asked to end, as launchd asks its daemons when they are no longer
+		// wanted, and have a while to do what they do about that.
 		m.settling = time.Now().Add(settleTime)
+		for _, other := range m.procs {
+			if !other.exited && other.signalled(sigTERM) {
+				other.note("sent SIGTERM")
+			}
+		}
 	}
 }
+
+const sigTERM = 15
 
 // settleTime is how long the daemons may go on after the guest has exited. What a daemon was
 // asked to do it may do later, as cfprefsd writes preferences a moment after it is given them,
