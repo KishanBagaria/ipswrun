@@ -79,7 +79,7 @@ clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains -o guest guest.
 
 `-no_fixup_chains` is what lets every release's dyld load it. A binary with only arm64e code, as Apple's own are, is loaded too. [`examples/Makefile`](examples/Makefile) has the flags for Objective-C and Swift too.
 
-An executable can also be the release's own, by `system:` and its path there: `system:/usr/sbin/notifyd`.
+An executable can also be the release's own, by `system:` and its path there: `system:/usr/libexec/dirhelper`.
 
 What the guest gets:
 
