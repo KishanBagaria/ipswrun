@@ -223,10 +223,12 @@ func (p *Process) send(m message) int64 {
 	}
 	if q != nil {
 		said := ""
-		if p.trace { // what an XPC message says, read before its rights are taken out of it
+		if p.trace { // what the message says, read before its rights are taken out of it
 			if ports, payload, ok := xpcBody(m.bits, body); ok {
 				if d, err := xpcDecode(payload, ports); err == nil {
 					said = ": " + d.String()
+				} else if len(body) <= 24+64 { // not XPC, and short: as it is
+					said = fmt.Sprintf(": %x", body[24:])
 				}
 			}
 		}

@@ -2,6 +2,6 @@
   "build": "26B131",
   "cache_uuid": "C208F2EB-29B0-3D9E-BA56-45FD90E37B16",
   "exit_code": 0,
-  "output": "adid: status -45061 (not provisioned), 4 bytes\n",
+  "output": "adid, by XPC: status -45061 (not provisioned), 4 bytes\n",
   "version": "27.2.1"
 }
