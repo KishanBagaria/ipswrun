@@ -79,7 +79,7 @@ clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains -o guest guest.
 
 `-no_fixup_chains` is what lets every release's dyld load it. A binary with only arm64e code, as Apple's own are, is loaded too. [`examples/Makefile`](examples/Makefile) has the flags for Objective-C and Swift too.
 
-An executable can also be the release's own, by `system:` and its path there: `system:/usr/sbin/cfprefsd`.
+An executable can also be the release's own, by `system:` and its path there: `system:/usr/sbin/notifyd`.
 
 What the guest gets:
 
@@ -102,22 +102,7 @@ echo 2: "AND AGAIN", the server's request 2; it is another process: 1, and it kn
 reverse: answer 101 with 70000 bytes, reversed: 1, in memory of its own: 1; the server knows this process: 1
 ```
 
-The other guest can be the release's own daemon. [`examples/prefs.c`](examples/prefs.c) keeps its preferences with that release's `cfprefsd`:
-
-```sh
-./ipswrun --agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' \
-          --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon' 27.2.1 examples/bin/prefs
-```
-
-[`examples/adi.c`](examples/adi.c) asks `adid`, the daemon behind an Apple ID's one-time passwords, for one. Since macOS 15 `adid` serves only a client signed as entitled to ask, so the guest is:
-
-```sh
-./ipswrun --daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid 27.2.1 examples/bin/adi
-```
-
-```
-adid, by XPC: status -45061 (not provisioned), 4 bytes
-```
+The other guest can be one of the release's own daemons, which decides whom it serves by what the client's code signature says: [`examples/prefs.c`](examples/prefs.c) and [`examples/adi.c`](examples/adi.c) each run beside one.
 
 The run is the first guest's: its output and its exit status. When it exits, the others are sent SIGTERM if they watch for it and have five seconds to finish. What they wrote is shown on standard error under their names, and `--trace` shows every guest's calls and what the messages between them say.
 
@@ -154,7 +139,7 @@ The run is the first guest's: its output and its exit status. When it exits, the
 
 - **Threads that never wait.** Threads take turns, those of every guest together: one runs until it waits for something (a lock, a condition, a semaphore, a queue, a timer), yields or ends, and only then does another. POSIX threads and libdispatch queues, groups, semaphores and timers work this way. A thread that spins without a system call until another thread does something waits forever, and a run where no thread can go on stops and lists what each was waiting for. Read-write locks that have to wait, signals between threads and thread cancellation are not there.
 - **Processes nobody started, and the network.** The processes are the guests the command line names: a guest cannot start another (`fork`, `posix_spawn`). Between them, and inside each, Mach messages are real: ports and port sets, messages that wait to be received and receives that wait for them, memory and rights sent along, the notifications of a port losing its senders or its receiver, and on top of those libdispatch's Mach sources, `CFRunLoop` with its timers and ports, and XPC connections. A service exists if a guest provides it (`--service`, `--agent`, `--daemon`). A guest is told the sender's pid and user (root, or the one user there is) and what its code signature says: nothing checks a signature, so a guest is whatever it was signed as. Of the events libdispatch can wait for, timers, Mach messages and the SIGTERM at the end of a run happen: not files, sockets or processes. `select` finds nothing ready.
-- **Drivers.** A guest can search IOKit, open a service and call its methods, but the kernel here has no services: every search finds nothing, as where the driver is not loaded. A program using the [`emulator`](emulator) package can give the machine a `Driver`; `ipswrun` gives it none. So `fairplayd` exits, and `adid` from macOS 13.6 on cannot provision. On any release provisioning also takes what Apple's servers send, and a guest has no network.
+- **Drivers.** A guest can search IOKit, open a service and call its methods, but the kernel here has no services: every search finds nothing, as where the driver is not loaded. A program using the [`emulator`](emulator) package can give the machine a `Driver`; `ipswrun` gives it none.
 - **Memory sent in a message** arrives as a copy. Memory mapped a second time is one memory (`shm_open`, `mach_make_memory_entry`, `mach_vm_remap`), in one guest or several, except memory of the shared cache or already shared in part.
 - **Anything that needs a daemon that is not there.** Without `cfprefsd`, `NSUserDefaults` reads back nothing. With it, preferences are set and read back but never reach the home, for a reason not yet found, and on macOS 11 to 12.0.1 synchronizing reports failure. `SecKeyCreateRandomKey` fails unless the key is made the iOS way (`kSecUseDataProtectionKeychain`, not permanent), because the macOS default is the legacy CDSA stack behind `securityd`.
 - **Files outside the home.** What the guest writes outside `--home` and the `--mount` directories never reaches the host, and it can read system files only from the `--system` allowlist.
@@ -165,7 +150,7 @@ The run is the first guest's: its output and its exit status. When it exits, the
 
 ## What is tested
 
-Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency, Mach messages with what is built on them (libdispatch sources, `CFRunLoop`, XPC), a Mach service with its client in one process and in two, and the release's own `cfprefsd` and `adid` serving a client. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
+Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency, Mach messages with what is built on them (libdispatch sources, `CFRunLoop`, XPC), a Mach service with its client in one process and in two, and daemons of the release's own serving a client. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
 
 ## How it works
 
