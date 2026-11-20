@@ -1,6 +1,7 @@
 package emulator
 
 import (
+	"maps"
 	"slices"
 	"time"
 )
@@ -61,8 +62,9 @@ const (
 
 func (p *Process) readKevents(addr, n uint64) []kevent {
 	out := make([]kevent, min(n, 64))
+	all := p.read(addr, uint64(len(out))*keventSize)
 	for i := range out {
-		b := p.read(addr+uint64(i)*keventSize, keventSize)
+		b := all[i*keventSize:]
 		out[i] = kevent{ident: le.Uint64(b), filter: int16(le.Uint16(b[8:])), flags: le.Uint16(b[10:]), qos: le.Uint32(b[12:]),
 			udata: le.Uint64(b[16:]), fflags: le.Uint32(b[24:]), xflags: le.Uint32(b[28:]), data: int64(le.Uint64(b[32:])),
 			ext: [4]uint64{le.Uint64(b[40:]), le.Uint64(b[48:]), le.Uint64(b[56:]), le.Uint64(b[64:])}}
@@ -71,9 +73,11 @@ func (p *Process) readKevents(addr, n uint64) []kevent {
 }
 
 func (p *Process) writeKevents(addr uint64, events []kevent) {
-	for i, event := range events {
-		p.write(addr+uint64(i)*keventSize, event.bytes())
+	b := make([]byte, 0, len(events)*keventSize)
+	for _, event := range events {
+		b = append(b, event.bytes()...)
 	}
+	p.write(addr, b)
 }
 
 func (k kevent) bytes() []byte {
@@ -271,21 +275,14 @@ func (p *Process) signalled(number uint64) bool {
 // the next timer is due (zero: none is armed).
 func (p *Process) serve(now time.Time) (next time.Time) {
 	next = p.fireTimers(now)
-	ids := make([]uint64, 0, len(p.kqueues))
-	for id := range p.kqueues {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	for _, id := range ids {
+	for _, id := range slices.Sorted(maps.Keys(p.kqueues)) {
 		q := p.kqueues[id]
 		for ident, t := range q.timers {
 			if !t.armed {
 				continue
 			}
 			if t.deadline.After(now) {
-				if next.IsZero() || t.deadline.Before(next) {
-					next = t.deadline
-				}
+				next = earlier(next, t.deadline)
 				continue
 			}
 			fired := t.event

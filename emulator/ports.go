@@ -577,8 +577,8 @@ func (p *Process) fireTimers(now time.Time) (next time.Time) {
 		case !r.receive || q.due.IsZero():
 		case !q.due.After(now):
 			due = append(due, q)
-		case next.IsZero() || q.due.Before(next):
-			next = q.due
+		default:
+			next = earlier(next, q.due)
 		}
 	}
 	slices.SortFunc(due, func(a, b *port) int { return a.due.Compare(b.due) })
@@ -703,8 +703,7 @@ func post(q *port, m machMessage) {
 		if at == nil {
 			continue
 		}
-		if w := owner.waiters(waitPort, uint64(at.name)); len(w) > 0 {
-			t := w[0]
+		if t := owner.firstWaiter(waitPort, uint64(at.name)); t != nil {
 			// The room it gave may not be memory it has: that is its receive failing, not this send.
 			into := handler{fn: func(p *Process, _ []uint64) int64 { return p.hand(q, *t.receiving) }}
 			t.answer = &result{x0: uint64(owner.call(into, nil, rcvInvalidData))}

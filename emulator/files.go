@@ -741,7 +741,7 @@ var volumes = []volume{{deviceID + 1, preboot, "/dev/disk1s2"}, {deviceID, "/", 
 // volumeOf is the volume a canonical guest path is on.
 func volumeOf(path string) volume {
 	for _, v := range volumes {
-		if path == v.mount || strings.HasPrefix(path, v.mount+"/") {
+		if under(path, v.mount) {
 			return v
 		}
 	}

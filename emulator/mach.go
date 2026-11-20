@@ -291,6 +291,11 @@ func migPort(name uint32) migReply {
 	return migReply{body: append(le32(1), portDescriptor(name, moveSend)...), port: true}
 }
 
+// migPortData is a reply of a port and data after it.
+func migPortData(name uint32, data []byte) migReply {
+	return migReply{body: append(append(migPort(name).body, ndr...), data...), port: true}
+}
+
 // answer queues the reply to a message on the port its sender gave for one, if it gave one.
 func (p *Process) answer(m message, id uint32, reply migReply, sender uint32) {
 	to := p.takeIn(m.local, m.bits>>8&0x1F).port
@@ -386,7 +391,7 @@ func migMakeMemoryEntry(p *Process, body []byte) migReply {
 	entry.of.retain()
 	name := p.sendRight(&port{m: p.m, memory: entry})
 	p.note("  mach_make_memory_entry(%#x, %#x, %#x) = %#x", offset, size, how, name)
-	return migReply{body: append(append(migPort(name).body, ndr...), le64(size)...), port: true}
+	return migPortData(name, le64(size))
 }
 
 func migVMMap(p *Process, body []byte) migReply { // mach_vm_map

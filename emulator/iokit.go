@@ -184,7 +184,7 @@ func (o ioService) request(p *Process, id uint32, body []byte) (migReply, bool) 
 	if code == 0 {
 		connection = p.kernelRight(&ioConnection{client: client})
 	}
-	return migReply{body: append(append(migPort(connection).body, ndr...), le32(code)...), port: true}, true
+	return migPortData(connection, le32(code)), true
 }
 
 // ioClient is the process as a driver sees it.
