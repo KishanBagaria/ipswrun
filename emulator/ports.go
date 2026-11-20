@@ -512,7 +512,7 @@ func machNewReceive(p *Process, a []uint64) int64 { return int64(p.newReceive().
 
 // machSpecialReplyPort is the one port a thread waits on for the answer to a synchronous message.
 func machSpecialReplyPort(p *Process, a []uint64) int64 {
-	if t := p.current; t.reply == 0 {
+	if t := p.current; p.owned(t.reply) == nil { // none yet, or the one it had was destroyed
 		t.reply = p.newReceive().name
 	}
 	return int64(p.current.reply)

@@ -1,6 +1,6 @@
 # Guests for ipswrun. Chained fixups are turned off so that every release's dyld can load them.
 TARGET = -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains
-GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service client prefs
+GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service client prefs adi
 # What a guest is run beside, and not by itself.
 DAEMONS = server
 
@@ -15,6 +15,12 @@ bin/client: | bin/server
 
 bin/%: %.c | bin
 	clang $(TARGET) -o $@ $< $(LIBS)
+
+# adid serves a client that is signed as entitled to it. The signature is ad hoc: nothing here
+# checks one, and a Mac will not let this run as the client it claims to be.
+bin/adi: adi.c adi.entitlements | bin
+	clang $(TARGET) -o $@ $<
+	codesign --force --sign - --entitlements adi.entitlements $@
 
 bin/%: %.m | bin
 	clang $(TARGET) -fobjc-arc -O1 -framework Foundation $(LIBS) -o $@ $<
