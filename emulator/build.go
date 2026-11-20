@@ -19,17 +19,11 @@ import (
 // CacheName is the file name of the arm64e dyld shared cache; subcaches add a suffix.
 const CacheName = "dyld_shared_cache_arm64e"
 
-// BaseEnv is the environment every guest gets: no allocator features that need address space or
-// kernel support the emulator lacks, and the emulated home.
-var BaseEnv = []string{"MallocNanoZone=0", "MallocDeferredReclaim=0", "HOME=" + GuestHome, "TMPDIR=" + GuestHome + "/tmp/"}
-
-// noPreferencesEnv is added for a run without the daemon that keeps preferences, cfprefsd: it
-// has CoreFoundation read and write them in the process itself. The fixed home does that too,
-// which is why a run with the daemon has to do without it.
-var noPreferencesEnv = []string{"__CFPREFERENCES_AVOID_DAEMON=1", "CFFIXED_USER_HOME=" + GuestHome}
-
-// preferencesAgent is the service of cfprefsd that keeps a user's preferences.
-const preferencesAgent = "com.apple.cfprefsd.agent"
+// BaseEnv is the environment every guest gets: no preference daemon, no allocator features that
+// need address space or kernel support the emulator lacks, and the emulated home. A run that
+// has what one of these stands in for takes it out again (see Run.Env).
+var BaseEnv = []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "MallocDeferredReclaim=0", "HOME=" + GuestHome,
+	"CFFIXED_USER_HOME=" + GuestHome, "TMPDIR=" + GuestHome + "/tmp/"}
 
 // DefaultSystem is what a guest may read from the build's system volume unless told otherwise:
 // the feature flags, the system version, ICU's data (locales, calendars, time zones) and the
@@ -38,7 +32,7 @@ var DefaultSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/C
 	"/usr/lib/libobjc-trampolines.dylib"}
 
 // SystemPrefix starts the name of an executable that is taken from the build's system volume
-// and not from the host: system:/usr/sbin/cfprefsd.
+// and not from the host: system:/usr/libexec/dirhelper.
 const SystemPrefix = "system:"
 
 // Run describes one guest execution against a build.
@@ -53,7 +47,7 @@ type Run struct {
 	// launchd's is, or as the guest's user, as an agent. Their environment is the guest's.
 	Daemons []Guest
 	Drivers []Driver      // the kernel's services, which guests reach through IOKit: none unless given
-	Env     []string      // added to BaseEnv, for every guest
+	Env     []string      // for every guest: KEY=VALUE is added to BaseEnv, and KEY alone is taken out of it
 	System  []string      // system-volume files and directory prefixes (ending in "/") the guest may read; DefaultSystem if empty
 	Timeout time.Duration // for the whole run
 	Trace   bool          // print every system call to stderr
@@ -211,10 +205,13 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		return nil, cache, err
 	}
 	env := slices.Clone(BaseEnv)
-	if !slices.ContainsFunc(run.Daemons, func(d Guest) bool { return slices.Contains(d.Services, preferencesAgent) }) {
-		env = append(env, noPreferencesEnv...)
+	for _, change := range run.Env {
+		if name, _, set := strings.Cut(change, "="); set {
+			env = append(env, change)
+		} else {
+			env = slices.DeleteFunc(env, func(e string) bool { return strings.HasPrefix(e, name+"=") })
+		}
 	}
-	env = append(env, run.Env...)
 	guests := []Guest{{Executable: run.Executable, Args: run.Args, Env: env, Services: run.Services}}
 	for _, d := range run.Daemons {
 		d.Env = env

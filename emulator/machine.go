@@ -155,7 +155,7 @@ func (m *Machine) exit(p *Process, how string) {
 const sigTERM = 15
 
 // settleTime is how long the daemons may go on after the guest has exited. What a daemon was
-// asked to do it may do later, as cfprefsd writes preferences a moment after it is given them,
+// asked to do it may do later, as a daemon that keeps something writes it a moment after it is given,
 // and on a real system it is still there to do it. Here the run goes on until no daemon has
 // anything left to do or to wait for, or until this much time has passed.
 const settleTime = 5 * time.Second

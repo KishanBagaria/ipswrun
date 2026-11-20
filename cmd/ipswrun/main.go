@@ -65,7 +65,7 @@ func checkArgs(known []release, args []string, current, index func() ([]release,
 }
 
 // checkExecutable says what is wrong with the path of an executable on the host. One that is
-// taken from the release (system:/usr/sbin/cfprefsd) is looked for when the release is open.
+// taken from the release (system:/usr/libexec/dirhelper) is looked for when the release is open.
 func checkExecutable(path string) error {
 	if rest, ok := strings.CutPrefix(path, emulator.SystemPrefix); ok {
 		if !strings.HasPrefix(rest, "/") {
@@ -453,7 +453,7 @@ URL of any restore image, or several of these separated by commas.`)
 	flag.Var(&daemonValues, "daemon", "like --agent, for a guest that runs as root, as a daemon of the system does (repeatable)")
 	flag.Var(&services, "service", "name of a Mach service the guest provides, as a daemon does: it can check that name in, and look it up (repeatable)")
 	flag.Var(&mountValues, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
-	flag.Var(&env, "env", "KEY=VALUE added to the guest environment (repeatable)")
+	flag.Var(&env, "env", "KEY=VALUE added to the environment of every guest, or KEY alone taken out of it (repeatable)")
 	flag.Var(&system, "system", "system-volume file, or directory ending in /, the guest may read (repeatable; default: feature flags, SystemVersion.plist, /usr/share/icu/ and libobjc-trampolines.dylib; giving any replaces the default)")
 	device := flag.String("device", "Macmini9,1", "BuildManifest product used to pick disk images")
 	cache := flag.String("cache", "", "directory that keeps what was downloaded between runs (default: one in the system temporary directory, cleared on reboot)")
