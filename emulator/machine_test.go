@@ -10,7 +10,7 @@ import (
 func TestProcesses(t *testing.T) {
 	p := newProcess(t)
 	onMain(func() {
-		q, err := p.m.newProcess(p.exePath, p.exe)
+		q, err := p.m.newProcess(p.exePath, p.exe, GuestExe)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +91,7 @@ func TestProcesses(t *testing.T) {
 		// too little room only how much is needed, as a length after a magic number.
 		csops := number(t, "csops")
 		p.identity, p.entitlementsDER = "com.example.signed", []byte{0x70, 0x03, 0x02, 0x01, 0x01}
-		r, err := p.m.newProcess(p.exePath, p.exe)
+		r, err := p.m.newProcess(p.exePath, p.exe, GuestExe)
 		if err != nil {
 			t.Fatal(err)
 		}
