@@ -1,0 +1,111 @@
+package emulator
+
+// Research tooling, not to be committed: logs how a process uses a magic value.
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"sync"
+
+	"github.com/ebitengine/purego"
+)
+
+var probe struct {
+	once     sync.Once
+	callback uintptr
+	procs    map[uintptr]*Process
+	magic    []uint64
+	lines    int
+	seen     map[string]bool
+}
+
+func probeOnReceive(p *Process, id uint32) {
+	if os.Getenv("PROBECMP") != p.label || id != 1200 || probe.procs[p.uc.id] != nil {
+		return
+	}
+	probe.once.Do(func() {
+		probe.procs, probe.seen = map[uintptr]*Process{}, map[string]bool{}
+		m, _ := strconv.ParseUint(os.Getenv("PROBEMAGIC"), 0, 64)
+		sw := uint64(uint32(m)>>24 | uint32(m)>>8&0xFF00 | uint32(m)<<8&0xFF0000 | uint32(m)<<24)
+		probe.magic = []uint64{m, sw}
+		probe.callback = purego.NewCallback(func(_ uintptr, addr uint64, _ uint32, user uintptr) {
+			if q := probe.procs[user]; q != nil {
+				q.probeInsn(addr)
+			}
+		})
+	})
+	probe.procs[p.uc.id] = p
+	var hook uintptr
+	must(api.hookAdd(p.uc.uc, &hook, 4, probe.callback, p.uc.id, 1, 0), "hook code")
+	fmt.Fprintf(os.Stderr, "PROBE hook installed in %s for magic %#x\n", p.label, probe.magic)
+}
+
+var taint = map[uint64]bool{}
+var pendingRd = -1
+var pendingSF bool
+
+func (p *Process) probeInsn(addr uint64) {
+	if pendingRd >= 0 && pendingRd != 31 {
+		v := p.xr(uint32(pendingRd))
+		if !pendingSF {
+			v &= 0xFFFFFFFF
+		}
+		if v > 0xFFFF && v != 0xFFFFFFFF && v>>32 == 0 && len(taint) < 400 && !taint[v] {
+			taint[v] = true
+		}
+	}
+	pendingRd = -1
+	if probe.lines > 3000 {
+		return
+	}
+	if len(taint) == 0 {
+		taint[probe.magic[0]], taint[probe.magic[1]] = true, true
+	}
+	raw, err := p.uc.memRead(addr, 4)
+	if err != nil {
+		return
+	}
+	insn := le.Uint32(raw)
+	op := insn >> 24 & 0x1F
+	// data processing, register (01011, 01010, 11011, 11010) and immediate (100xx)
+	reg := op == 0x0B || op == 0x0A || op == 0x1B || op == 0x1A
+	imm := op&0x1C == 0x10
+	if !reg && !imm {
+		return
+	}
+	rd, rn, rm := insn&31, insn>>5&31, insn>>16&31
+	sf := insn>>31 == 1
+	val := func(r uint32) uint64 {
+		if r == 31 {
+			return 0
+		}
+		v := p.xr(r)
+		if !sf {
+			v &= 0xFFFFFFFF
+		}
+		return v
+	}
+	a, b := val(rn), uint64(0)
+	if reg {
+		b = val(rm)
+	}
+	ta, tb := taint[a&0xFFFFFFFF], reg && taint[b&0xFFFFFFFF]
+	if !ta && !tb {
+		return
+	}
+	cmp := rd == 31 && (insn&0x7F200000 == 0x6B000000 || insn&0x7F800000 == 0x71000000) || insn&0x7FE00410 == 0x7A400000
+	kind := "use"
+	if cmp {
+		kind = "CMP"
+	} else {
+		pendingRd, pendingSF = int(rd), sf
+	}
+	line := fmt.Sprintf("%s rn=%#x rm=%#x insn=%08x at %s", kind, a, b, insn, p.where(addr))
+	if probe.seen[line] {
+		return
+	}
+	probe.seen[line] = true
+	probe.lines++
+	fmt.Fprintln(os.Stderr, "PROBE "+line)
+}

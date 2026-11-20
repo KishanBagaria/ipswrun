@@ -1,0 +1,12 @@
+diff --git a/emulator/ports.go b/emulator/ports.go
+index cee0410..432577e 100644
+--- a/emulator/ports.go
++++ b/emulator/ports.go
+@@ -778,6 +778,7 @@ func (p *Process) hand(q *port, m message) int64 {
+ 		p.write(m.auxRcv, make([]byte, 8)) // its header, saying there is none
+ 	}
+ 	p.note("  mach_msg id %d received from port %#x: %d bytes", le.Uint32(next.data[20:]), q.name, len(next.data))
++	probeOnReceive(p, le.Uint32(next.data[20:]))
+ 	return 0
+ }
+ 
