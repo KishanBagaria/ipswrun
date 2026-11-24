@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"errors"
@@ -154,6 +155,34 @@ func removeTemps() {
 	}
 }
 
+// activeWorkers tracks running worker subprocesses so a terminating signal cleans them up.
+var activeWorkers struct {
+	sync.Mutex
+	cmds []*exec.Cmd
+}
+
+func trackWorker(cmd *exec.Cmd) {
+	activeWorkers.Lock()
+	activeWorkers.cmds = append(activeWorkers.cmds, cmd)
+	activeWorkers.Unlock()
+}
+
+func untrackWorker(cmd *exec.Cmd) {
+	activeWorkers.Lock()
+	activeWorkers.cmds = slices.DeleteFunc(activeWorkers.cmds, func(c *exec.Cmd) bool { return c == cmd })
+	activeWorkers.Unlock()
+}
+
+func killWorkers(sig syscall.Signal) {
+	activeWorkers.Lock()
+	defer activeWorkers.Unlock()
+	for _, c := range activeWorkers.cmds {
+		if c.Process != nil {
+			_ = c.Process.Signal(sig)
+		}
+	}
+}
+
 // dieOnSignal ends the process at Ctrl-C or a request to terminate, as the signal alone would,
 // but leaving no temporary directory behind.
 func dieOnSignal() {
@@ -161,6 +190,7 @@ func dieOnSignal() {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		received := (<-signals).(syscall.Signal)
+		killWorkers(received)
 		removeTemps()
 		// To die of the signal is what tells a shell to stop its loop. The exit is for a
 		// process that was started with the signal ignored, as a background job is, and waits
@@ -306,6 +336,12 @@ func (p *progress) clear() {
 	}
 }
 
+func (p *progress) erase() {
+	p.mu.Lock()
+	p.clear()
+	p.mu.Unlock()
+}
+
 func (p *progress) Write(b []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -328,16 +364,22 @@ func (p *progress) stop() {
 
 // options is what every release of a command line is run with.
 type options struct {
-	unicorn, cache, device    string
-	home, report              string // may contain {build} and {version}
-	guest                     string
-	args, env, system         []string
-	services                  []string
-	daemons                   []emulator.Guest
-	mounts                    []emulator.Mount // the host side may contain {build} and {version}
-	stream, trace, showStatus bool
-	missing, bisect           bool
-	timeout                   float64
+	runOptions
+	showStatus, bisect bool
+	jobs               int
+}
+
+// runOptions is what one release is run with: all a worker is sent.
+type runOptions struct {
+	Unicorn, Cache, Device string
+	Home, Report           string // may contain {build} and {version}
+	Guest                  string
+	Args, Env, System      []string
+	Services               []string
+	Daemons                []emulator.Guest
+	Mounts                 []emulator.Mount // the host side may contain {build} and {version}
+	Stream, Trace, Missing bool
+	Timeout                float64
 }
 
 // outcome is one release's run. A run that failed may still have output from before it stopped.
@@ -356,7 +398,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	defer status.stop()
 	// A failure ends with what to do about it, after everything that describes it.
 	failed := func(err error) outcome {
-		if line := fix(err, o.timeout, o.stream); line != "" {
+		if line := fix(err, o.Timeout, o.Stream); line != "" {
 			err = fmt.Errorf("%w\n%s", err, line)
 		}
 		out.err = err
@@ -364,7 +406,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	}
 	started := time.Now()
 	status.set(label+"opening the restore image", nil)
-	image, err := rangefs.Open(r.URL, o.cache, o.device)
+	image, err := rangefs.Open(r.URL, o.Cache, o.Device)
 	if err != nil {
 		return failed(err)
 	}
@@ -372,19 +414,19 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	if r.Build != "" && r.Build != image.Build() {
 		return failed(fmt.Errorf("the image at %s is build %s, not the %s it is listed as", r.URL, image.Build(), r.Build))
 	}
-	if o.stream {
+	if o.Stream {
 		image.AllowStreaming()
 	}
 	out.name = release{Version: image.Version(), Build: image.Build()}.name()
 	perRelease := strings.NewReplacer("{build}", image.Build(), "{version}", image.Version())
-	home := perRelease.Replace(o.home)
+	home := perRelease.Replace(o.Home)
 	if home == "" {
 		if home, err = tempDir("home-"); err != nil {
 			return failed(err)
 		}
 		defer os.RemoveAll(home)
 	}
-	mounts := slices.Clone(o.mounts)
+	mounts := slices.Clone(o.Mounts)
 	for i := range mounts {
 		mounts[i].Host = perRelease.Replace(mounts[i].Host)
 		if err := os.MkdirAll(mounts[i].Host, 0o777); err != nil {
@@ -396,8 +438,8 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		stats = image.Stats
 	}
 	status.set(label+out.name, stats)
-	machine, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Mounts: mounts, Services: o.services, Executable: o.guest, Args: o.args,
-		Daemons: o.daemons, Env: o.env, System: o.system, Timeout: time.Duration(o.timeout * float64(time.Second)), Trace: o.trace, Survey: o.missing, Notes: status})
+	machine, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.Unicorn, Home: home, Mounts: mounts, Services: o.Services, Executable: o.Guest, Args: o.Args,
+		Daemons: o.Daemons, Env: o.Env, System: o.System, Timeout: time.Duration(o.Timeout * float64(time.Second)), Trace: o.Trace, Survey: o.Missing, Notes: status})
 	status.stop()
 	pages := 0
 	if machine != nil {
@@ -416,16 +458,16 @@ func (o *options) runOne(r release, label string) (out outcome) {
 					stderr += fmt.Sprintf("ipswrun: %s exited with status %d while the guest was running\n", who, code)
 				}
 			}
-			if !o.trace { // tracing already echoed it
+			if !o.Trace { // tracing already echoed it
 				out.stderr += stderr
 			}
-			if o.missing {
+			if o.Missing {
 				if list := process.Unimplemented(); list != "" {
 					out.missing += "ipswrun: " + out.name + ": not implemented, and answered " + who + " with an error:\n" + list + "\n"
 				}
 			}
 		}
-		if o.missing && out.missing == "" {
+		if o.Missing && out.missing == "" {
 			out.missing = "ipswrun: " + out.name + ": every call made is implemented\n"
 		}
 	}
@@ -437,11 +479,11 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		return failed(err)
 	}
 	out.code, _ = machine.Main().ExitCode()
-	if o.report != "" {
+	if o.Report != "" {
 		requests, fetched := image.Stats()
 		data, _ := json.MarshalIndent(report{Version: image.Version(), Build: image.Build(), CacheUUID: formatUUID(dyldCache.UUID), ExitCode: out.code,
 			Pages: pages, Requests: requests, Bytes: fetched, Seconds: int(time.Since(started).Seconds())}, "", "  ")
-		if err := os.WriteFile(perRelease.Replace(o.report), append(data, '\n'), 0o666); err != nil {
+		if err := os.WriteFile(perRelease.Replace(o.Report), append(data, '\n'), 0o666); err != nil {
 			return failed(err)
 		}
 	}
@@ -483,14 +525,15 @@ func section(out outcome, same *outcome) string {
 	return head + "\n" + body
 }
 
-// runAll runs the guest against each release in turn. One release behaves as ipswrun always
-// has: the guest's output and nothing else, its exit status, an error if it never got to exit.
-// Several are printed as sections, a failure does not stop the ones after it, and the status is
-// 70 if any failed, else 1 if any guest exited with something other than 0.
+// runAll runs the guest against each release in turn (or concurrently with --jobs, or by binary
+// search with --bisect). One release behaves as ipswrun always has: the guest's output and
+// nothing else, its exit status, an error if it never got to exit. Several are printed as
+// sections, a failure does not stop the ones after it, and the status is 70 if any failed, else 1
+// if any guest exited with something other than 0.
 func (o *options) runAll(releases []release) (int, error) {
 	// Asking a compressed release for its cache would only fail, after fetching for it.
 	var skipped []string
-	if !o.stream {
+	if !o.Stream {
 		releases = slices.DeleteFunc(slices.Clone(releases), func(r release) bool {
 			if r.compressed() {
 				skipped = append(skipped, r.name())
@@ -501,7 +544,7 @@ func (o *options) runAll(releases []release) (int, error) {
 	if len(skipped) > 0 {
 		err := fmt.Errorf("not run: %s: the image of a macOS 13 or 14 release %w", strings.Join(skipped, ", "), rangefs.ErrCompressedMember)
 		if len(releases) == 0 {
-			return 0, fmt.Errorf("%w\n%s", err, fix(err, o.timeout, o.stream))
+			return 0, fmt.Errorf("%w\n%s", err, fix(err, o.Timeout, o.Stream))
 		}
 		defer fmt.Fprintf(os.Stderr, "ipswrun: %v; pass --stream-compressed to run them too\n", err)
 	}
@@ -517,24 +560,37 @@ func (o *options) runAll(releases []release) (int, error) {
 		os.Stderr.WriteString(out.stderr + out.missing)
 		return out.code, out.err
 	}
-	var shown *outcome
-	status := 0
-	for i, r := range releases {
-		out := o.runOne(r, fmt.Sprintf("%d/%d ", i+1, len(releases)))
-		os.Stdout.WriteString(section(out, shown))
-		os.Stderr.WriteString(out.stderr + out.missing)
-		switch {
-		case out.err != nil:
-			fmt.Fprintf(os.Stderr, "ipswrun: %s: %v\n", out.name, out.err)
-			status = 70
-		case !out.repeats(shown):
-			shown = &out
-		}
-		if out.code != 0 && status == 0 {
-			status = 1
-		}
+	if o.jobs > 1 && !o.Trace && len(releases) > 1 {
+		return o.runParallel(releases, o.runWorkerProcess, os.Stdout, os.Stderr), nil
 	}
-	return status, nil
+	shown := sections{stdout: os.Stdout, stderr: os.Stderr}
+	for i, r := range releases {
+		shown.add(o.runOne(r, fmt.Sprintf("%d/%d ", i+1, len(releases))))
+	}
+	return shown.status, nil
+}
+
+// sections prints runs in release order, each run whose output repeats the last one shown as only
+// a line saying so, and keeps the exit status: 70 if a run failed, 1 if a guest exited nonzero.
+type sections struct {
+	stdout, stderr io.Writer
+	shown          *outcome
+	status         int
+}
+
+func (s *sections) add(out outcome) {
+	fmt.Fprint(s.stdout, section(out, s.shown))
+	fmt.Fprint(s.stderr, out.stderr+out.missing)
+	switch {
+	case out.err != nil:
+		fmt.Fprintf(s.stderr, "ipswrun: %s: %v\n", out.name, out.err)
+		s.status = 70
+	case !out.repeats(s.shown):
+		s.shown = &out
+	}
+	if out.code != 0 && s.status == 0 {
+		s.status = 1
+	}
 }
 
 // bisectReleases binary-searches releases for the first release whose output or exit status
@@ -612,6 +668,135 @@ func pickMid(lo, hi int, tried []bool) int {
 	return -1
 }
 
+// workerEnv switches the executable into single-release worker mode for --jobs > 1, giving each
+// concurrent Unicorn instance its own process and main OS thread.
+const workerEnv = "IPSWRUN_WORKER"
+
+type workerJob struct {
+	Options runOptions `json:"options"`
+	Release release    `json:"release"`
+}
+
+type workerResult struct {
+	Name    string `json:"name"`
+	Stdout  string `json:"stdout"`
+	Stderr  string `json:"stderr"`
+	Missing string `json:"missing"`
+	Code    int    `json:"code"`
+	Err     string `json:"err,omitempty"`
+}
+
+func (o *options) runWorkerProcess(r release) outcome {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = os.Args[0]
+	}
+	payload, err := json.Marshal(workerJob{Options: o.runOptions, Release: r})
+	if err != nil {
+		return outcome{name: r.name(), err: err}
+	}
+	cmd := exec.Command(exe)
+	cmd.Env = append(os.Environ(), workerEnv+"=1")
+	cmd.Stdin = bytes.NewReader(payload)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
+	if err := cmd.Start(); err != nil {
+		return outcome{name: r.name(), err: fmt.Errorf("worker start: %w", err)}
+	}
+	trackWorker(cmd)
+	err = cmd.Wait()
+	untrackWorker(cmd)
+	if err != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg != "" {
+			return outcome{name: r.name(), err: fmt.Errorf("worker failed: %v: %s", err, msg)}
+		}
+		return outcome{name: r.name(), err: fmt.Errorf("worker failed: %w", err)}
+	}
+	var res workerResult
+	if err := json.Unmarshal(outBuf.Bytes(), &res); err != nil {
+		return outcome{name: r.name(), err: fmt.Errorf("worker reply: %w", err)}
+	}
+	out := outcome{name: res.Name, stdout: res.Stdout, stderr: res.Stderr, missing: res.Missing, code: res.Code}
+	if res.Err != "" {
+		out.err = errors.New(res.Err)
+	}
+	return out
+}
+
+func runWorker() int {
+	dieOnSignal()
+	defer removeTemps()
+	var job workerJob
+	if err := json.NewDecoder(os.Stdin).Decode(&job); err != nil {
+		fmt.Fprintf(os.Stderr, "ipswrun worker: %v\n", err)
+		return 70
+	}
+	out := (&options{runOptions: job.Options}).runOne(job.Release, "")
+	res := workerResult{Name: out.name, Stdout: out.stdout, Stderr: out.stderr, Missing: out.missing, Code: out.code}
+	if out.err != nil {
+		res.Err = out.err.Error()
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(res); err != nil {
+		fmt.Fprintf(os.Stderr, "ipswrun worker: %v\n", err)
+		return 70
+	}
+	return 0
+}
+
+// runParallel runs releases with up to o.jobs concurrent workers, printing sections in release
+// order as contiguous results arrive so output and "same as" deduplication match serial runs.
+func (o *options) runParallel(releases []release, run func(release) outcome, stdout, stderr io.Writer) int {
+	prog := newProgress(stderr, o.showStatus)
+	defer prog.stop()
+	results := make([]outcome, len(releases))
+	ready := make([]bool, len(releases))
+	var (
+		mu        sync.Mutex
+		nextPrint int
+		done      int
+		shown     = sections{stdout: stdout, stderr: prog}
+	)
+	updateStatus := func(running int) {
+		prog.set(fmt.Sprintf("running %d release(s) (%d/%d done)", running, done, len(releases)), nil)
+	}
+	flush := func() {
+		for nextPrint < len(releases) && ready[nextPrint] {
+			prog.erase()
+			shown.add(results[nextPrint])
+			nextPrint++
+		}
+	}
+
+	sem := make(chan struct{}, min(o.jobs, len(releases)))
+	var wg sync.WaitGroup
+	active := 0
+	for i, r := range releases {
+		sem <- struct{}{}
+		mu.Lock()
+		active++
+		updateStatus(active)
+		mu.Unlock()
+		wg.Add(1)
+		go func(i int, r release) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			out := run(r)
+			mu.Lock()
+			results[i], ready[i] = out, true
+			active--
+			done++
+			flush()
+			if active > 0 {
+				updateStatus(active)
+			}
+			mu.Unlock()
+		}(i, r)
+	}
+	wg.Wait()
+	return shown.status
+}
+
 // run returns the exit status, or an error when a single guest never got to exit.
 func run() (int, error) {
 	flag.Usage = func() {
@@ -639,6 +824,7 @@ several of these separated by commas.`)
 	trace := flag.Bool("trace", false, "print every emulated system call")
 	missing := flag.Bool("missing", false, "answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all when the guest ends")
 	bisect := flag.Bool("bisect", false, "binary-search the selected releases for where the guest's output or exit status changed")
+	jobs := flag.Int("jobs", 1, "releases to run at once when running several")
 	reportPath := flag.String("report", "", "write a JSON summary of the run (build, cache UUID, exit code, transfer) to this file; {build} and {version} in it become the release's")
 	unicornDir := flag.String("unicorn", "", "directory the pinned libunicorn is kept in (default: the user cache directory)")
 	setup := flag.Bool("setup", false, "only fetch and verify libunicorn")
@@ -667,7 +853,13 @@ several of these separated by commas.`)
 			return 2, nil
 		}
 		var note, err error
-		if releases, note, err = checkArgs(known, parseBetas(betasText, *device), flag.Args(), current, index); err == nil {
+		if *jobs < 1 {
+			err = fmt.Errorf("--jobs must be at least 1, got %d", *jobs)
+		}
+		if err == nil {
+			releases, note, err = checkArgs(known, parseBetas(betasText, *device), flag.Args(), current, index)
+		}
+		if err == nil {
 			feedNote(note)
 			if *bisect && len(releases) < 2 {
 				err = fmt.Errorf("--bisect needs at least 2 releases, got %d", len(releases))
@@ -727,12 +919,16 @@ several of these separated by commas.`)
 			return 0, err
 		}
 	}
-	o := &options{unicorn: unicorn, cache: *cache, device: *device, home: *home, report: *reportPath, guest: guest, args: flag.Args()[2:],
-		env: env, system: system, mounts: mounts, services: services, daemons: daemons, stream: *stream, trace: *trace, missing: *missing, bisect: *bisect, showStatus: showStatus, timeout: *timeout}
+	o := &options{runOptions: runOptions{Unicorn: unicorn, Cache: *cache, Device: *device, Home: *home, Report: *reportPath, Guest: guest, Args: flag.Args()[2:],
+		Env: env, System: system, Mounts: mounts, Services: services, Daemons: daemons, Stream: *stream, Trace: *trace, Missing: *missing, Timeout: *timeout},
+		bisect: *bisect, jobs: *jobs, showStatus: showStatus}
 	return o.runAll(releases)
 }
 
 func main() {
+	if os.Getenv(workerEnv) == "1" {
+		os.Exit(runWorker())
+	}
 	dieOnSignal()
 	code, err := run()
 	removeTemps()

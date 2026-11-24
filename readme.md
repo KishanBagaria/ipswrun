@@ -134,6 +134,7 @@ The run is the first guest's: its output and its exit status. When it exits, the
 | `--report <file>` | write a JSON summary: version, build, shared cache UUID, exit code, pages mapped, requests, bytes and seconds. `{build}` and `{version}` as in `--home` |
 | `--timeout <seconds>` | how long the guest may run on each release, counted from when it starts (default 900). Time the host spends fetching is not counted, here or on any clock the guests see |
 | `--bisect` | binary-search the selected releases for where the guest's output or exit status changed (exits 0 when found, 1 when both endpoints match, 70 on failure) |
+| `--jobs <n>` | releases to run concurrently when running several (default 1); output is still printed in release order |
 | `--trace` | print every emulated system call |
 | `--missing` | answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all, with how often each was made and from where, when the guest ends |
 | `--device <product>` | Mac model the disk images and the releases looked up are picked for (default `Macmini9,1`) |

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 // The test binary is ipswrun itself when asked to be, so that exit statuses and what reaches
 // stderr are those of the command.
 func TestMain(m *testing.M) {
-	if os.Getenv("IPSWRUN_TEST_AS_COMMAND") == "1" {
+	if os.Getenv("IPSWRUN_TEST_AS_COMMAND") == "1" || os.Getenv(workerEnv) == "1" {
 		main()
 		return
 	}
@@ -55,20 +56,21 @@ func TestArgumentsAreCheckedBeforeAnythingIsFetched(t *testing.T) {
 		args []string
 		want string
 	}{
-		"nothing":       {nil, "usage: ipswrun"},
-		"one argument":  {[]string{url}, "expected a release and a guest executable, got 1 argument(s)"},
+		"nothing":             {nil, "usage: ipswrun"},
+		"one argument":        {[]string{url}, "expected a release and a guest executable, got 1 argument(s)"},
 		"plain http":          {[]string{"http://example.invalid/x.ipsw", guest}, `must be an https:// URL, not "http://example.invalid/x.ipsw"`},
 		"missing local image": {[]string{"./x.ipsw", guest}, "restore image: stat ./x.ipsw: no such file or directory"},
 		"local image is dir":  {[]string{filepath.Dir(guest), guest}, "is a directory"},
+		"bad jobs":            {[]string{"--jobs", "0", url, guest}, "--jobs must be at least 1"},
 		"bisect one release":  {[]string{"--bisect", "15.0", guest}, "--bisect needs at least 2 releases"},
 		"reversed range":      {[]string{"15.6.1..15.0", guest}, "15.6.1 is after 15.0"},
-		"shared home":   {[]string{"--home", "out", "15.0,24G90", guest}, "--home out would be shared by 2 releases; put {build} or {version} in it, as in --home 'out-{build}'"},
-		"shared mount":  {[]string{"--mount", "/var/db=out", "15.0,24G90", guest}, "as in --mount '/var/db=out-{build}'"},
-		"mount no host": {[]string{"--mount", "/var/db", url, guest}, "--mount /var/db is not <guest dir>=<host dir>"},
-		"mount on home": {[]string{"--mount", "/Users/emu=out", url, guest}, "--mount: a mount at /Users/emu: that is the guest's home"},
-		"shared report": {[]string{"--report", "r.json", "11.0.1,11.6,12.6", guest}, "as in --report 'r-{build}.json'"},
-		"missing guest": {[]string{url, guest + "-typo"}, "guest executable: stat " + guest + "-typo: no such file or directory"},
-		"guest is dir":  {[]string{url, filepath.Dir(guest)}, "is a directory"},
+		"shared home":         {[]string{"--home", "out", "15.0,24G90", guest}, "--home out would be shared by 2 releases; put {build} or {version} in it, as in --home 'out-{build}'"},
+		"shared mount":        {[]string{"--mount", "/var/db=out", "15.0,24G90", guest}, "as in --mount '/var/db=out-{build}'"},
+		"mount no host":       {[]string{"--mount", "/var/db", url, guest}, "--mount /var/db is not <guest dir>=<host dir>"},
+		"mount on home":       {[]string{"--mount", "/Users/emu=out", url, guest}, "--mount: a mount at /Users/emu: that is the guest's home"},
+		"shared report":       {[]string{"--report", "r.json", "11.0.1,11.6,12.6", guest}, "as in --report 'r-{build}.json'"},
+		"missing guest":       {[]string{url, guest + "-typo"}, "guest executable: stat " + guest + "-typo: no such file or directory"},
+		"guest is dir":        {[]string{url, filepath.Dir(guest)}, "is a directory"},
 	} {
 		status, stderr, fetched := command(t, c.args...)
 		if status != 2 || !strings.Contains(stderr, c.want) {
@@ -472,5 +474,56 @@ func TestBisectReleases(t *testing.T) {
 	}, &stdout, &stderr)
 	if status != 70 || !strings.Contains(stdout.String(), "bisect: narrowed to macOS 15.1 (24A01) .. macOS 15.3 (24A03); 1 release(s) between them failed") {
 		t.Errorf("intermediate-failure bisect: status=%d out=%q err=%q", status, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunParallelOrdersOutputAndRunsConcurrently(t *testing.T) {
+	rels := []release{
+		{Version: "11.0.1", Build: "20B29", URL: "https://example.invalid/0"},
+		{Version: "11.6", Build: "20G165", URL: "https://example.invalid/1"},
+		{Version: "15.0", Build: "24A335", URL: "https://example.invalid/2"},
+		{Version: "15.6.1", Build: "24G90", URL: "https://example.invalid/3"},
+	}
+	var active, peak atomic.Int32
+	var stdout, stderr bytes.Buffer
+	o := &options{jobs: 3}
+	status := o.runParallel(rels, func(r release) outcome {
+		cur := active.Add(1)
+		for {
+			old := peak.Load()
+			if cur <= old || peak.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		defer active.Add(-1)
+		// Reverse delays so later releases finish before earlier ones.
+		idx := slices.IndexFunc(rels, func(x release) bool { return x.Build == r.Build })
+		time.Sleep(time.Duration(4-idx) * 25 * time.Millisecond)
+		if idx < 2 {
+			return outcome{name: r.name(), stdout: "v1\n", code: 0}
+		}
+		return outcome{name: r.name(), stdout: "v2\n", code: 0}
+	}, &stdout, &stderr)
+	if status != 0 {
+		t.Fatalf("runParallel status = %d, stderr = %q", status, stderr.String())
+	}
+	if peak.Load() < 2 {
+		t.Errorf("peak concurrency = %d, want >= 2", peak.Load())
+	}
+	want := "==> macOS 11.0.1 (20B29)\nv1\n" +
+		"==> macOS 11.6 (20G165): same as macOS 11.0.1 (20B29)\n" +
+		"==> macOS 15.0 (24A335)\nv2\n" +
+		"==> macOS 15.6.1 (24G90): same as macOS 15.0 (24A335)\n"
+	if stdout.String() != want {
+		t.Errorf("runParallel stdout:\n%s\nwant:\n%s", stdout.String(), want)
+	}
+}
+
+func TestWorkerSubprocessProtocol(t *testing.T) {
+	o := &options{runOptions: runOptions{Device: "Macmini9,1", Timeout: 10}}
+	missing := filepath.Join(t.TempDir(), "does-not-exist.ipsw")
+	out := o.runWorkerProcess(release{URL: missing})
+	if out.err == nil || !strings.Contains(out.err.Error(), "no such file or directory") {
+		t.Fatalf("worker subprocess returned out=%+v, want missing file error", out)
 	}
 }
