@@ -60,6 +60,8 @@ func TestArgumentsAreCheckedBeforeAnythingIsFetched(t *testing.T) {
 		"plain http":          {[]string{"http://example.invalid/x.ipsw", guest}, `must be an https:// URL, not "http://example.invalid/x.ipsw"`},
 		"missing local image": {[]string{"./x.ipsw", guest}, "restore image: stat ./x.ipsw: no such file or directory"},
 		"local image is dir":  {[]string{filepath.Dir(guest), guest}, "is a directory"},
+		"bisect one release":  {[]string{"--bisect", "15.0", guest}, "--bisect needs at least 2 releases"},
+		"reversed range":      {[]string{"15.6.1..15.0", guest}, "15.6.1 is after 15.0"},
 		"shared home":   {[]string{"--home", "out", "15.0,24G90", guest}, "--home out would be shared by 2 releases; put {build} or {version} in it, as in --home 'out-{build}'"},
 		"shared mount":  {[]string{"--mount", "/var/db=out", "15.0,24G90", guest}, "as in --mount '/var/db=out-{build}'"},
 		"mount no host": {[]string{"--mount", "/var/db", url, guest}, "--mount /var/db is not <guest dir>=<host dir>"},
@@ -359,7 +361,7 @@ func TestBetaSelectionOffline(t *testing.T) {
 	}
 }
 
-func TestLocalIPSWSelection(t *testing.T) {
+func TestLocalIPSWAndRangeSelection(t *testing.T) {
 	offline := func() ([]release, error) {
 		t.Fatal("unexpected network lookup")
 		return nil, nil
@@ -374,5 +376,101 @@ func TestLocalIPSWSelection(t *testing.T) {
 		if err != nil || len(got) != 1 || got[0].URL != abs || !got[0].local() {
 			t.Fatalf("selectReleases(%q) = %+v, %v", sel, got, err)
 		}
+	}
+
+	known := parseReleases(releasesText)
+	got, _, err := selectReleases(known, nil, "15.0..15.2", offline, offline)
+	if err != nil {
+		t.Fatalf("15.0..15.2: %v", err)
+	}
+	var builds []string
+	for _, r := range got {
+		builds = append(builds, r.Build)
+	}
+	if len(builds) < 3 || builds[0] != "24A335" || builds[len(builds)-1] != "24C101" {
+		t.Fatalf("15.0..15.2 selected %v", builds)
+	}
+
+	// Build-ID range works offline too.
+	got2, _, err := selectReleases(known, nil, "24a335..24c101", offline, offline)
+	if err != nil || !slices.Equal(got, got2) {
+		t.Fatalf("24a335..24c101 = %v (err %v), want %v", got2, err, got)
+	}
+
+	// Wildcard major version 15.* returns every macOS 15 release in releases.tsv.
+	all15, _, err := selectReleases(known, nil, "15.*", func() ([]release, error) { return nil, nil }, offline)
+	if err != nil || len(all15) <= 2 || all15[0].Build != "24A335" || all15[len(all15)-1].Build != "24G90" {
+		t.Fatalf("15.* selected %d releases (%v), err %v", len(all15), all15, err)
+	}
+
+	// Beta build range resolves offline.
+	betas := parseBetas(betasText, "Macmini9,1")
+	if len(betas) >= 3 {
+		bgot, _, err := selectReleases(known, betas, betas[0].Build+".."+betas[2].Build, offline, offline)
+		if err != nil || len(bgot) != 3 {
+			t.Fatalf("beta range returned %d releases, err %v", len(bgot), err)
+		}
+	}
+}
+
+func TestBisectReleases(t *testing.T) {
+	makeReleases := func(n int) []release {
+		out := make([]release, n)
+		for i := range out {
+			out[i] = release{Version: fmt.Sprintf("15.%d", i), Build: fmt.Sprintf("24A%02d", i), URL: fmt.Sprintf("https://example.invalid/%d.ipsw", i)}
+		}
+		return out
+	}
+
+	// Finds exact transition in 16 releases using O(log N) runs.
+	rels := makeReleases(16)
+	var runs int
+	var stdout, stderr bytes.Buffer
+	status := bisectReleases(rels, func(r release, _ string) outcome {
+		runs++
+		idx := slices.IndexFunc(rels, func(x release) bool { return x.Build == r.Build })
+		if idx < 11 {
+			return outcome{name: r.name(), stdout: "old\n", code: 0}
+		}
+		return outcome{name: r.name(), stdout: "new\n", code: 0}
+	}, &stdout, &stderr)
+	if status != 0 {
+		t.Fatalf("bisect status = %d, want 0; out=%q err=%q", status, stdout.String(), stderr.String())
+	}
+	if runs > 7 {
+		t.Errorf("bisect took %d runs on 16 releases, want <= 7", runs)
+	}
+	wantSummary := "bisect: changed between macOS 15.10 (24A10) and macOS 15.11 (24A11)"
+	if !strings.Contains(stdout.String(), wantSummary) {
+		t.Errorf("bisect output %q does not contain %q", stdout.String(), wantSummary)
+	}
+
+	// No change between endpoints stops after 2 runs and exits 1.
+	stdout.Reset()
+	stderr.Reset()
+	runs = 0
+	status = bisectReleases(rels, func(r release, _ string) outcome {
+		runs++
+		return outcome{name: r.name(), stdout: "same\n", code: 0}
+	}, &stdout, &stderr)
+	if status != 1 || runs != 2 || !strings.Contains(stdout.String(), "bisect: no change between") {
+		t.Errorf("no-change bisect: status=%d runs=%d out=%q", status, runs, stdout.String())
+	}
+
+	// Intermediate failure skips the failing build and still narrows around it.
+	stdout.Reset()
+	stderr.Reset()
+	status = bisectReleases(rels[:6], func(r release, _ string) outcome {
+		idx := slices.IndexFunc(rels[:6], func(x release) bool { return x.Build == r.Build })
+		if idx == 2 {
+			return outcome{name: r.name(), err: errors.New("boom")}
+		}
+		if idx < 3 {
+			return outcome{name: r.name(), stdout: "old\n"}
+		}
+		return outcome{name: r.name(), stdout: "new\n"}
+	}, &stdout, &stderr)
+	if status != 70 || !strings.Contains(stdout.String(), "bisect: narrowed to macOS 15.1 (24A01) .. macOS 15.3 (24A03); 1 release(s) between them failed") {
+		t.Errorf("intermediate-failure bisect: status=%d out=%q err=%q", status, stdout.String(), stderr.String())
 	}
 }

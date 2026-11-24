@@ -336,7 +336,7 @@ type options struct {
 	daemons                   []emulator.Guest
 	mounts                    []emulator.Mount // the host side may contain {build} and {version}
 	stream, trace, showStatus bool
-	missing                   bool
+	missing, bisect           bool
 	timeout                   float64
 }
 
@@ -505,6 +505,12 @@ func (o *options) runAll(releases []release) (int, error) {
 		}
 		defer fmt.Fprintf(os.Stderr, "ipswrun: %v; pass --stream-compressed to run them too\n", err)
 	}
+	if o.bisect {
+		if len(releases) < 2 {
+			return 0, fmt.Errorf("--bisect needs at least 2 runnable releases (got %d after skipping compressed releases)", len(releases))
+		}
+		return bisectReleases(releases, o.runOne, os.Stdout, os.Stderr), nil
+	}
 	if len(releases) == 1 && len(skipped) == 0 {
 		out := o.runOne(releases[0], "")
 		os.Stdout.WriteString(out.stdout)
@@ -531,6 +537,81 @@ func (o *options) runAll(releases []release) (int, error) {
 	return status, nil
 }
 
+// bisectReleases binary-searches releases for the first release whose output or exit status
+// differs from the first release's. It returns 0 when a change is found, 1 when both endpoints
+// behave identically, and 70 if an endpoint or intermediate run failed.
+func bisectReleases(releases []release, run func(release, string) outcome, stdout, stderr io.Writer) int {
+	results := make([]outcome, len(releases))
+	tried := make([]bool, len(releases))
+	runs := 0
+	anyErr := false
+	eval := func(i int) outcome {
+		runs++
+		out := run(releases[i], fmt.Sprintf("bisect %d/%d ", runs, len(releases)))
+		results[i], tried[i] = out, true
+		fmt.Fprint(stdout, section(out, nil))
+		fmt.Fprint(stderr, out.stderr+out.missing)
+		if out.err != nil {
+			fmt.Fprintf(stderr, "ipswrun: %s: %v\n", out.name, out.err)
+			anyErr = true
+		}
+		return out
+	}
+
+	lo, hi := 0, len(releases)-1
+	first := eval(lo)
+	last := eval(hi)
+	if first.err != nil || last.err != nil {
+		return 70
+	}
+	if last.repeats(&first) {
+		fmt.Fprintf(stdout, "bisect: no change between %s and %s (%d of %d releases run)\n", first.name, last.name, runs, len(releases))
+		return 1
+	}
+
+	for hi-lo > 1 {
+		mid := pickMid(lo, hi, tried)
+		if mid < 0 {
+			break
+		}
+		out := eval(mid)
+		if out.err != nil {
+			continue
+		}
+		if out.repeats(&results[lo]) {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	if hi-lo == 1 {
+		fmt.Fprintf(stdout, "bisect: changed between %s and %s (%d of %d releases run)\n", results[lo].name, results[hi].name, runs, len(releases))
+	} else {
+		fmt.Fprintf(stdout, "bisect: narrowed to %s .. %s; %d release(s) between them failed (%d of %d releases run)\n",
+			results[lo].name, results[hi].name, hi-lo-1, runs, len(releases))
+	}
+	if anyErr {
+		return 70
+	}
+	return 0
+}
+
+// pickMid chooses an untested index strictly between lo and hi, closest to the midpoint.
+func pickMid(lo, hi int, tried []bool) int {
+	center := lo + (hi-lo)/2
+	for delta := 0; center-delta > lo || center+delta < hi; delta++ {
+		if i := center + delta; i > lo && i < hi && !tried[i] {
+			return i
+		}
+		if delta > 0 {
+			if i := center - delta; i > lo && i < hi && !tried[i] {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 // run returns the exit status, or an error when a single guest never got to exit.
 func run() (int, error) {
 	flag.Usage = func() {
@@ -538,8 +619,9 @@ func run() (int, error) {
        ipswrun --releases
        ipswrun --setup
 <release> is the version or build of any macOS release since 11 (15.2, 24C101), latest, all (the first
-and last release of each major version), a major version (15, for those of all under it), the https
-URL of any restore image, or several of these separated by commas.`)
+and last release of each major version), a major version (15, for those of all under it, or 15.* for
+every release of it), a range (15.0..15.6.1), the https URL or local path of any restore image, or
+several of these separated by commas.`)
 		flag.PrintDefaults()
 	}
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
@@ -556,6 +638,7 @@ URL of any restore image, or several of these separated by commas.`)
 	timeout := flag.Float64("timeout", 900, "seconds the guest may run on each release, counted from when it starts (opening the image and fetching its pages are not counted)")
 	trace := flag.Bool("trace", false, "print every emulated system call")
 	missing := flag.Bool("missing", false, "answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all when the guest ends")
+	bisect := flag.Bool("bisect", false, "binary-search the selected releases for where the guest's output or exit status changed")
 	reportPath := flag.String("report", "", "write a JSON summary of the run (build, cache UUID, exit code, transfer) to this file; {build} and {version} in it become the release's")
 	unicornDir := flag.String("unicorn", "", "directory the pinned libunicorn is kept in (default: the user cache directory)")
 	setup := flag.Bool("setup", false, "only fetch and verify libunicorn")
@@ -586,7 +669,13 @@ URL of any restore image, or several of these separated by commas.`)
 		var note, err error
 		if releases, note, err = checkArgs(known, parseBetas(betasText, *device), flag.Args(), current, index); err == nil {
 			feedNote(note)
-			if err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath)); err == nil {
+			if *bisect && len(releases) < 2 {
+				err = fmt.Errorf("--bisect needs at least 2 releases, got %d", len(releases))
+			}
+			if err == nil {
+				err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath))
+			}
+			if err == nil {
 				mounts, err = parseMounts(len(releases), mountValues)
 			}
 			if err == nil {
@@ -639,7 +728,7 @@ URL of any restore image, or several of these separated by commas.`)
 		}
 	}
 	o := &options{unicorn: unicorn, cache: *cache, device: *device, home: *home, report: *reportPath, guest: guest, args: flag.Args()[2:],
-		env: env, system: system, mounts: mounts, services: services, daemons: daemons, stream: *stream, trace: *trace, missing: *missing, showStatus: showStatus, timeout: *timeout}
+		env: env, system: system, mounts: mounts, services: services, daemons: daemons, stream: *stream, trace: *trace, missing: *missing, bisect: *bisect, showStatus: showStatus, timeout: *timeout}
 	return o.runAll(releases)
 }
 

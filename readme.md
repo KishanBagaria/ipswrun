@@ -61,6 +61,8 @@ The first argument chooses the releases:
 | `latest` | the release Apple currently offers |
 | `all` | the first and last release of every major version, and the current one |
 | `15` | those of `all` under it: 15.0 and 15.6.1 |
+| `15.*` | every release of macOS 15 |
+| `15.0..15.6.1` or `24A335..24G90` | every release between the two inclusive, oldest first (also works with `latest` or beta builds) |
 | `https://…/UniversalMac_15.3_24D60_Restore.ipsw` | the restore image at that URL |
 | `/path/to/UniversalMac_Restore.ipsw` | a local restore image on disk |
 | `11,15.2,27.2.1` | several of the above |
@@ -131,6 +133,7 @@ The run is the first guest's: its output and its exit status. When it exits, the
 | `--stream-compressed` | allow downloading one compressed disk image member front to back, for macOS 13 and 14 |
 | `--report <file>` | write a JSON summary: version, build, shared cache UUID, exit code, pages mapped, requests, bytes and seconds. `{build}` and `{version}` as in `--home` |
 | `--timeout <seconds>` | how long the guest may run on each release, counted from when it starts (default 900). Time the host spends fetching is not counted, here or on any clock the guests see |
+| `--bisect` | binary-search the selected releases for where the guest's output or exit status changed (exits 0 when found, 1 when both endpoints match, 70 on failure) |
 | `--trace` | print every emulated system call |
 | `--missing` | answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all, with how often each was made and from where, when the guest ends |
 | `--device <product>` | Mac model the disk images and the releases looked up are picked for (default `Macmini9,1`) |

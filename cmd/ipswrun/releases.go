@@ -248,19 +248,21 @@ func filter(pool []release, keep func(release) bool) []release {
 // selectReleases turns the first argument into the releases it names, in the order named and
 // each once. It is a comma-separated list of: "all", the first and last release of each major
 // version and the current one; "latest"; a major version ("15"), which is those of "all" under it;
-// the version or build of any release ("15.2", "24C101"); a version no release has ("11.0"), which
-// is every release under it; the build of a beta ("26C5047e"); or the https URL of any image.
+// "15.*", every release of that major version; a range "15.0..15.6.1" or "24A335..24G90", every
+// release between the two inclusive; the version or build of any release ("15.2", "24C101"); a
+// version no release has ("11.0"), which is every release under it; the build of a beta
+// ("26C5047e"); the https URL of any image; or the path of a local .ipsw file.
 //
-// Nothing is fetched for a version or build in releases.tsv, nor for the build of a beta, which
-// is one of betas or an error. Any other name asks current, at
-// most once, for what Apple offers now, and a version or build that this does not settle either
-// asks index, at most once, for every release there has been. When current fails and the names
-// can do without it, the failure comes back as note.
+// Nothing is fetched for a version or build in releases.tsv, a local file, nor for the build of a
+// beta, which is one of betas or an error. Any other name asks current, at most once, for what
+// Apple offers now, and a version or build that this does not settle either asks index, at most
+// once, for every release there has been. When current fails and the names can do without it, the
+// failure comes back as note.
 func selectReleases(known, betas []release, selector string, current, index func() ([]release, error)) (out []release, note error, err error) {
 	current, index = sync.OnceValues(current), sync.OnceValues(index)
 	seen := map[string]bool{}
 	for _, part := range strings.Split(selector, ",") {
-		exactly := func(r release) bool { return part == r.Version || strings.EqualFold(part, r.Build) }
+		exactly := named(part)
 		under := func(r release) bool { return strings.HasPrefix(r.Version, part+".") }
 		var feedErr error
 		offered := func() []release {
@@ -295,9 +297,28 @@ func selectReleases(known, betas []release, selector string, current, index func
 				return nil, nil, fmt.Errorf("restore image: %w", absErr)
 			}
 			matched = []release{{URL: abs}}
+		case strings.Contains(part, ".."):
+			from, to, _ := strings.Cut(part, "..")
+			if from == "" || to == "" || strings.Contains(to, "..") {
+				return nil, nil, fmt.Errorf("release range %q must be <from>..<to>, as in 15.0..15.6.1", part)
+			}
+			var rangeNote error
+			matched, rangeNote, err = selectRange(known, betas, from, to, current, index)
+			if err != nil {
+				return nil, nil, err
+			}
+			note = cmp.Or(note, rangeNote)
+		case strings.HasSuffix(part, ".*"):
+			prefix := strings.TrimSuffix(part, "*")
+			pool := withCurrent(known, offered())
+			matched = filter(pool, func(r release) bool { return strings.HasPrefix(r.Version, prefix) })
+			note = cmp.Or(note, feedErr)
+			if len(matched) == 0 {
+				return nil, nil, noRelease("the releases built in")
+			}
 		case part == "latest":
 			if matched = offered(); feedErr != nil {
-				return nil, nil, fmt.Errorf("latest is what Apple's feed says it is, and the feed %w: %w", errSource, feedErr)
+				return nil, nil, latestErr(feedErr)
 			}
 		case slices.ContainsFunc(known, exactly):
 			matched = filter(known, exactly)
@@ -318,10 +339,8 @@ func selectReleases(known, betas []release, selector string, current, index func
 			if len(matched) == 0 {
 				return nil, nil, noRelease("the releases api.ipsw.me lists for this --device")
 			}
-			for _, r := range matched {
-				if !onApple(r.URL) {
-					return nil, nil, fmt.Errorf("api.ipsw.me has %s at %s, which is not an https URL on a host of Apple's; pass that URL yourself if you trust it", r.name(), r.URL)
-				}
+			if err := offApple(matched); err != nil {
+				return nil, nil, err
 			}
 		default: // "all", a major version, or nothing at all: only the releases with the feed's can say
 			if matched = withCurrent(sampled(known), offered()); part != "all" {
@@ -340,4 +359,98 @@ func selectReleases(known, betas []release, selector string, current, index func
 		}
 	}
 	return out, note, nil
+}
+
+// named matches a release by its version or build.
+func named(name string) func(release) bool {
+	return func(r release) bool { return name == r.Version || strings.EqualFold(name, r.Build) }
+}
+
+// lastIndex is the index of the last release that matches, or -1.
+func lastIndex(rs []release, match func(release) bool) int {
+	for k := len(rs) - 1; k >= 0; k-- {
+		if match(rs[k]) {
+			return k
+		}
+	}
+	return -1
+}
+
+func latestErr(feedErr error) error {
+	return fmt.Errorf("latest is what Apple's feed says it is, and the feed %w: %w", errSource, feedErr)
+}
+
+// offApple refuses the first release api.ipsw.me says is somewhere other than Apple's hosts.
+func offApple(rs []release) error {
+	for _, r := range rs {
+		if !onApple(r.URL) {
+			return fmt.Errorf("api.ipsw.me has %s at %s, which is not an https URL on a host of Apple's; pass that URL yourself if you trust it", r.name(), r.URL)
+		}
+	}
+	return nil
+}
+
+// selectRange returns every release from from through to inclusive, in chronological order.
+func selectRange(known, betas []release, from, to string, current, index func() ([]release, error)) ([]release, error, error) {
+	missing := func(i int) string {
+		if i < 0 {
+			return from
+		}
+		return to
+	}
+	span := func(pool []release, i, j int, note error) ([]release, error, error) {
+		if i > j {
+			return nil, nil, fmt.Errorf("release range %s..%s: %s is after %s", from, to, from, to)
+		}
+		return slices.Clone(pool[i : j+1]), note, nil
+	}
+	if betaBuildName.MatchString(from) || betaBuildName.MatchString(to) {
+		i, j := slices.IndexFunc(betas, named(from)), lastIndex(betas, named(to))
+		if i < 0 || j < 0 {
+			return nil, nil, fmt.Errorf("no beta release %q among the betas built in for this --device", missing(i))
+		}
+		return span(betas, i, j, nil)
+	}
+	bounds := func(pool, latest []release) (int, int) {
+		at := func(name string, find func([]release, func(release) bool) int) int {
+			if name != "latest" {
+				return find(pool, named(name))
+			}
+			if len(latest) == 0 {
+				return -1
+			}
+			build := latest[len(latest)-1].Build
+			return slices.IndexFunc(pool, func(r release) bool { return r.Build == build })
+		}
+		return at(from, slices.IndexFunc[[]release]), at(to, lastIndex)
+	}
+	pool := known
+	var latest []release
+	var feedErr error
+	i, j := bounds(pool, nil)
+	if from == "latest" || to == "latest" || i < 0 || j < 0 {
+		latest, feedErr = current()
+		if (from == "latest" || to == "latest") && feedErr != nil {
+			return nil, nil, latestErr(feedErr)
+		}
+		pool = withCurrent(known, latest)
+		i, j = bounds(pool, latest)
+	}
+	if i < 0 || j < 0 {
+		every, indexErr := index()
+		if indexErr != nil {
+			return nil, nil, fmt.Errorf("%q is not among the releases built in, so it is looked up in the index of every release at api.ipsw.me, which %w: %w", missing(i), errSource, indexErr)
+		}
+		pool = withCurrent(every, latest)
+		i, j = bounds(pool, latest)
+		if i >= 0 && j >= 0 && i <= j {
+			if err := offApple(pool[i : j+1]); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	if i < 0 || j < 0 {
+		return nil, nil, fmt.Errorf("no release %q for range %s..%s", missing(i), from, to)
+	}
+	return span(pool, i, j, feedErr)
 }
