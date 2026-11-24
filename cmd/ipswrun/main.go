@@ -368,6 +368,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	if err != nil {
 		return failed(err)
 	}
+	defer image.Close()
 	if r.Build != "" && r.Build != image.Build() {
 		return failed(fmt.Errorf("the image at %s is build %s, not the %s it is listed as", r.URL, image.Build(), r.Build))
 	}
@@ -390,7 +391,11 @@ func (o *options) runOne(r release, label string) (out outcome) {
 			return failed(err)
 		}
 	}
-	status.set(label+out.name, image.Stats)
+	var stats func() (int64, int64)
+	if !r.local() {
+		stats = image.Stats
+	}
+	status.set(label+out.name, stats)
 	machine, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.unicorn, Home: home, Mounts: mounts, Services: o.services, Executable: o.guest, Args: o.args,
 		Daemons: o.daemons, Env: o.env, System: o.system, Timeout: time.Duration(o.timeout * float64(time.Second)), Trace: o.trace, Survey: o.missing, Notes: status})
 	status.stop()

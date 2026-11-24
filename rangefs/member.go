@@ -13,13 +13,14 @@ var ErrCompressedMember = errors.New("cannot be read by range")
 // openMember exposes one member of the restore image's ZIP as random-access bytes plus their length.
 func (m *Image) openMember(member *zip.File) (io.ReaderAt, int64, error) {
 	if m.streaming && member.Method == zip.Deflate {
-		file, err := m.remote.inflated(member)
+		file, err := m.inflate(member)
 		if err != nil {
 			return nil, 0, fmt.Errorf("stream %s: %w", member.Name, err)
 		}
+		m.opened = append(m.opened, file)
 		return file, int64(member.UncompressedSize64), nil
 	}
-	return openStoredMember(m.remote, member)
+	return openStoredMember(m.source, member)
 }
 
 // openStoredMember is a plain window into the ZIP. A deflate-compressed member has no random

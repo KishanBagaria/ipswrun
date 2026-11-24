@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	apfs "github.com/blacktop/go-apfs"
@@ -27,36 +28,96 @@ const (
 // every release before macOS 13, which keeps everything in the system volume.
 var ErrNoSystemOS = info.ErrorCryptexNotFound
 
-// Image is a remote restore image whose volumes are opened on first use.
+// Image is a remote or local restore image whose volumes are opened on first use.
 type Image struct {
-	remote    *rangeReader
+	remote    *rangeReader // nil for a local file
+	source    io.ReaderAt
+	file      *os.File // local restore image, closed by Close
+	cacheDir  string
 	archive   *zip.Reader
 	info      *info.Info
 	device    string
 	streaming bool // see AllowStreaming
 	volumes   map[string]*apfs.Reader
+	opened    []*os.File // inflated members, closed by Close
 }
 
-// Open reads the ZIP directory and build manifest of the restore image at url. device is the
+// Open reads the ZIP directory and build manifest of the restore image at location, which may be
+// an HTTP(S) URL or a local file path (optionally prefixed with file://). device is the
 // BuildManifest product type or device class used to choose disk images; cacheDir, when not
-// empty, keeps what was downloaded between runs.
-func Open(url, cacheDir, device string) (*Image, error) {
-	remote, err := newRangeReader(url, cacheDir)
+// empty, keeps what was downloaded or inflated between runs.
+func Open(location, cacheDir, device string) (*Image, error) {
+	if !IsRemote(location) {
+		return OpenFile(strings.TrimPrefix(location, "file://"), cacheDir, device)
+	}
+	remote, err := newRangeReader(location, cacheDir)
 	if err != nil {
 		return nil, err
 	}
-	archive, err := zip.NewReader(remote, remote.size)
+	archive, parsed, err := openArchive(remote, remote.size)
 	if err != nil {
 		return nil, err
+	}
+	return &Image{remote: remote, source: remote, cacheDir: cacheDir, archive: archive, info: parsed, device: device, volumes: map[string]*apfs.Reader{}}, nil
+}
+
+// IsRemote reports whether Open fetches location over HTTP(S), rather than reading a local file.
+func IsRemote(location string) bool {
+	return strings.HasPrefix(location, "https://") || strings.HasPrefix(location, "http://")
+}
+
+// OpenFile opens a local restore image (.ipsw) from disk. Deflate-compressed disk image members
+// are inflated on demand without needing AllowStreaming, as nothing is downloaded for them.
+func OpenFile(path, cacheDir, device string) (*Image, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if st.IsDir() {
+		f.Close()
+		return nil, fmt.Errorf("%s is a directory", path)
+	}
+	archive, parsed, err := openArchive(f, st.Size())
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return &Image{source: f, file: f, cacheDir: cacheDir, archive: archive, info: parsed, device: device, streaming: true, volumes: map[string]*apfs.Reader{}}, nil
+}
+
+// openArchive reads a restore image's ZIP directory and build manifest.
+func openArchive(source io.ReaderAt, size int64) (*zip.Reader, *info.Info, error) {
+	archive, err := zip.NewReader(source, size)
+	if err != nil {
+		return nil, nil, err
 	}
 	parsed, err := info.ParseZipFiles(archive.File)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if parsed.Plists == nil || parsed.Plists.BuildManifest == nil {
-		return nil, errors.New("restore image has no BuildManifest.plist")
+		return nil, nil, errors.New("restore image has no BuildManifest.plist")
 	}
-	return &Image{remote: remote, archive: archive, info: parsed, device: device, volumes: map[string]*apfs.Reader{}}, nil
+	return archive, parsed, nil
+}
+
+// Close releases any local image file and inflated member files opened for this image.
+func (m *Image) Close() error {
+	var errs []error
+	for _, f := range m.opened {
+		errs = append(errs, f.Close())
+	}
+	m.opened = nil
+	if m.file != nil {
+		errs = append(errs, m.file.Close())
+		m.file = nil
+	}
+	return errors.Join(errs...)
 }
 
 // Version is the product version in the build manifest, e.g. "15.6.1".
@@ -70,6 +131,9 @@ func (m *Image) Device() string { return m.device }
 
 // Stats reports the range requests made so far and the bytes they returned.
 func (m *Image) Stats() (requests, bytes int64) {
+	if m.remote == nil {
+		return 0, 0
+	}
 	return m.remote.requests.Load(), m.remote.bytes.Load()
 }
 

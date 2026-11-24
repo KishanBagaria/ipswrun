@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -16,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/KishanBagaria/ipswrun/rangefs"
 	"github.com/blacktop/go-plist"
 )
 
@@ -26,10 +29,14 @@ import (
 //go:embed releases.tsv
 var releasesText string
 
-// release is a restore image to run against. One given as a bare URL has no version or build
-// until its image has been opened.
+// release is a restore image to run against. One given as a bare URL or local file path has no
+// version or build until its image has been opened.
 type release struct {
 	Version, Build, URL string
+}
+
+func (r release) local() bool {
+	return r.URL != "" && !rangefs.IsRemote(r.URL)
 }
 
 func (r release) name() string {
@@ -262,7 +269,7 @@ func selectReleases(known, betas []release, selector string, current, index func
 			return offered
 		}
 		noRelease := func(among string) error {
-			err := fmt.Errorf("no release %q among %s; one that is not listed runs from the https URL of its restore image", part, among)
+			err := fmt.Errorf("no release %q among %s; one that is not listed runs from the https URL or local path of its restore image", part, among)
 			if feedErr != nil {
 				err = fmt.Errorf("%w. Apple's feed, which names the current release, could not be read: %w", err, feedErr)
 			}
@@ -272,8 +279,22 @@ func selectReleases(known, betas []release, selector string, current, index func
 		switch {
 		case strings.HasPrefix(part, "https://"):
 			matched = []release{{URL: part}}
-		case strings.Contains(part, "/") || strings.HasSuffix(part, ".ipsw"):
-			return nil, nil, fmt.Errorf("a restore image must be an https:// URL, not %q (local files and plain http are not read)", part)
+		case strings.HasPrefix(part, "http://"):
+			return nil, nil, fmt.Errorf("a restore image URL must be an https:// URL, not %q (plain http is not read)", part)
+		case strings.HasPrefix(part, "file://") || strings.Contains(part, "/") || strings.HasSuffix(part, ".ipsw"):
+			path := strings.TrimPrefix(part, "file://")
+			st, statErr := os.Stat(path)
+			if statErr != nil {
+				return nil, nil, fmt.Errorf("restore image: %w", statErr)
+			}
+			if st.IsDir() {
+				return nil, nil, fmt.Errorf("restore image: %s is a directory", path)
+			}
+			abs, absErr := filepath.Abs(path)
+			if absErr != nil {
+				return nil, nil, fmt.Errorf("restore image: %w", absErr)
+			}
+			matched = []release{{URL: abs}}
 		case part == "latest":
 			if matched = offered(); feedErr != nil {
 				return nil, nil, fmt.Errorf("latest is what Apple's feed says it is, and the feed %w: %w", errSource, feedErr)

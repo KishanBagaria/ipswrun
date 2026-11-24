@@ -62,6 +62,7 @@ The first argument chooses the releases:
 | `all` | the first and last release of every major version, and the current one |
 | `15` | those of `all` under it: 15.0 and 15.6.1 |
 | `https://…/UniversalMac_15.3_24D60_Restore.ipsw` | the restore image at that URL |
+| `/path/to/UniversalMac_Restore.ipsw` | a local restore image on disk |
 | `11,15.2,27.2.1` | several of the above |
 
 Every release Apple had published when ipswrun was built is built in ([`releases.tsv`](cmd/ipswrun/releases.tsv)) and resolves with nothing looked up. A newer one is the current release in [Apple's feed](https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml), or, once it has been replaced, is looked up in the [ipsw.me](https://ipsw.me) index of the restore images Apple has published. The index is not Apple's, so ipswrun follows it only to an https URL on Apple's hosts, and refuses an image that turns out not to be the build it was listed as. A version no release has, such as `11.0`, stands for the releases under it (11.0.1). macOS 13 and 14 are skipped unless you pass [`--stream-compressed`](#what-does-not-work).

@@ -269,3 +269,95 @@ func TestCompressedMemberIsRecognisable(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestOpenLocalIPSW(t *testing.T) {
+	manifest := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ProductVersion</key>
+	<string>15.6.1</string>
+	<key>ProductBuildVersion</key>
+	<string>24G90</string>
+	<key>SupportedProductTypes</key>
+	<array><string>Macmini9,1</string></array>
+</dict>
+</plist>`
+	storedData := bytes.Repeat([]byte("stored-member-data "), 256)
+	deflatedData := bytes.Repeat([]byte("deflated-member-data "), 256)
+
+	ipswPath := filepath.Join(t.TempDir(), "local.ipsw")
+	f, err := os.Create(ipswPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	mw, err := w.Create("BuildManifest.plist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mw.Write([]byte(manifest)); err != nil {
+		t.Fatal(err)
+	}
+	sw, err := w.CreateHeader(&zip.FileHeader{Name: "stored.dmg", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sw.Write(storedData); err != nil {
+		t.Fatal(err)
+	}
+	dw, err := w.CreateHeader(&zip.FileHeader{Name: "deflated.dmg", Method: zip.Deflate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dw.Write(deflatedData); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cacheDir := t.TempDir()
+	for _, loc := range []string{ipswPath, "file://" + ipswPath} {
+		img, err := Open(loc, cacheDir, "Mac16,1")
+		if err != nil {
+			t.Fatalf("Open(%q): %v", loc, err)
+		}
+		if img.Version() != "15.6.1" || img.Build() != "24G90" || img.Device() != "Mac16,1" {
+			t.Errorf("Open(%q): version=%q build=%q device=%q", loc, img.Version(), img.Build(), img.Device())
+		}
+		if reqs, fetched := img.Stats(); reqs != 0 || fetched != 0 {
+			t.Errorf("local image reported %d requests, %d bytes", reqs, fetched)
+		}
+		// Both stored and deflated members open directly from a local IPSW without AllowStreaming.
+		for name, want := range map[string][]byte{"stored.dmg": storedData, "deflated.dmg": deflatedData} {
+			var member *zip.File
+			for _, zf := range img.archive.File {
+				if zf.Name == name {
+					member = zf
+				}
+			}
+			ra, size, err := img.openMember(member)
+			if err != nil || size != int64(len(want)) {
+				t.Fatalf("openMember(%s): size=%d err=%v", name, size, err)
+			}
+			got := make([]byte, len(want))
+			if _, err := ra.ReadAt(got, 0); err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("read %s: err=%v equal=%v", name, err, bytes.Equal(got, want))
+			}
+		}
+		if err := img.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}
+
+	if _, err := Open(t.TempDir(), "", "Macmini9,1"); err == nil {
+		t.Error("Open on a directory succeeded")
+	}
+	if _, err := Open(filepath.Join(t.TempDir(), "missing.ipsw"), "", "Macmini9,1"); err == nil {
+		t.Error("Open on a missing file succeeded")
+	}
+}

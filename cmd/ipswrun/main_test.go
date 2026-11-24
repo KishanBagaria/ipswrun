@@ -57,8 +57,9 @@ func TestArgumentsAreCheckedBeforeAnythingIsFetched(t *testing.T) {
 	}{
 		"nothing":       {nil, "usage: ipswrun"},
 		"one argument":  {[]string{url}, "expected a release and a guest executable, got 1 argument(s)"},
-		"plain http":    {[]string{"http://example.invalid/x.ipsw", guest}, `must be an https:// URL, not "http://example.invalid/x.ipsw"`},
-		"local image":   {[]string{"./x.ipsw", guest}, `must be an https:// URL, not "./x.ipsw"`},
+		"plain http":          {[]string{"http://example.invalid/x.ipsw", guest}, `must be an https:// URL, not "http://example.invalid/x.ipsw"`},
+		"missing local image": {[]string{"./x.ipsw", guest}, "restore image: stat ./x.ipsw: no such file or directory"},
+		"local image is dir":  {[]string{filepath.Dir(guest), guest}, "is a directory"},
 		"shared home":   {[]string{"--home", "out", "15.0,24G90", guest}, "--home out would be shared by 2 releases; put {build} or {version} in it, as in --home 'out-{build}'"},
 		"shared mount":  {[]string{"--mount", "/var/db=out", "15.0,24G90", guest}, "as in --mount '/var/db=out-{build}'"},
 		"mount no host": {[]string{"--mount", "/var/db", url, guest}, "--mount /var/db is not <guest dir>=<host dir>"},
@@ -355,5 +356,23 @@ func TestBetaSelectionOffline(t *testing.T) {
 	}
 	if _, _, err := selectReleases(nil, parseBetas(betasText, "unsupported"), "26C5047e", offline, offline); err == nil {
 		t.Fatal("accepted a beta for an unsupported device")
+	}
+}
+
+func TestLocalIPSWSelection(t *testing.T) {
+	offline := func() ([]release, error) {
+		t.Fatal("unexpected network lookup")
+		return nil, nil
+	}
+	local := filepath.Join(t.TempDir(), "test.ipsw")
+	if err := os.WriteFile(local, []byte("zip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	abs, _ := filepath.Abs(local)
+	for _, sel := range []string{local, "file://" + local} {
+		got, _, err := selectReleases(nil, nil, sel, offline, offline)
+		if err != nil || len(got) != 1 || got[0].URL != abs || !got[0].local() {
+			t.Fatalf("selectReleases(%q) = %+v, %v", sel, got, err)
+		}
 	}
 }
