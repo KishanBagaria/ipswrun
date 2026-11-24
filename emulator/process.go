@@ -174,6 +174,8 @@ type SystemFile struct {
 	Dir  bool
 	// Real, of a directory reached through symbolic links, is its path without them.
 	Real string
+	// ReadDir lists the directory's entries when Dir is true and the volume backs it.
+	ReadDir func() ([]string, error)
 }
 
 // Config describes the machine the guests run on.
@@ -205,10 +207,11 @@ type Process struct {
 	uc      *engine
 	cache   *dyldcache.Cache
 	dyld    []byte
-	mounts  []Mount // the home among them; longest guest path first
-	exe     []byte  // the guest executable
-	path    string  // where the guest finds it: only this process does, and no other finds it there
-	exePath string  // and where it is on the host, or what it is called if it is not a file there
+	mounts  []mounted // the home among them; longest guest path first
+	cwd     string    // canonical current working directory
+	exe     []byte    // the guest executable
+	path    string    // where the guest finds it: only this process does, and no other finds it there
+	exePath string    // and where it is on the host, or what it is called if it is not a file there
 	// What the executable's code signature says of it, if it has one: the name it was signed
 	// under, and the entitlements it was signed with, as a property list and as DER.
 	identity, entitlements string
@@ -223,7 +226,6 @@ type Process struct {
 	brk     uint64
 
 	fds      map[uint64]*fd
-	nextFD   uint64
 	nextPort uint32
 
 	exited    bool
@@ -339,11 +341,11 @@ func guard(err *error) {
 // load.
 func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Process, err error) {
 	cfg := m.cfg
-	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: guestUID, gid: guestGID, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
+	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: guestUID, gid: guestGID, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cwd: "/", cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
 		system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
-		mapped: map[uint64]struct{}{}, brk: heapBase, nextFD: 3, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
+		mapped: map[uint64]struct{}{}, brk: heapBase, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},
-		fds:      map[uint64]*fd{0: {kind: hostFD, host: 0}, 1: {kind: hostFD, host: 1}, 2: {kind: hostFD, host: 2}},
+		fds:      map[uint64]*fd{0: {kind: stdioFD, host: 0}, 1: {kind: stdioFD, host: 1}, 2: {kind: stdioFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{path: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
 	for _, v := range volumes { // their roots, for fsgetpath
 		p.seen[fileID{v.dev, rootInode}] = v.mount
@@ -395,7 +397,7 @@ func (p *Process) Close() {
 		}
 	}
 	for n, f := range p.fds {
-		if f.kind == hostFD && f.host > 2 {
+		if f.kind == hostFD {
 			closeHost(f.host)
 		}
 		if f.shared != nil {

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func testFile(mode uint16) *attrContext {
@@ -103,13 +105,32 @@ func TestVolumes(t *testing.T) {
 	}
 }
 
+func testMountsProcess(t *testing.T, exe string, mounts []Mount) *Process {
+	t.Helper()
+	opened, err := openMounts(mounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closeMounts(opened) })
+	return &Process{
+		m:       &Machine{clock: &clock{boot: time.Now()}}, // newClock needs the host library loaded
+		mounts:  opened,
+		cwd:     "/",
+		exePath: exe,
+		path:    GuestExe,
+		fds:     map[uint64]*fd{0: {kind: stdioFD, host: 0}, 1: {kind: stdioFD, host: 1}, 2: {kind: stdioFD, host: 2}},
+		seen:    map[fileID]string{},
+		inodes:  map[string]uint64{},
+	}
+}
+
 // The guest can change what is under its home and nothing else that a host file backs.
 func TestOnlyTheHomeCanBeChanged(t *testing.T) {
 	exe := filepath.Join(t.TempDir(), "guest")
 	if err := os.WriteFile(exe, []byte("not run"), 0o666); err != nil {
 		t.Fatal(err)
 	}
-	p := &Process{mounts: []Mount{{GuestHome, t.TempDir()}}, exePath: exe, path: GuestExe, fds: map[uint64]*fd{}, nextFD: 3}
+	p := testMountsProcess(t, exe, []Mount{{GuestHome, t.TempDir()}})
 	if n := p.doOpen(GuestHome+"/file", 0x201, 0o644); n != 3 { // O_WRONLY|O_CREAT
 		t.Fatalf("creating a file under the home: %d", n)
 	}
@@ -138,7 +159,7 @@ func TestOnlyTheHomeCanBeChanged(t *testing.T) {
 // A mount is a second place the guest can change, and the directories on the way to it exist.
 func TestMounts(t *testing.T) {
 	host := t.TempDir()
-	p := &Process{mounts: []Mount{{"/var/db/fpsd", host}, {GuestHome, t.TempDir()}}, fds: map[uint64]*fd{}, nextFD: 3}
+	p := testMountsProcess(t, "", []Mount{{"/var/db/fpsd", host}, {GuestHome, t.TempDir()}})
 	if errno := p.doMkdir("/var/db/fpsd/adi", 0o700); errno != 0 {
 		t.Fatalf("mkdir under the mount: %d", errno)
 	}
@@ -148,7 +169,7 @@ func TestMounts(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(host, "adi", "adi.pb")); err != nil {
 		t.Errorf("the file did not reach the host: %v", err)
 	}
-	if above, ok := p.resolve("/var/db"); !ok || above.kind != dirFD || above.writable {
+	if above, ok := p.resolve("/var/db"); !ok || above.kind != dirFD || above.root != nil {
 		t.Errorf("the directory above the mount resolved to %+v, %v", above, ok)
 	}
 	for _, bad := range [][]Mount{{{"/", host}}, {{"var/db", host}}, {{GuestHome + "/", host}}, {{"/var/db", host}, {"/var/./db", host}}} {
@@ -167,4 +188,95 @@ func TestMounts(t *testing.T) {
 			t.Errorf("%s: %d, want an errno", name, errno)
 		}
 	}
+}
+
+// Pre-existing symlinks inside a mount or home cannot escape outside the mount's os.Root.
+func TestSymlinkContainment(t *testing.T) {
+	parent := t.TempDir()
+	home := filepath.Join(parent, "home")
+	outside := filepath.Join(parent, "secret.txt")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("top-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "inside.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../secret.txt", filepath.Join(home, "rel-escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(home, "abs-escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("inside.txt", filepath.Join(home, "good-link")); err != nil {
+		t.Fatal(err)
+	}
+
+	p := testMountsProcess(t, "", []Mount{{GuestHome, home}})
+	for _, bad := range []string{GuestHome + "/rel-escape", GuestHome + "/abs-escape"} {
+		if n := p.doOpen(bad, 0, 0); n >= 0 {
+			t.Errorf("open(%s) succeeded with fd %d, want error", bad, n)
+		}
+		if _, _, errno := p.describePath("stat", bad, true); errno == 0 {
+			t.Errorf("stat(%s) succeeded, want error", bad)
+		}
+		if errno := p.doAccess(bad); errno == 0 {
+			t.Errorf("access(%s) succeeded, want error", bad)
+		}
+	}
+	// An internal relative symlink stays inside the mount and works.
+	if n := p.doOpen(GuestHome+"/good-link", 0, 0); n < 0 {
+		t.Errorf("open(good-link) failed: %d", n)
+	} else {
+		p.closeFD(uint64(n))
+	}
+	// Outside file must remain untouched.
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "top-secret" {
+		t.Fatalf("outside file changed: %q (%v)", data, err)
+	}
+}
+
+// Allowed system directories list their entries instead of appearing empty.
+func TestSystemDirListing(t *testing.T) {
+	p := testMountsProcess(t, "", []Mount{{GuestHome, t.TempDir()}})
+	p.system = func(path string) (SystemFile, error) {
+		switch path {
+		case "/System/Library/FeatureFlags":
+			return SystemFile{Dir: true, ReadDir: func() ([]string, error) { return []string{"Domain", "Global.plist"}, nil }}, nil
+		case "/System/Library/FeatureFlags/Domain":
+			return SystemFile{Dir: true, ReadDir: func() ([]string, error) { return []string{"CoreFoundation.plist"}, nil }}, nil
+		case "/System/Library/FeatureFlags/Global.plist":
+			return SystemFile{File: &fakeCacheFile{data: []byte("plist")}}, nil
+		}
+		return SystemFile{}, nil
+	}
+	fdn := p.doOpen("/System/Library/FeatureFlags", 0, 0)
+	if fdn < 0 {
+		t.Fatalf("open system dir: %d", fdn)
+	}
+	f := p.fds[uint64(fdn)]
+	if errno := p.list(f); errno != 0 {
+		t.Fatalf("list system dir: %d", errno)
+	}
+	want := []string{".", "..", "Domain", "Global.plist"}
+	if !slices.Equal(f.names, want) {
+		t.Fatalf("listed %v, want %v", f.names, want)
+	}
+	// ATTR_DIR_ENTRYCOUNT reflects the listed entries too.
+	out, ok := packAttrs(&attrContext{fileInfo: fileInfo{mode: modeDir}, p: p, path: "/System/Library/FeatureFlags"}, [5]uint32{0, 0, 0x2, 0, 0}, 0)
+	if !ok || le.Uint32(out[4:]) != 2 {
+		t.Fatalf("ATTR_DIR_ENTRYCOUNT: ok=%v count=%d, want 2", ok, le.Uint32(out[4:]))
+	}
+}
+
+type fakeCacheFile struct{ data []byte }
+
+func (f *fakeCacheFile) Size() int64 { return int64(len(f.data)) }
+func (f *fakeCacheFile) Pread(off, n int64) ([]byte, error) {
+	if off >= int64(len(f.data)) {
+		return nil, nil
+	}
+	return f.data[off:min(off+n, int64(len(f.data)))], nil
 }

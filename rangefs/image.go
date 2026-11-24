@@ -65,6 +65,9 @@ func (m *Image) Version() string { return m.info.Plists.BuildManifest.ProductVer
 // Build is the product build version in the build manifest, e.g. "24G90".
 func (m *Image) Build() string { return m.info.Plists.BuildManifest.ProductBuildVersion }
 
+// Device is the BuildManifest product type or device class used to pick disk images.
+func (m *Image) Device() string { return m.device }
+
 // Stats reports the range requests made so far and the bytes they returned.
 func (m *Image) Stats() (requests, bytes int64) {
 	return m.remote.requests.Load(), m.remote.bytes.Load()
@@ -247,6 +250,27 @@ func (m *Image) Stat(vol, path string) (Entry, error) {
 func (m *Image) Open(vol, path string) (*File, error) {
 	entry, err := m.Stat(vol, path)
 	return entry.File, err
+}
+
+// ReadDir returns the sorted entry names of a directory in vol, or nil when path is not a directory.
+func (m *Image) ReadDir(vol, path string) ([]string, error) {
+	v, err := m.volume(vol)
+	if err != nil {
+		return nil, fmt.Errorf("%s:%s: %w", vol, path, err)
+	}
+	entry, err := v.Lookup(strings.TrimPrefix(path, "/"))
+	if err != nil || entry.Type != uint16(types.DT_DIR) {
+		return nil, nil
+	}
+	children, err := v.ReadDirID(entry.ID)
+	if err != nil {
+		return nil, fmt.Errorf("%s:%s: %w", vol, path, err)
+	}
+	names := make([]string, 0, len(children))
+	for _, child := range children {
+		names = append(names, child.Name)
+	}
+	return names, nil
 }
 
 // Size is the file's length in bytes.

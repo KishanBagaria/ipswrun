@@ -6,6 +6,8 @@ import (
 	"hash/crc32"
 	"os"
 	pathpkg "path"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,10 +22,11 @@ const (
 	eSRCH     = 3
 	eIO       = 5
 	eBADF     = 9
-	eEXIST    = 17
 	eNOMEM    = 12
 	eACCES    = 13
 	eFAULT    = 14
+	eEXIST    = 17
+	eXDEV     = 18
 	eNOTDIR   = 20
 	eISDIR    = 21
 	eINVAL    = 22
@@ -40,20 +43,22 @@ const (
 type fdKind uint8
 
 const (
-	hostFD  fdKind = iota // a real descriptor: stdio, or a file under the home or a mount
-	dirFD                 // a directory that exists only as a name
-	dataFD                // read-only bytes
+	hostFD  fdKind = iota // a real descriptor: a file under the home or a mount, the guest exe, or a device
+	stdioFD               // guest stdin (0), stdout (1) or stderr (2), even when duplicated
+	dirFD                 // a directory that exists only as a name, or on the system volume
+	dataFD                // read-only bytes, or shm_open shared memory
 	cacheFD               // a file of the build read by range: of the dyld shared cache or the system volume
 )
 
 type fd struct {
-	kind  fdKind
-	host  int
-	data  []byte
-	cache dyldcache.File
-	path  string // canonical; stdio descriptors have none
-	pos   int64
-	names []string // of a directory being listed, read on the first getdirentries
+	kind    fdKind
+	host    int
+	data    []byte
+	cache   dyldcache.File
+	readDir func() ([]string, error) // of a system-volume directory
+	path    string                   // canonical; stdio descriptors have none
+	pos     int64
+	names   []string // of a directory being listed, read on the first getdirentries
 	// shared, of a descriptor from shm_open, is the memory it names; data is then what it holds.
 	shared *sharedMemory
 }
@@ -99,16 +104,20 @@ func (p *Process) pread(f *fd, off, n uint64) ([]byte, int64) {
 
 // target is what a guest path resolves to.
 type target struct {
-	kind     fdKind
-	path     string // canonical
-	host     string
-	writable bool // under the home or a mount: the guest may create, change, rename and remove it
-	data     []byte
-	cache    dyldcache.File
+	kind    fdKind
+	path    string // canonical
+	host    string
+	root    *os.Root // under the home or a mount: every host access stays inside it, and the guest may change it
+	rel     string   // relative path inside root ("." for the mount root itself)
+	data    []byte
+	cache   dyldcache.File
+	readDir func() ([]string, error)
 }
 
 // fd is the descriptor for a target that is not a host file.
-func (t target) fd() *fd { return &fd{kind: t.kind, data: t.data, cache: t.cache, path: t.path} }
+func (t target) fd() *fd {
+	return &fd{kind: t.kind, data: t.data, cache: t.cache, readDir: t.readDir, path: t.path}
+}
 
 // hostErrno is the negated errno of a failed host call.
 func hostErrno(err error) int64 {
@@ -116,7 +125,94 @@ func hostErrno(err error) int64 {
 	if errors.As(err, &errno) && errno != 0 {
 		return -guestErrno(errno)
 	}
+	if err != nil && strings.Contains(err.Error(), "escapes") {
+		return -eACCES
+	}
 	return -eINVAL
+}
+
+// mounted is an open host directory mounted at a canonical guest directory.
+type mounted struct {
+	guest string
+	root  *os.Root
+}
+
+func openMounts(mounts []Mount) ([]mounted, error) {
+	out := make([]mounted, 0, len(mounts))
+	for _, m := range mounts {
+		host, err := filepath.EvalSymlinks(m.Host)
+		if err != nil {
+			closeMounts(out)
+			return nil, err
+		}
+		root, err := os.OpenRoot(host)
+		if err != nil {
+			closeMounts(out)
+			return nil, err
+		}
+		out = append(out, mounted{guest: canonical(m.Guest), root: root})
+	}
+	slices.SortStableFunc(out, func(a, b mounted) int { return len(b.guest) - len(a.guest) })
+	return out, nil
+}
+
+func closeMounts(mounts []mounted) {
+	for _, m := range mounts {
+		if m.root != nil {
+			m.root.Close()
+		}
+	}
+}
+
+func (m mounted) rel(path string) string {
+	if path == m.guest {
+		return "."
+	}
+	return strings.TrimPrefix(path[len(m.guest):], "/")
+}
+
+func openInRoot(root *os.Root, rel string, flags int, mode uint32) (int, error) {
+	f, err := root.OpenFile(rel, flags, os.FileMode(mode))
+	if err != nil {
+		return -1, err
+	}
+	defer f.Close()
+	h, err := syscall.Dup(int(f.Fd()))
+	if err != nil {
+		return -1, err
+	}
+	syscall.CloseOnExec(h)
+	return h, nil
+}
+
+func statInRoot(root *os.Root, rel string, follow bool, st *syscall.Stat_t) error {
+	var (
+		fi  os.FileInfo
+		err error
+	)
+	if follow {
+		fi, err = root.Stat(rel)
+	} else {
+		fi, err = root.Lstat(rel)
+	}
+	if err != nil {
+		return err
+	}
+	raw, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return syscall.EINVAL
+	}
+	*st = *raw
+	return nil
+}
+
+func readDirInRoot(root *os.Root, rel string) ([]os.DirEntry, error) {
+	f, err := root.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return f.ReadDir(-1)
 }
 
 func closeHost(fd int) { syscall.Close(fd) }
@@ -178,6 +274,12 @@ func under(path, dir string) bool { return path == dir || strings.HasPrefix(path
 // resolve maps a guest path to what backs it. Only the home, the mounts, the guest executable and
 // three device nodes ever name host files; everything else is served from memory or does not exist.
 func (p *Process) resolve(path string) (target, bool) {
+	if path == "" {
+		return target{}, false
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = p.cwd + "/" + path
+	}
 	path = canonical(path)
 	t, ok := p.lookup(path)
 	if t.path == "" {
@@ -204,9 +306,9 @@ func (p *Process) lookup(path string) (target, bool) {
 	}
 	for _, m := range p.mounts {
 		switch {
-		case under(path, m.Guest):
-			return target{kind: hostFD, host: m.Host + path[len(m.Guest):], writable: true}, true
-		case under(m.Guest, path): // on the way to it
+		case under(path, m.guest):
+			return target{kind: hostFD, root: m.root, rel: m.rel(path)}, true
+		case under(m.guest, path): // on the way to it
 			return target{kind: dirFD}, true
 		}
 	}
@@ -226,7 +328,7 @@ func (p *Process) lookup(path string) (target, bool) {
 			stopf("%v", err)
 		}
 		if f.Dir {
-			return target{kind: dirFD, path: f.Real}, true
+			return target{kind: dirFD, path: f.Real, readDir: f.ReadDir}, true
 		}
 		if f.File != nil {
 			return target{kind: cacheFD, cache: f.File}, true
@@ -279,7 +381,7 @@ func sysStat64(p *Process, a []uint64) int64  { return p.doStat(p.cstr(a[0]), a[
 func sysLstat64(p *Process, a []uint64) int64 { return p.doStat(p.cstr(a[0]), a[1], false) }
 
 func sysFstatat64(p *Process, a []uint64) int64 {
-	return p.doStat(p.at(a[0], a[1]), a[2], a[3]&0x20 == 0)
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.doStat(path, a[2], a[3]&0x20 == 0) })
 }
 
 func sysFstat64(p *Process, a []uint64) int64 {
@@ -312,7 +414,15 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 				hostFlags |= m.host
 			}
 		}
-		h, err := syscall.Open(t.host, hostFlags|syscall.O_CLOEXEC, uint32(mode&0o777))
+		var (
+			h   int
+			err error
+		)
+		if t.root != nil {
+			h, err = openInRoot(t.root, t.rel, hostFlags, uint32(mode&0o777))
+		} else {
+			h, err = syscall.Open(t.host, hostFlags|syscall.O_CLOEXEC, uint32(mode&0o777))
+		}
 		if err != nil {
 			p.note("  open %s failed: %v", path, err)
 			return hostErrno(err)
@@ -324,35 +434,65 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 	return int64(n)
 }
 
-// newFD gives a descriptor the next number.
+const maxFD = 10240
+
+// allocFD returns the lowest unused file descriptor number at or above minFD.
+func (p *Process) allocFD(minFD uint64) uint64 {
+	for n := minFD; ; n++ {
+		if p.fds[n] == nil {
+			return n
+		}
+	}
+}
+
+// newFD gives a descriptor the lowest unused number.
 func (p *Process) newFD(f *fd) uint64 {
-	n := p.nextFD
-	p.nextFD++
+	n := p.allocFD(0)
 	p.fds[n] = f
 	return n
 }
 
-// at resolves a path argument relative to a directory descriptor.
-func (p *Process) at(dirfd, path uint64) string {
+const atFDCWD = -2 // AT_FDCWD on Darwin
+
+// at resolves a path argument relative to a directory descriptor (or cwd for AT_FDCWD).
+func (p *Process) at(dirfd, path uint64) (string, int64) {
 	s := p.cstr(path)
 	if s == "" {
-		return "/nonexistent/empty-path"
+		return "", -eNOENT
 	}
-	if !strings.HasPrefix(s, "/") {
-		dir := "/"
-		if f := p.fds[dirfd&0xFFFFFFFF]; f != nil && f.path != "" {
-			dir = f.path
-		}
-		if !strings.HasSuffix(dir, "/") {
-			dir += "/"
-		}
-		s = dir + s
+	if strings.HasPrefix(s, "/") {
+		return s, 0
 	}
-	return s
+	dir := p.cwd
+	if int32(dirfd) != atFDCWD {
+		f := p.fds[dirfd&0xFFFFFFFF]
+		if f == nil {
+			return "", -eBADF
+		}
+		if f.path == "" {
+			return "", -eNOTDIR
+		}
+		dir = f.path
+	}
+	if !strings.HasSuffix(dir, "/") {
+		dir += "/"
+	}
+	return dir + s, 0
 }
 
-func sysOpen(p *Process, a []uint64) int64   { return p.doOpen(p.cstr(a[0]), a[1], a[2]) }
-func sysOpenat(p *Process, a []uint64) int64 { return p.doOpen(p.at(a[0], a[1]), a[2], a[3]) }
+// atPath calls f with a path argument resolved relative to a directory descriptor.
+func (p *Process) atPath(dirfd, path uint64, f func(string) int64) int64 {
+	s, errno := p.at(dirfd, path)
+	if errno != 0 {
+		return errno
+	}
+	return f(s)
+}
+
+func sysOpen(p *Process, a []uint64) int64 { return p.doOpen(p.cstr(a[0]), a[1], a[2]) }
+func sysOpenat(p *Process, a []uint64) int64 {
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.doOpen(path, a[2], a[3]) })
+}
 
 func sysGuardedOpen(p *Process, a []uint64) int64 { return p.doOpen(p.cstr(a[0]), a[3], a[4]) }
 
@@ -362,13 +502,13 @@ func sysGuardedPwrite(p *Process, a []uint64) int64 {
 	return sysPwrite(p, []uint64{a[0], a[2], a[3], a[4]})
 }
 
-func sysClose(p *Process, a []uint64) int64 {
-	f := p.fds[a[0]]
+func (p *Process) closeFD(n uint64) int64 {
+	f := p.fds[n]
 	if f == nil {
 		return -eBADF
 	}
-	delete(p.fds, a[0])
-	if f.kind == hostFD && a[0] > 2 {
+	delete(p.fds, n)
+	if f.kind == hostFD {
 		closeHost(f.host)
 	}
 	if f.shared != nil {
@@ -376,6 +516,8 @@ func sysClose(p *Process, a []uint64) int64 {
 	}
 	return 0
 }
+
+func sysClose(p *Process, a []uint64) int64 { return p.closeFD(a[0]) }
 
 // hostBuffer bounds a guest-supplied length before it becomes a host allocation.
 func hostBuffer(n uint64) []byte { return make([]byte, min(n, 1<<30)) }
@@ -386,14 +528,17 @@ func sysRead(p *Process, a []uint64) int64 {
 		return -eBADF
 	}
 	var data []byte
-	if f.kind == hostFD { // the host keeps the position
+	switch {
+	case f.kind == hostFD || (f.kind == stdioFD && f.host == 0): // the host keeps the position
 		data = hostBuffer(a[2])
 		n, err := syscall.Read(f.host, data)
 		if err != nil {
 			return hostErrno(err)
 		}
 		data = data[:n]
-	} else {
+	case f.kind == stdioFD:
+		return -eBADF
+	default:
 		var errno int64
 		if data, errno = p.pread(f, uint64(max(f.pos, 0)), a[2]); errno != 0 {
 			return errno
@@ -409,6 +554,9 @@ func sysPread(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
+	if f.kind == stdioFD {
+		return -eSPIPE
+	}
 	data, errno := p.pread(f, a[3], a[2])
 	if errno != 0 {
 		return errno
@@ -419,13 +567,16 @@ func sysPread(p *Process, a []uint64) int64 {
 
 func sysWrite(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
-	if f == nil || f.kind != hostFD {
+	if f == nil {
 		return -eBADF
 	}
-	data := p.read(a[1], a[2])
-	if a[0] == 1 || a[0] == 2 {
+	if f.kind == stdioFD {
+		if f.host != 1 && f.host != 2 {
+			return -eBADF
+		}
+		data := p.read(a[1], a[2])
 		text := strings.ToValidUTF8(string(data), "�")
-		if a[0] == 1 {
+		if f.host == 1 {
 			p.stdout.WriteString(text)
 		} else {
 			p.stderr.WriteString(text)
@@ -435,6 +586,10 @@ func sysWrite(p *Process, a []uint64) int64 {
 		}
 		return int64(a[2])
 	}
+	if f.kind != hostFD {
+		return -eBADF
+	}
+	data := p.read(a[1], a[2])
 	n, err := syscall.Write(f.host, data)
 	if err != nil {
 		return hostErrno(err)
@@ -517,6 +672,13 @@ func sysFtruncate(p *Process, a []uint64) int64 {
 func (p *Process) doAccess(path string) int64 {
 	t, ok := p.resolve(path)
 	if ok && t.kind == hostFD {
+		if t.root != nil {
+			_, err := t.root.Stat(t.rel)
+			if err != nil {
+				return hostErrno(err)
+			}
+			return 0
+		}
 		var st syscall.Stat_t
 		ok = syscall.Stat(t.host, &st) == nil
 	}
@@ -527,14 +689,46 @@ func (p *Process) doAccess(path string) int64 {
 	return 0
 }
 
-func sysAccess(p *Process, a []uint64) int64    { return p.doAccess(p.cstr(a[0])) }
-func sysFaccessat(p *Process, a []uint64) int64 { return p.doAccess(p.at(a[0], a[1])) }
+func sysAccess(p *Process, a []uint64) int64 { return p.doAccess(p.cstr(a[0])) }
+func sysFaccessat(p *Process, a []uint64) int64 {
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.doAccess(path) })
+}
 
-// hostPath resolves a guest path to the host file behind it. ok says that it is under the home or a mount:
-// only those can be changed, never the guest executable or a device.
-func (p *Process) hostPath(path string) (host string, ok bool) {
+func sysChdir(p *Process, a []uint64) int64 {
+	t, info, errno := p.describePath("chdir", p.cstr(a[0]), true)
+	if errno != 0 {
+		return errno
+	}
+	if info.mode&syscall.S_IFMT != syscall.S_IFDIR {
+		return -eNOTDIR
+	}
+	p.cwd = t.path
+	return 0
+}
+
+func sysFchdir(p *Process, a []uint64) int64 {
+	f := p.fds[a[0]]
+	if f == nil {
+		return -eBADF
+	}
+	if f.path == "" {
+		return -eNOTDIR
+	}
+	info, errno := p.describeFD(f)
+	if errno != 0 {
+		return errno
+	}
+	if info.mode&syscall.S_IFMT != syscall.S_IFDIR {
+		return -eNOTDIR
+	}
+	p.cwd = f.path
+	return 0
+}
+
+// writableTarget resolves a guest path to a writable target under the home or a mount.
+func (p *Process) writableTarget(path string) (target, bool) {
 	t, _ := p.resolve(path)
-	return t.host, t.writable
+	return t, t.root != nil
 }
 
 // hostCall reports the result of a host file operation the way a system call does.
@@ -547,45 +741,67 @@ func hostCall(err error) int64 {
 
 func (p *Process) doUnlink(path string, dir bool) int64 {
 	p.note("  unlink %s", path)
-	host, ok := p.hostPath(path)
+	t, ok := p.writableTarget(path)
 	if !ok {
 		return -eNOENT
 	}
-	if dir {
-		return hostCall(syscall.Rmdir(host))
+	fi, err := t.root.Lstat(t.rel)
+	if err != nil {
+		return hostErrno(err)
 	}
-	return hostCall(syscall.Unlink(host))
+	switch {
+	case dir && !fi.IsDir():
+		return -eNOTDIR
+	case !dir && fi.IsDir():
+		return -ePERM
+	}
+	return hostCall(t.root.Remove(t.rel))
 }
 
 func sysUnlink(p *Process, a []uint64) int64 { return p.doUnlink(p.cstr(a[0]), false) }
 func sysRmdir(p *Process, a []uint64) int64  { return p.doUnlink(p.cstr(a[0]), true) }
 func sysUnlinkat(p *Process, a []uint64) int64 {
-	return p.doUnlink(p.at(a[0], a[1]), a[2]&0x80 != 0) // AT_REMOVEDIR
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.doUnlink(path, a[2]&0x80 != 0) }) // AT_REMOVEDIR
 }
 
 func (p *Process) doMkdir(path string, mode uint64) int64 {
-	host, ok := p.hostPath(path)
+	t, ok := p.writableTarget(path)
 	if !ok {
 		return -eACCES
 	}
-	return hostCall(syscall.Mkdir(host, uint32(mode&0o777)))
+	return hostCall(t.root.Mkdir(t.rel, os.FileMode(mode&0o777)))
 }
 
-func sysMkdir(p *Process, a []uint64) int64   { return p.doMkdir(p.cstr(a[0]), a[1]) }
-func sysMkdirat(p *Process, a []uint64) int64 { return p.doMkdir(p.at(a[0], a[1]), a[2]) }
+func sysMkdir(p *Process, a []uint64) int64 { return p.doMkdir(p.cstr(a[0]), a[1]) }
+func sysMkdirat(p *Process, a []uint64) int64 {
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.doMkdir(path, a[2]) })
+}
 
 func (p *Process) doRename(from, to string) int64 {
-	hostFrom, ok1 := p.hostPath(from)
-	hostTo, ok2 := p.hostPath(to)
+	t1, ok1 := p.writableTarget(from)
+	t2, ok2 := p.writableTarget(to)
 	if !ok1 || !ok2 {
 		return -eACCES
 	}
-	return hostCall(syscall.Rename(hostFrom, hostTo))
+	if t1.root != t2.root {
+		return -eXDEV
+	}
+	return hostCall(t1.root.Rename(t1.rel, t2.rel))
 }
 
 func sysRename(p *Process, a []uint64) int64 { return p.doRename(p.cstr(a[0]), p.cstr(a[1])) }
 
-func sysRenameat(p *Process, a []uint64) int64 { return p.doRename(p.at(a[0], a[1]), p.at(a[2], a[3])) }
+func sysRenameat(p *Process, a []uint64) int64 {
+	from, errno := p.at(a[0], a[1])
+	if errno != 0 {
+		return errno
+	}
+	to, errno := p.at(a[2], a[3])
+	if errno != 0 {
+		return errno
+	}
+	return p.doRename(from, to)
+}
 
 // sysRenameatx is renameat with flags (swap, exclusive), which nothing has needed yet.
 func sysRenameatx(p *Process, a []uint64) int64 {
@@ -596,57 +812,84 @@ func sysRenameatx(p *Process, a []uint64) int64 {
 }
 
 func sysTruncate(p *Process, a []uint64) int64 {
-	host, ok := p.hostPath(p.cstr(a[0]))
+	t, ok := p.writableTarget(p.cstr(a[0]))
 	if !ok {
 		return -eACCES
 	}
-	return hostCall(syscall.Truncate(host, int64(a[1])))
+	f, err := t.root.OpenFile(t.rel, os.O_WRONLY, 0)
+	if err != nil {
+		return hostErrno(err)
+	}
+	defer f.Close()
+	return hostCall(f.Truncate(int64(a[1])))
 }
 
 // doReadlink serves the links a guest makes under its home or a mount; nothing else is a symbolic link.
 func (p *Process) doReadlink(path string, buf, size uint64) int64 {
-	host, ok := p.hostPath(path)
+	t, ok := p.writableTarget(path)
 	if !ok {
 		return -eINVAL
 	}
-	out := hostBuffer(size)
-	n, err := syscall.Readlink(host, out)
+	link, err := t.root.Readlink(t.rel)
 	if err != nil {
 		return hostErrno(err)
 	}
-	p.write(buf, out[:n])
+	n := min(uint64(len(link)), size)
+	p.write(buf, []byte(link)[:n])
 	return int64(n)
 }
 
-func sysReadlink(p *Process, a []uint64) int64   { return p.doReadlink(p.cstr(a[0]), a[1], a[2]) }
-func sysReadlinkat(p *Process, a []uint64) int64 { return p.doReadlink(p.at(a[0], a[1]), a[2], a[3]) }
+func sysReadlink(p *Process, a []uint64) int64 { return p.doReadlink(p.cstr(a[0]), a[1], a[2]) }
+func sysReadlinkat(p *Process, a []uint64) int64 {
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.doReadlink(path, a[2], a[3]) })
+}
 
-// list reads the names in an open directory, once. Only directories under the home or a mount have any.
+// list reads the names in an open directory, once: directories under the home or a mount, and
+// allowed directories on the build's system volume.
 func (p *Process) list(f *fd) int64 {
 	if f.names != nil {
 		return 0
 	}
-	names := []string{".", ".."}
-	switch f.kind {
-	case hostFD:
-		host, _ := p.hostPath(f.path)
-		entries, err := os.ReadDir(host)
-		if err != nil {
-			return -eNOTDIR
-		}
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-	case dirFD:
-	default:
+	t := target{kind: f.kind, path: f.path, readDir: f.readDir}
+	if f.kind == hostFD {
+		t, _ = p.writableTarget(f.path)
+	}
+	names, ok := p.dirNames(t)
+	if !ok {
 		return -eNOTDIR
 	}
-	f.names = names
+	f.names = append([]string{".", ".."}, names...)
 	return 0
 }
 
-// sysGetdirentries64 lists a directory under the home; the directories that exist only as names
-// are empty. A buffer of 1024 bytes or more ends in flags, where 1 says the listing is complete.
+// dirNames reads the names in a directory target, and says whether it is one that can be listed.
+func (p *Process) dirNames(t target) ([]string, bool) {
+	switch {
+	case t.root != nil:
+		entries, err := readDirInRoot(t.root, t.rel)
+		if err != nil {
+			return nil, false
+		}
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		return names, true
+	case t.kind == dirFD:
+		if t.readDir == nil {
+			return nil, true
+		}
+		names, err := away(p.m.clock, t.readDir)
+		if err != nil {
+			stopf("readdir %s: %v", t.path, err)
+		}
+		return names, true
+	}
+	return nil, false
+}
+
+// sysGetdirentries64 lists a directory under the home, a mount, or an allowed system directory.
+// A buffer of 1024 bytes or more ends in flags, where 1 says the listing is complete.
 func sysGetdirentries64(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
 	if f == nil {
@@ -668,10 +911,17 @@ func sysGetdirentries64(p *Process, a []uint64) int64 {
 		}
 		kind := byte(syscall.DT_DIR)
 		child := pathpkg.Join(f.path, name)
-		if host, ok := p.hostPath(child); ok && f.pos >= 2 {
-			var st syscall.Stat_t
-			if syscall.Lstat(host, &st) == nil {
-				kind = byte(st.Mode >> 12) // DT_* are the file type bits of a mode
+		if f.pos >= 2 {
+			if t, ok := p.resolve(child); ok {
+				switch {
+				case t.root != nil:
+					var st syscall.Stat_t
+					if statInRoot(t.root, t.rel, false, &st) == nil {
+						kind = byte(st.Mode >> 12) // DT_* are the file type bits of a mode
+					}
+				case t.kind == cacheFD || t.kind == dataFD:
+					kind = byte(syscall.DT_REG)
+				}
 			}
 		}
 		le.PutUint64(entry[0:], crcInode(child)|1)
@@ -692,6 +942,47 @@ func sysGetdirentries64(p *Process, a []uint64) int64 {
 	return int64(len(out))
 }
 
+// dupFD duplicates oldfd to target (if exact) or to the lowest unused number >= minFD.
+func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
+	f := p.fds[oldfd]
+	if f == nil {
+		return -eBADF
+	}
+	if int64(minFD) < 0 || minFD >= maxFD {
+		if exact {
+			return -eBADF
+		}
+		return -eINVAL
+	}
+	if exact && oldfd == minFD {
+		return int64(minFD)
+	}
+	var dup *fd
+	switch {
+	case f.kind == hostFD:
+		h, err := syscall.Dup(f.host)
+		if err != nil {
+			return hostErrno(err)
+		}
+		syscall.CloseOnExec(h)
+		dup = &fd{kind: hostFD, host: h, path: f.path}
+	case f.kind == stdioFD:
+		dup = &fd{kind: stdioFD, host: f.host, path: f.path}
+	case f.shared != nil:
+		dup = &fd{kind: f.kind, shared: f.shared.retain(), path: f.path, pos: f.pos}
+	default:
+		dup = f // shares the offset, like a real duplicate
+	}
+	n := minFD
+	if exact {
+		p.closeFD(n) // if open
+	} else {
+		n = p.allocFD(minFD)
+	}
+	p.fds[n] = dup
+	return int64(n)
+}
+
 func sysFcntl(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
 	if f == nil {
@@ -705,20 +996,7 @@ func sysFcntl(p *Process, a []uint64) int64 {
 		}
 		p.write(arg, str(path))
 	case 0, 67: // F_DUPFD, F_DUPFD_CLOEXEC
-		n := p.nextFD
-		p.nextFD++
-		if f.kind == hostFD {
-			h, err := syscall.Dup(f.host)
-			if err != nil {
-				return hostErrno(err)
-			}
-			p.fds[n] = &fd{kind: hostFD, host: h, path: f.path}
-		} else if f.shared != nil {
-			p.fds[n] = &fd{kind: f.kind, shared: f.shared.retain(), path: f.path, pos: f.pos}
-		} else {
-			p.fds[n] = f // shares the offset, like a real duplicate
-		}
-		return int64(n)
+		return p.dupFD(a[0], arg, false)
 	case 3: // F_GETFL
 		return 2
 	case 97: // F_ADDFILESIGS_RETURN: the signature covers the file up to the blob
@@ -732,7 +1010,8 @@ func sysFcntl(p *Process, a []uint64) int64 {
 	return 0
 }
 
-func sysDup(p *Process, a []uint64) int64 { return sysFcntl(p, []uint64{a[0], 0, 0}) }
+func sysDup(p *Process, a []uint64) int64  { return p.dupFD(a[0], 0, false) }
+func sysDup2(p *Process, a []uint64) int64 { return p.dupFD(a[0], a[1], true) }
 
 // volume is a mounted file system. There are two, as on a real system, because callers that list
 // the mounts (CarbonCore) insist that each has its own device id.

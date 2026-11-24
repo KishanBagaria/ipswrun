@@ -1,7 +1,6 @@
 package emulator
 
 import (
-	"os"
 	pathpkg "path"
 	"strings"
 	"syscall"
@@ -26,7 +25,7 @@ func (p *Process) describe(kind fdKind, path string, size int64, hostStat func(*
 		info.ino = rootInode
 	}
 	switch kind {
-	case hostFD:
+	case hostFD, stdioFD:
 		var st syscall.Stat_t
 		if err := hostStat(&st); err != nil {
 			return fileInfo{}, hostErrno(err)
@@ -55,11 +54,15 @@ func (p *Process) describePath(op, path string, follow bool) (target, fileInfo, 
 		p.note("  ENOENT %s %s", op, path)
 		return t, fileInfo{}, -eNOENT
 	}
-	stat := syscall.Lstat
-	if follow {
-		stat = syscall.Stat
-	}
-	info, errno := p.describe(t.kind, t.path, t.fd().size(), func(st *syscall.Stat_t) error { return stat(t.host, st) })
+	info, errno := p.describe(t.kind, t.path, t.fd().size(), func(st *syscall.Stat_t) error {
+		if t.root != nil {
+			return statInRoot(t.root, t.rel, follow, st)
+		}
+		if follow {
+			return syscall.Stat(t.host, st)
+		}
+		return syscall.Lstat(t.host, st)
+	})
 	return t, info, errno
 }
 
@@ -189,9 +192,12 @@ var (
 	dirAttrs = []attr{
 		{0x1, 4, attrOne},
 		{0x2, 4, func(c *attrContext) []byte {
-			host, _ := c.p.hostPath(c.path)
-			entries, _ := os.ReadDir(host)
-			return le32(uint32(len(entries)))
+			if t, ok := c.p.resolve(c.path); ok {
+				if names, ok := c.p.dirNames(t); ok {
+					return le32(uint32(len(names)))
+				}
+			}
+			return le32(0)
 		}},
 		{0x4, 4, nil}, {0x8, 8, nil}, {0x10, 4, attrBlock}, {0x20, 8, nil},
 	}
@@ -327,8 +333,10 @@ func (p *Process) getattrPath(path string, a []uint64) int64 {
 	return p.getattr(&attrContext{info, p, t.path}, a)
 }
 
-func sysGetattrlist(p *Process, a []uint64) int64   { return p.getattrPath(p.cstr(a[0]), a[1:]) }
-func sysGetattrlistat(p *Process, a []uint64) int64 { return p.getattrPath(p.at(a[0], a[1]), a[2:]) }
+func sysGetattrlist(p *Process, a []uint64) int64 { return p.getattrPath(p.cstr(a[0]), a[1:]) }
+func sysGetattrlistat(p *Process, a []uint64) int64 {
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.getattrPath(path, a[2:]) })
+}
 
 func sysFgetattrlist(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]

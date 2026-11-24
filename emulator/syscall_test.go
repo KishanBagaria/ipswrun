@@ -330,5 +330,95 @@ func TestBugFixes(t *testing.T) {
 		if x0, carry, stopped := p.trap(getentropy, dataAddr, 257); stopped != "" || !carry || x0 != eIO {
 			t.Errorf("getentropy(257): x0=%d carry=%v stopped=%q; want EIO", x0, carry, stopped)
 		}
+
+		// hw.model reflects Config.OS["model"] when set.
+		p.os["model"] = "Mac16,1"
+		p.sysctls = nil
+		p.write(dataAddr, str("hw.model"))
+		p.write(dataAddr+0x100, le64(64))
+		if x0, carry, stopped := p.trap(number(t, "sysctlbyname"), dataAddr, 8, dataAddr+0x200, dataAddr+0x100); stopped != "" || carry || x0 != 0 {
+			t.Fatalf("sysctlbyname hw.model: x0=%d carry=%v stopped=%q", x0, carry, stopped)
+		}
+		if got := p.cstr(dataAddr + 0x200); got != "Mac16,1" {
+			t.Errorf("hw.model = %q, want Mac16,1", got)
+		}
+
+		// chdir, fchdir, relative paths, AT_FDCWD, and F_GETPATH (getcwd).
+		p.write(dataAddr, str(GuestHome+"/sub"))
+		if x0, carry, _ := p.trap(number(t, "mkdir"), dataAddr, 0o755); carry || x0 != 0 {
+			t.Fatalf("mkdir %s/sub: x0=%d carry=%v", GuestHome, x0, carry)
+		}
+		if x0, carry, _ := p.trap(number(t, "chdir"), dataAddr); carry || x0 != 0 {
+			t.Fatalf("chdir: x0=%d carry=%v", x0, carry)
+		}
+		// open relative file via open and openat(AT_FDCWD).
+		p.write(dataAddr, str("rel.txt"))
+		fd1, carry, _ := p.trap(number(t, "open"), dataAddr, 0x202, 0o644) // O_RDWR|O_CREAT
+		if carry || fd1 < 3 {
+			t.Fatalf("relative open: fd=%d carry=%v", fd1, carry)
+		}
+		p.trap(number(t, "close"), fd1)
+		// chdir to a non-directory fails with ENOTDIR.
+		if x0, carry, _ := p.trap(number(t, "chdir"), dataAddr); !carry || x0 != eNOTDIR {
+			t.Errorf("chdir to file: x0=%d carry=%v, want ENOTDIR", x0, carry)
+		}
+		// openat with AT_FDCWD (-2) resolves relative to cwd, and bad dirfd returns EBADF.
+		atFD, carry, _ := p.trap(number(t, "openat"), ^uint64(1), dataAddr, 0, 0) // int32(-2)
+		if carry || atFD < 3 {
+			t.Fatalf("openat(AT_FDCWD, rel.txt): fd=%d carry=%v", atFD, carry)
+		}
+		p.trap(number(t, "close"), atFD)
+		if x0, carry, _ := p.trap(number(t, "openat"), 999, dataAddr, 0, 0); !carry || x0 != eBADF {
+			t.Errorf("openat(999, rel.txt): x0=%d carry=%v, want EBADF", x0, carry)
+		}
+		// open(".") + fcntl(F_GETPATH) returns cwd (how Darwin getcwd works).
+		p.write(dataAddr, str("."))
+		dotFD, carry, _ := p.trap(number(t, "open"), dataAddr, 0, 0)
+		if carry {
+			t.Fatalf("open(.): %d", dotFD)
+		}
+		if x0, carry, _ := p.trap(number(t, "fcntl"), dotFD, 50, dataAddr+0x200); carry || x0 != 0 {
+			t.Fatalf("fcntl F_GETPATH: x0=%d carry=%v", x0, carry)
+		}
+		if got := p.cstr(dataAddr + 0x200); got != GuestHome+"/sub" {
+			t.Errorf("getcwd via F_GETPATH = %q, want %s/sub", got, GuestHome)
+		}
+		// fchdir back to home.
+		p.write(dataAddr, str(GuestHome))
+		homeFD, carry, _ := p.trap(number(t, "open"), dataAddr, 0, 0)
+		if carry {
+			t.Fatalf("open(home): %d", homeFD)
+		}
+		if x0, carry, _ := p.trap(number(t, "fchdir"), homeFD); carry || x0 != 0 || p.cwd != GuestHome {
+			t.Errorf("fchdir: x0=%d carry=%v cwd=%q", x0, carry, p.cwd)
+		}
+		p.trap(number(t, "close"), dotFD)
+		p.trap(number(t, "close"), homeFD)
+
+		// dup(1), fcntl(F_DUPFD, min), and dup2 keep stdio writes captured instead of leaking to host.
+		dupOut, carry, _ := p.trap(number(t, "dup"), 1)
+		if carry || dupOut < 3 {
+			t.Fatalf("dup(1): fd=%d carry=%v", dupOut, carry)
+		}
+		fdupOut, carry, _ := p.trap(number(t, "fcntl"), 1, 0, 7) // F_DUPFD >= 7
+		if carry || fdupOut != 7 {
+			t.Fatalf("fcntl(1, F_DUPFD, 7): fd=%d carry=%v, want 7", fdupOut, carry)
+		}
+		dup2Err, carry, _ := p.trap(number(t, "dup2"), 2, 10)
+		if carry || dup2Err != 10 {
+			t.Fatalf("dup2(2, 10): fd=%d carry=%v, want 10", dup2Err, carry)
+		}
+		p.write(dataAddr, []byte("via-dup "))
+		p.trap(number(t, "write"), dupOut, dataAddr, 8)
+		p.write(dataAddr, []byte("via-fdup"))
+		p.trap(number(t, "write"), fdupOut, dataAddr, 8)
+		p.write(dataAddr, []byte("err-dup2"))
+		p.trap(number(t, "write"), dup2Err, dataAddr, 8)
+		p.trap(number(t, "close"), dupOut)
+		p.trap(number(t, "close"), fdupOut)
+		p.trap(number(t, "close"), dup2Err)
+		if p.Stdout() != "via-dup via-fdup" || p.Stderr() != "err-dup2" {
+			t.Errorf("captured stdout=%q stderr=%q", p.Stdout(), p.Stderr())
+		}
 	})
 }

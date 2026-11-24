@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/KishanBagaria/ipswrun/dyldcache"
@@ -156,16 +157,20 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		return nil, nil, err
 	}
 
+	isAllowed := func(path string) bool {
+		for _, prefix := range allowed {
+			if strings.HasPrefix(path, prefix) || path+"/" == prefix || strings.HasPrefix(prefix, path+"/") {
+				return true
+			}
+		}
+		return false
+	}
 	known := map[string]SystemFile{}
 	system := func(path string) (SystemFile, error) {
 		if f, ok := known[path]; ok {
 			return f, nil
 		}
-		wanted := false
-		for _, prefix := range allowed {
-			wanted = wanted || strings.HasPrefix(path, prefix) || path+"/" == prefix || strings.HasPrefix(prefix, path+"/")
-		}
-		if !wanted {
+		if !isAllowed(path) {
 			// A framework inside another is reached through a symbolic link (Frameworks, for
 			// Versions/Current/Frameworks). Its code is in the shared cache under its real path,
 			// which dyld finds by opening the framework's directory: that much of it exists.
@@ -190,7 +195,20 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		var f SystemFile
 		switch entry.Kind {
 		case rangefs.Directory:
-			f = SystemFile{Dir: true}
+			dirPath := path
+			f = SystemFile{Dir: true, ReadDir: sync.OnceValues(func() ([]string, error) { // the image does not change
+				entries, err := image.ReadDir(rangefs.FileSystem, dirPath)
+				if err != nil {
+					return nil, err
+				}
+				var visible []string
+				for _, name := range entries {
+					if isAllowed(pathpkg.Join(dirPath, name)) {
+						visible = append(visible, name)
+					}
+				}
+				return visible, nil
+			})}
 		case rangefs.Regular:
 			f = SystemFile{File: entry.File}
 		}
@@ -200,7 +218,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 
 	build := image.Build()
 	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, System: system, Trace: run.Trace, Survey: run.Survey,
-		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0"}})
+		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device()}})
 	if err != nil {
 		return nil, cache, err
 	}

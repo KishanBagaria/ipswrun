@@ -3,7 +3,6 @@ package emulator
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -17,8 +16,8 @@ import (
 // exits.
 type Machine struct {
 	cfg      Config
-	dyld     []byte  // the build's dyld, as the emulated CPU runs it
-	mounts   []Mount // the home among them; longest guest path first
+	dyld     []byte    // the build's dyld, as the emulated CPU runs it
+	mounts   []mounted // the home among them; longest guest path first
 	procs    []*Process
 	running  *Process                 // the process whose thread has, or last had, the turn
 	services map[string]*service      // what launchd knows (see launchd.go)
@@ -54,15 +53,10 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err := CheckMounts(cfg.Mounts); err != nil {
 		return nil, err
 	}
-	mounts := append([]Mount{{GuestHome, cfg.Home}}, cfg.Mounts...)
-	for i, m := range mounts {
-		host, err := filepath.EvalSymlinks(m.Host)
-		if err != nil {
-			return nil, err
-		}
-		mounts[i] = Mount{canonical(m.Guest), host}
+	mounts, err := openMounts(append([]Mount{{GuestHome, cfg.Home}}, cfg.Mounts...))
+	if err != nil {
+		return nil, err
 	}
-	slices.SortStableFunc(mounts, func(a, b Mount) int { return len(b.Guest) - len(a.Guest) })
 	return &Machine{cfg: cfg, dyld: dyld, mounts: mounts, services: map[string]*service{}, named: map[string]*sharedMemory{}, clock: newClock()}, nil
 }
 
@@ -103,7 +97,7 @@ func (m *Machine) Main() *Process { return m.procs[0] }
 // Processes are every guest that was started, the main one first.
 func (m *Machine) Processes() []*Process { return m.procs }
 
-// Close releases every process, and then the memory they shared.
+// Close releases every process, the memory they shared, and the mount roots.
 func (m *Machine) Close() {
 	for _, p := range m.procs {
 		p.Close()
@@ -112,6 +106,8 @@ func (m *Machine) Close() {
 		s.free()
 	}
 	m.shared = nil
+	closeMounts(m.mounts)
+	m.mounts = nil
 }
 
 // Run runs the guests until the main one exits. Any other end (a fault, something unimplemented,
