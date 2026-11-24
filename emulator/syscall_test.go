@@ -318,3 +318,17 @@ func TestDispatch(t *testing.T) {
 		}
 	})
 }
+
+func TestBugFixes(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		// getentropy succeeds up to 256 bytes and fails with EIO above 256.
+		getentropy := number(t, "getentropy")
+		if x0, carry, stopped := p.trap(getentropy, dataAddr, 256); stopped != "" || carry || x0 != 0 {
+			t.Errorf("getentropy(256): x0=%d carry=%v stopped=%q", x0, carry, stopped)
+		}
+		if x0, carry, stopped := p.trap(getentropy, dataAddr, 257); stopped != "" || !carry || x0 != eIO {
+			t.Errorf("getentropy(257): x0=%d carry=%v stopped=%q; want EIO", x0, carry, stopped)
+		}
+	})
+}

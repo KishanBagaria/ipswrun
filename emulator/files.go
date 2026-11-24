@@ -18,6 +18,7 @@ const (
 	ePERM     = 1
 	eNOENT    = 2
 	eSRCH     = 3
+	eIO       = 5
 	eBADF     = 9
 	eEXIST    = 17
 	eNOMEM    = 12
@@ -370,6 +371,9 @@ func sysClose(p *Process, a []uint64) int64 {
 	if f.kind == hostFD && a[0] > 2 {
 		closeHost(f.host)
 	}
+	if f.shared != nil {
+		f.shared.release()
+	}
 	return 0
 }
 
@@ -709,6 +713,8 @@ func sysFcntl(p *Process, a []uint64) int64 {
 				return hostErrno(err)
 			}
 			p.fds[n] = &fd{kind: hostFD, host: h, path: f.path}
+		} else if f.shared != nil {
+			p.fds[n] = &fd{kind: f.kind, shared: f.shared.retain(), path: f.path, pos: f.pos}
 		} else {
 			p.fds[n] = f // shares the offset, like a real duplicate
 		}

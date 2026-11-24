@@ -742,6 +742,12 @@ func (p *Process) hand(q *port, m message) int64 {
 		return rcvTooLarge
 	}
 	p.ensure(m.rcvMsg, uint64(len(next.data)+trailer)) // before anything is given that could not be taken back
+	switch {
+	case uint64(len(next.aux)) <= m.auxRcvSize && len(next.aux) > 0:
+		p.ensure(m.auxRcv, uint64(len(next.aux)))
+	case m.auxRcvSize >= 8:
+		p.ensure(m.auxRcv, 8)
+	}
 	q.queue = q.queue[1:]
 	if next.moved {
 		defer release(q)

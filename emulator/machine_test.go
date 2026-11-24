@@ -187,5 +187,24 @@ func TestProcesses(t *testing.T) {
 		if string(r.read(theirs+8, 12)) != "seen by both" || string(p.read(mine+100, 8)) != "and back" {
 			t.Errorf("one process does not see what the other wrote: %q, %q", r.read(theirs+8, 12), p.read(mine+100, 8))
 		}
+
+		// shm_unlink releases the name's reference; closing fds and unmapping frees the backing memory.
+		shm := p.m.named["com.example.shared"]
+		if x0, carry, _ := p.trap(number(t, "shm_unlink"), msg); carry || x0 != 0 {
+			t.Fatalf("shm_unlink: x0=%d carry=%v", x0, carry)
+		}
+		if shm.data == nil {
+			t.Fatal("shared memory was freed while fds and mappings still held it")
+		}
+		p.trap(number(t, "close"), made)
+		r.trap(number(t, "close"), opened)
+		if shm.data == nil {
+			t.Fatal("shared memory was freed while mappings still held it")
+		}
+		p.unmap(mine, mine+pageSize)
+		r.unmap(theirs, theirs+pageSize)
+		if shm.data != nil || shm.refs != 0 {
+			t.Errorf("shared memory was not freed after unlink, close and unmap: refs=%d data!=nil=%v", shm.refs, shm.data != nil)
+		}
 	})
 }

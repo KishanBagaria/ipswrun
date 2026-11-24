@@ -181,5 +181,26 @@ func TestPorts(t *testing.T) {
 		if d := ask(routineCheckInMach, "com.example.other"); d.uint("error") != noSuchService {
 			t.Errorf("bootstrap_check_in of a service the guest does not provide: %v", d)
 		}
+
+		// A receive whose aux buffer is unmapped faults cleanly without dropping the queued message.
+		auxPort := allocate()
+		post(p.owned(auxPort), machMessage{data: header(0, 24, 0, 99), aux: []byte("0123456789abcdef")})
+		const vec, auxBuf uint64 = dataAddr + 0x600, dataAddr + 0x700
+		p.write(vec, append(le64(in, in), le32(0, 256)...))
+		p.write(vec+24, append(le64(nowhere, nowhere), le32(0, 32)...))
+		if x0, _, stopped := p.trap(-47, vec, machRcvMsg|msgVector, 0, 0, 0, uint64(auxPort)<<32, 2, 0); stopped != "" || x0 != 1 {
+			t.Errorf("mach_msg2 with unmapped aux buffer: x0=%#x stopped=%q", x0, stopped)
+		}
+		if len(p.owned(auxPort).queue) != 1 {
+			t.Fatalf("message was dropped when aux buffer faulted: queue len=%d", len(p.owned(auxPort).queue))
+		}
+		// Receiving into valid buffers afterward succeeds and delivers both body and aux.
+		p.write(vec+24, append(le64(auxBuf, auxBuf), le32(0, 32)...))
+		if x0, _, stopped := p.trap(-47, vec, machRcvMsg|msgVector, 0, 0, 0, uint64(auxPort)<<32, 2, 0); stopped != "" || x0 != 0 {
+			t.Fatalf("mach_msg2 retry with valid aux buffer: x0=%#x stopped=%q", x0, stopped)
+		}
+		if got := string(p.read(auxBuf, 16)); got != "0123456789abcdef" {
+			t.Errorf("aux data = %q", got)
+		}
 	})
 }

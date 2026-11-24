@@ -398,6 +398,9 @@ func (p *Process) Close() {
 		if f.kind == hostFD && f.host > 2 {
 			closeHost(f.host)
 		}
+		if f.shared != nil {
+			f.shared.release()
+		}
 		delete(p.fds, n)
 	}
 	p.uc.close()

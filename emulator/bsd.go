@@ -275,8 +275,11 @@ func sysKill(p *Process, a []uint64) int64 {
 func sysThreadSelfid(p *Process, a []uint64) int64 { return 0x4242 + int64(p.current.id) }
 
 // sysGetentropy is reproducible, but never repeats: corecrypto's health checks reject identical
-// blocks.
+// blocks. Darwin caps a single call at 256 bytes and answers more with EIO.
 func sysGetentropy(p *Process, a []uint64) int64 {
+	if a[1] > 256 {
+		return -eIO
+	}
 	var out []byte
 	for uint64(len(out)) < a[1] {
 		p.entropy++

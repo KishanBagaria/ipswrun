@@ -15,8 +15,8 @@ const (
 )
 
 // sharedMemory is memory of the host's that mappings share. It is kept for as long as anything
-// refers to it: a mapping, a port that names it, or the name shm_open knows it by, which it
-// keeps for the whole run.
+// refers to it: a mapping, an open descriptor, a port that names it, or the name shm_open knows
+// it by.
 type sharedMemory struct {
 	data []byte // a whole number of pages
 	refs int
@@ -123,16 +123,18 @@ func sysShmOpen(p *Process, a []uint64) int64 {
 	case a[1]&oCreate != 0 && a[1]&oExcl != 0:
 		return -eEXIST
 	}
-	return int64(p.newFD(&fd{kind: dataFD, shared: s}))
+	return int64(p.newFD(&fd{kind: dataFD, shared: s.retain()}))
 }
 
 // sysShmUnlink takes the name away. Whoever has the memory open or mapped keeps it.
 func sysShmUnlink(p *Process, a []uint64) int64 {
 	name := p.cstr(a[0])
-	if p.m.named[name] == nil {
+	s := p.m.named[name]
+	if s == nil {
 		return -eNOENT
 	}
 	delete(p.m.named, name)
+	s.release()
 	return 0
 }
 
