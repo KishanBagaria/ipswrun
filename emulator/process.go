@@ -842,12 +842,14 @@ func (p *Process) setupCommpage() {
 			page[0x90] = 0         // USER_TIMEBASE_NONE: mach_absolute_time is a trap, not the counter
 			page[0x91] = 0         // nor does the counter keep mach_continuous_time
 			page[0x10C] = 0        // no TPRO: dyld falls back to mprotect
-			// Hide CPU features the emulated core lacks (DIT, SHA3, SHA512, SPECRES) and report one CPU.
+			// Hide CPU features the emulated core lacks (DIT, SHA3, SHA512, SPECRES) and report one CPU,
+			// in one cluster: malloc sizes its per-cluster tables by _COMM_PAGE_CPU_CLUSTERS, and the
+			// host's count with one CPU makes them overlap (cfprefsd faulted in xzone malloc on 26B131).
 			caps := le.Uint64(page[0x10:]) &^ (0x0200000000000000 | 0x100000000 | 0x80000000 | 0x0000100000000000)
 			caps = caps&^0x00FF0000 | 0x00010000
 			le.PutUint64(page[0x10:], caps)
 			le.PutUint32(page[0x20:], uint32(caps))
-			page[0x22], page[0x34], page[0x35], page[0x36] = 1, 1, 1, 1
+			page[0x22], page[0x2F], page[0x34], page[0x35], page[0x36] = 1, 1, 1, 1, 1
 			// The chip is the guest's, as hw.cpufamily says, not the host's: libraries that pick
 			// their kernels by chip (libBLAS) read it here.
 			family, _ := p.sysctlValue("hw.cpufamily")

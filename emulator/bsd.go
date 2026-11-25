@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/KishanBagaria/ipswrun/dyldcache"
 )
@@ -659,10 +660,9 @@ func sysGettimeofday(p *Process, a []uint64) int64 {
 
 // sysMacSyscall answers the __mac_syscall calls guests make as a Mac's kernel answers them for a
 // process that is not sandboxed, as examples/macsyscall.c measures: AMFI's dyld policy, sandbox
-// checks, which allow everything, and the sandbox's queries of a process, which find nothing and
-// expect no container. Anything else stops: applying a sandbox profile (nothing would confine
-// the guest), issuing a sandbox extension (its token is the kernel's), quarantine, and calls not
-// measured.
+// checks, which allow everything, the sandbox's queries of a process, which find nothing and
+// expect no container, and quarantine, which it takes. Applying a sandbox profile succeeds and
+// confines nothing, by choice (see limits.md). Anything not measured stops.
 func sysMacSyscall(p *Process, a []uint64) int64 {
 	policy, call := p.cstr(a[0]), uint32(a[1])
 	p.note("  mac_syscall %s %d", policy, call)
@@ -670,47 +670,86 @@ func sysMacSyscall(p *Process, a []uint64) int64 {
 	case policy == "AMFI" && call == 90: // amfi_check_dyld_policy_self: {flags in, &flags out}
 		p.write(p.u64(a[2]+8), le64(0x1df))
 		return 0
+	case policy == "Sandbox" && call == 0: // applying a compiled profile: succeeds, confines nothing, by choice
+		return 0
 	case policy == "Sandbox" && call == 2:
 		return p.sandboxCheck(a)
 	case policy == "Sandbox" && call == 4:
 		return p.sandboxQuery(a)
+	case policy == "Sandbox" && call == 12:
+		return p.sandboxPassthrough(a)
+	case policy == "Sandbox" && call == 22: // a profile the kernel has by name: none, so libsandbox compiles it
+		return -eNOENT
 	case policy == "Sandbox" && call == 67: // sandbox_get_container_expected: {&expected, &second}
 		p.write(p.u64(a[2]), le64(0))
 		p.write(p.u64(a[2]+8), le64(0))
+		return 0
+	case policy == "Quarantine" && call == 87: // _qtn_proc_apply_to_pid: taken, nothing written
 		return 0
 	}
 	p.unimplemented("__mac_syscall "+policy+" "+strconv.Itoa(int(call)), a)
 	return -eNOSYS
 }
 
-// sandboxCheck is Sandbox 2, {&result, pid, operation, filter type, argument, flags}, of the
-// process or of launchd: allowed, with nothing written, unless the filter is a descriptor
-// (type 0xf0) that is not open. Filter types not measured stop.
+// sandboxCheck is Sandbox 2, {&result, pid, operation, filter type, argument, flags}, of any
+// process, even one that is not there: allowed, with a result of 0, for the filter types the
+// guests use (none, 5, 6, 0x1c, 0x41). A path (type 1) that is not there has a result of 2,
+// which sandbox_check reports as denied even where there is no sandbox. A descriptor (type 0xf0)
+// is EBADF, and the result left as it was, if it is not open. Filter types not measured stop.
 func (p *Process) sandboxCheck(a []uint64) int64 {
-	w := p.read(a[2], 40)
-	pid, kind, arg := le.Uint64(w[8:]), le.Uint64(w[24:]), le.Uint64(w[32:])
+	w := p.read(a[2], 48)
+	pid, kind, arg, flags := le.Uint64(w[8:]), le.Uint64(w[24:]), le.Uint64(w[32:]), le.Uint64(w[40:])
+	result := uint64(0)
 	switch {
-	case pid != uint64(p.pid) && pid != 1:
-	case kind == 0xf0:
-		if p.fds[arg&0xFFFFFFFF] == nil {
-			return -eBADF
+	case kind == 0xf0 && p.fds[arg&0xFFFFFFFF] == nil:
+		return -eBADF
+	case kind == 1:
+		if p.doAccess(p.cstr(arg)) != 0 {
+			result = 2
 		}
-		return 0
-	case kind == 0 && le.Uint64(w[16:]) == 0, kind == 5, kind == 6, kind == 0x1c, kind == 0x41:
+	case kind == 0 && le.Uint64(w[16:]) == 0, kind == 5, kind == 6, kind == 0x1c, kind == 0x41, kind == 0xf0:
+	default:
+		p.unimplemented(fmt.Sprintf("sandbox check of pid %d, filter type %#x, flags %#x", pid, kind, flags), a)
+		return -eNOSYS
+	}
+	p.write(le.Uint64(w), le64(result))
+	return 0
+}
+
+// sandboxPassthrough is Sandbox 12, sandbox_passthrough_access(descriptor, flags), as
+// CFPreferences calls it for a plist it opened: allowed for a regular file with the flags 0x2 and
+// 0x100 or neither, EACCES for one with 0x1 and for a directory, EBADF if the descriptor is not
+// open. Other descriptors and flags stop.
+func (p *Process) sandboxPassthrough(a []uint64) int64 {
+	w := p.read(a[2], 16)
+	n, flags := le.Uint64(w), le.Uint64(w[8:])
+	f := p.fds[n&0xFFFFFFFF]
+	if f == nil {
+		return -eBADF
+	}
+	var st syscall.Stat_t
+	regular, dir := f.kind == cacheFD, f.kind == dirFD
+	if f.kind == hostFD && syscall.Fstat(f.host, &st) == nil {
+		regular, dir = st.Mode&syscall.S_IFMT == syscall.S_IFREG, st.Mode&syscall.S_IFMT == syscall.S_IFDIR
+	}
+	switch {
+	case dir && flags == 0x102, regular && flags == 1:
+		return -eACCES
+	case regular && flags&^0x102 == 0:
 		return 0
 	}
-	p.unimplemented(fmt.Sprintf("sandbox check of pid %d, filter type %#x", pid, kind), a)
+	p.unimplemented(fmt.Sprintf("sandbox passthrough access of descriptor %d, flags %#x", n, flags), a)
 	return -eNOSYS
 }
 
-// sandboxQuery is Sandbox 4, {pid, kind, buffer, size, ...}, of the process: kind 0, its
-// container, is not supported where there is no sandbox, and kind 1 finds no such process.
-// Neither writes the buffer.
+// sandboxQuery is Sandbox 4, {pid, kind, buffer, size, ...}: kind 0, a process's container, is
+// not supported where there is no sandbox, and kind 1 finds no such process, whichever it is
+// asked of. Neither writes the buffer.
 func (p *Process) sandboxQuery(a []uint64) int64 {
 	w := p.read(a[2], 16)
 	pid, kind := le.Uint64(w), le.Uint64(w[8:])
 	switch {
-	case pid != uint64(p.pid):
+	case kind == 0 && pid != uint64(p.pid) && p.m.process(uint32(pid)) == nil: // not measured
 	case kind == 0:
 		return -eNOTSUP
 	case kind == 1:

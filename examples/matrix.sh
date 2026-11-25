@@ -132,9 +132,12 @@ for guest in ${guests//,/ }; do
 	[ "$guest" != client ] || options=(--agent com.example.ipswrun.echo,com.example.ipswrun.reverse=$bin/server)
 	# adi is run beside the release's adid, the daemon it asks.
 	[ "$guest" != adi ] || options=(--daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid)
-	# Two variables of ipswrun's keep CoreFoundation from asking for cfprefsd, and go.
+	# Two variables of ipswrun's keep CoreFoundation from asking for cfprefsd, and go. cfprefsd
+	# reads its sandbox profile, beside what every guest may read.
 	[ "$guest" != prefs ] || options=(--agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon'
-		--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME)
+		--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME --system /System/Library/Sandbox/Profiles/
+		--system /System/Library/FeatureFlags/ --system /System/Library/CoreServices/SystemVersion.plist --system /usr/share/icu/
+		--system /usr/lib/libobjc-trampolines.dylib)
 
 	# At most $jobs at once: when that many are running, wait for the oldest.
 	pids=()

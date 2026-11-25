@@ -59,16 +59,26 @@ Still to check against a real kernel: the map's constant errors (`necp_open` and
 
 ## `__mac_syscall`
 
-The calls guests make are answered as a Mac's kernel answers a process that is not sandboxed, as [examples/macsyscall.c](examples/macsyscall.c) measures them (run natively on macOS 27.2.1, with the arguments the guests pass):
+The calls guests make are answered as a Mac's kernel answers a process that is not sandboxed, as [examples/macsyscall.c](examples/macsyscall.c) measures them (run natively on macOS 27.2.1, with the arguments the guests pass). How cfprefsd uses them was checked by running a re-signed copy of this Mac's own cfprefsd under lldb.
 
 | Call | Answer |
 | --- | --- |
 | AMFI 90, `amfi_check_dyld_policy_self` | 0, with the flags 0x1df |
-| Sandbox 2, a check of the process or launchd | 0, nothing written, for the filter types the guests use (none, 5, 6, 0x1c, 0x41); a descriptor (0xf0) is EBADF if it is not open |
-| Sandbox 4, a query of the process | ENOTSUP for its container (kind 0), ESRCH for kind 1; the buffer is not written |
+| Sandbox 2, a check, of any process (even one that is not there) | 0, with a result of 0, allowed, for the filter types the guests use (none, a path, 5, 6, 0x1c, 0x41, a descriptor), except a path that does not exist, whose result is 2. That 2 was measured on this Mac only. A descriptor (0xf0) is EBADF, and the result left as it was, if it is not open |
+| Sandbox 4, a query of a process | ENOTSUP for its container (kind 0), ESRCH for kind 1; the buffer is not written |
+| Sandbox 12, `sandbox_passthrough_access`, as CFPreferences calls it for a plist it opened | 0 for a regular file with the flags 0x2 and 0x100 or neither; EACCES for one with 0x1 and for a directory; EBADF for a descriptor that is not open |
+| Sandbox 22, a profile the kernel has by name | ENOENT, as on this Mac for cfprefsd's: libsandbox then compiles the profile itself |
+| Sandbox 0, applying a compiled profile | 0, and nothing is confined (below) |
 | Sandbox 67, `sandbox_get_container_expected` (iOS 18 and later, as every process starts) | 0, with both words it is given set to 0: no container is expected |
+| Quarantine 87, `_qtn_proc_apply_to_pid` | 0, nothing written |
 
-Everything else stops as unimplemented: applying a sandbox profile (Sandbox 1 and 22, `sandbox_init` and the like), since nothing would confine the guest; issuing a sandbox extension (Sandbox 12), whose token is the kernel's own; Quarantine 87, which marks the process quarantined; and any other policy, call, filter type or process. cfprefsd, which the prefs guest runs beside it, makes these calls as it starts, so prefs stops: on macOS 15.6.1 and 27.2.1 at Quarantine 87, on macOS 11.0.1 and iOS 14.0 at a sandbox check of a path (filter type 1, not measured). On iOS 18.7.12, 16.0 and 27.2.1 it still runs. The answers were measured on a Mac; iOS guests get the same ones, which is not known to be what an iPhone's kernel answers.
+**A deliberate exception: a profile that is applied confines nothing.** cfprefsd enters its sandbox as it starts, and a real kernel would hold it to its profile from then on. Here applying the profile succeeds and changes nothing, so a guest can do whatever its profile forbids, and sandbox behaviour can't be studied with ipswrun. This was chosen over stopping, so that cfprefsd, and the prefs guest beside it, run.
+
+Everything else stops as unimplemented: applying a profile by any other call (Sandbox 1, the kernel's own profiles), issuing or consuming a sandbox extension (Sandbox 5 and 6 on this Mac, whose token is the kernel's), and any other policy, call, filter type, flags, descriptor or process not measured.
+
+The examples' runs let cfprefsd read its profile (`--system /System/Library/Sandbox/Profiles/` beside the defaults), so it compiles and applies it (Sandbox 0) as on a Mac. Without that, its `sandbox_init` fails with "profile not found" and the prefs guest can't synchronize on macOS 15 and later.
+
+The answers were measured on a Mac; iOS guests get the same ones, which is not known to be what an iPhone's kernel answers.
 
 ## Sysctls left out
 
