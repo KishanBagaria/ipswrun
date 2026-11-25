@@ -123,6 +123,6 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 		}
 		body = append(descriptors, body...)
 	}
-	p.answer(msg, xpcReply, migReply{body: body, port: len(rights) > 0}, launchdPID)
+	p.answer(msg, xpcReply, migReply{body: body, complex: len(rights) > 0}, launchdPID)
 	return true
 }

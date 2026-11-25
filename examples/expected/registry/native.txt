@@ -1,0 +1,10 @@
+device: J516cAP
+model: Mac15,9
+compatible: J516cAP, Mac15,9, AppleARM
+product-name: MacBook Pro (16-inch, Nov 2023)
+model, from the product up: Mac15,9
+a property nothing has: none
+under the product: audio camera
+the service of the class IOPlatformExpertDevice is the device: 1, of the class IOPlatformExpertDevice
+the same entry twice is the same port: 1
+an entry that is not there: 0

@@ -1,0 +1,7 @@
+{
+  "build": "19H117",
+  "cache_uuid": "375B6D72-3337-3608-BE0C-E434918EB3A3",
+  "exit_code": 0,
+  "output": "device: D321AP\nmodel: iPhone11,2\ncompatible: D321AP, iPhone11,2, AppleARM\nproduct-name: iPhone XS\nmodel, from the product up: iPhone11,2\na property nothing has: none\nunder the product: audio camera facetime haptics maps\nthe service of the class IOPlatformExpertDevice is the device: 1, of the class IOPlatformExpertDevice\nthe same entry twice is the same port: 1\nan entry that is not there: 0\n",
+  "version": "15.7.1"
+}

@@ -54,17 +54,9 @@ func parseBuildManifest(files []*zip.File) (*buildManifest, error) {
 	if target == nil {
 		return nil, errors.New("restore image has no BuildManifest.plist")
 	}
-	rc, err := target.Open()
+	data, err := readMember(target, maxManifestSize)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", target.Name, err)
-	}
-	data, err := io.ReadAll(io.LimitReader(rc, maxManifestSize+1))
-	rc.Close()
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", target.Name, err)
-	}
-	if len(data) > maxManifestSize {
-		return nil, fmt.Errorf("%s exceeds %d bytes", target.Name, maxManifestSize)
+		return nil, err
 	}
 	var bm buildManifest
 	if _, err := plist.Unmarshal(data, &bm); err != nil {
@@ -158,20 +150,14 @@ func systemOsDmg(identities []buildIdentity) (string, error) {
 // deviceTreeProducts reads unencrypted DeviceTree.*.im4p payloads from the IPSW and maps
 // lowercased board configs (e.g. "j274ap") to product types (e.g. "Macmini9,1").
 func deviceTreeProducts(files []*zip.File) map[string]string {
-	const maxDeviceTreeSize = 16 << 20
 	out := map[string]string{}
 	for _, f := range files {
 		base := path.Base(f.Name)
 		if !strings.HasPrefix(base, "DeviceTree") || !strings.HasSuffix(base, ".im4p") {
 			continue
 		}
-		rc, err := f.Open()
+		raw, err := readMember(f, maxDeviceTreeSize)
 		if err != nil {
-			continue
-		}
-		raw, err := io.ReadAll(io.LimitReader(rc, maxDeviceTreeSize+1))
-		rc.Close()
-		if err != nil || len(raw) > maxDeviceTreeSize {
 			continue
 		}
 		if board, model, ok := parseIM4PDeviceTree(raw); ok {
@@ -179,6 +165,25 @@ func deviceTreeProducts(files []*zip.File) map[string]string {
 		}
 	}
 	return out
+}
+
+const maxDeviceTreeSize = 16 << 20
+
+// readMember reads a whole ZIP member of at most max bytes.
+func readMember(f *zip.File, max int) ([]byte, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", f.Name, err)
+	}
+	data, err := io.ReadAll(io.LimitReader(rc, int64(max)+1))
+	rc.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", f.Name, err)
+	}
+	if len(data) > max {
+		return nil, fmt.Errorf("%s exceeds %d bytes", f.Name, max)
+	}
+	return data, nil
 }
 
 type im4pCompression struct {
@@ -198,18 +203,33 @@ type im4pPayload struct {
 }
 
 func parseIM4PDeviceTree(raw []byte) (board, model string, ok bool) {
-	var p im4pPayload
-	if _, err := asn1.Unmarshal(raw, &p); err != nil || p.Tag != "IM4P" || len(p.Keybag) > 0 {
+	data, err := im4pPayloadData(raw)
+	if err != nil {
 		return "", "", false
+	}
+	return parseDeviceTreeRoot(data)
+}
+
+// ErrEncrypted is in the error of a read of a firmware file whose payload is encrypted with a key
+// only the device has.
+var ErrEncrypted = errors.New("payload is encrypted")
+
+// im4pPayloadData is what an Image4 payload holds, decompressed.
+func im4pPayloadData(raw []byte) ([]byte, error) {
+	var p im4pPayload
+	if _, err := asn1.Unmarshal(raw, &p); err != nil || p.Tag != "IM4P" {
+		return nil, errors.New("not an Image4 payload")
+	}
+	if len(p.Keybag) > 0 {
+		return nil, ErrEncrypted
 	}
 	data := p.Data
 	if isLZFSE(data) {
-		data = lzfse.DecodeBuffer(data)
-		if len(data) == 0 {
-			return "", "", false
+		if data = lzfse.DecodeBuffer(data); len(data) == 0 {
+			return nil, errors.New("payload does not decompress")
 		}
 	}
-	return parseDeviceTreeRoot(data)
+	return data, nil
 }
 
 func isLZFSE(data []byte) bool {

@@ -1,0 +1,7 @@
+{
+  "build": "25G83",
+  "cache_uuid": "F2E86C53-6052-388B-BA71-5A0C9B569413",
+  "exit_code": 0,
+  "output": "device: J274AP\nmodel: Macmini9,1\ncompatible: J274AP, Macmini9,1, AppleARM\nproduct-name: Mac mini (M1, 2020)\nmodel, from the product up: Macmini9,1\na property nothing has: none\nunder the product: audio camera\nthe service of the class IOPlatformExpertDevice is the device: 1, of the class IOPlatformExpertDevice\nthe same entry twice is the same port: 1\nan entry that is not there: 0\n",
+  "version": "26.6.2"
+}

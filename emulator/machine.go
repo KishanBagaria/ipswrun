@@ -27,6 +27,7 @@ type Machine struct {
 	named    map[string]*sharedMemory       // those shm_open knows by a name
 	xattrs   map[hostFile]map[string][]byte // the extended attributes of the home's and mounts' files (see metadata.go)
 	ioMain   *port                          // what IOKit's searches are sent to, once a process has asked for it
+	ioRoot   *ioEntry                       // the root of the I/O Registry, once a process has asked for it (see registry.go)
 	clock    *clock
 	deadline time.Time // of the run, as every time here by the machine's clock
 	settling time.Time // once the main guest has exited: when the daemons are no longer waited for

@@ -287,8 +287,9 @@ func (p *Process) send(m message) int64 {
 // ---- MIG routines ----
 
 type migReply struct {
-	body []byte
-	port bool // it starts with port descriptors
+	body    []byte
+	complex bool        // it starts with descriptors
+	memory  []outOfLine // what its memory descriptors hold, each by where in the message it is
 }
 
 var ndr = []byte{0, 0, 0, 0, 1, 0, 0, 0}
@@ -309,12 +310,21 @@ func machVoucher(p *Process, a []uint64) int64 {
 }
 
 func migPort(name uint32) migReply {
-	return migReply{body: append(le32(1), portDescriptor(name, moveSend)...), port: true}
+	return migReply{body: append(le32(1), portDescriptor(name, moveSend)...), complex: true}
+}
+
+// migMemory is a reply of memory out of line, which may be none, and data after it.
+func migMemory(memory, data []byte) migReply {
+	reply := migReply{body: append(append(append(le32(1), memoryDescriptor(len(memory))...), ndr...), data...), complex: true}
+	if len(memory) > 0 {
+		reply.memory = []outOfLine{{at: 24 + 4, data: memory}} // after the header and the count of descriptors
+	}
+	return reply
 }
 
 // migPortData is a reply of a port and data after it.
 func migPortData(name uint32, data []byte) migReply {
-	return migReply{body: append(append(migPort(name).body, ndr...), data...), port: true}
+	return migReply{body: append(append(migPort(name).body, ndr...), data...), complex: true}
 }
 
 // answer queues the reply to a message on the port its sender gave for one, if it gave one.
@@ -327,10 +337,10 @@ func (p *Process) answer(m message, id uint32, reply migReply, sender uint32) {
 		return
 	}
 	bits := uint32(moveSendOnce << 8)
-	if reply.port {
+	if reply.complex {
 		bits |= bitsComplex
 	}
-	enqueue(to, bits, id, reply.body, sender)
+	enqueue(to, bits, id, reply.body, sender, reply.memory...)
 }
 
 var migRoutines map[uint32]func(p *Process, body []byte) migReply

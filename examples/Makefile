@@ -17,7 +17,7 @@ SWIFT_TARGET = arm64-apple-macos11.0
 ASYNC_TARGET = arm64-apple-macos12.0
 BIN = bin
 endif
-GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service client prefs adi files
+GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service client prefs adi files registry
 # What a guest is run beside, and not by itself.
 DAEMONS = server
 
@@ -27,6 +27,7 @@ $(BIN)/guest: LIBS = -lsqlite3
 $(BIN)/crypto: LIBS = -framework Security
 $(BIN)/ipc: LIBS = -framework CoreFoundation
 $(BIN)/prefs: LIBS = -framework CoreFoundation
+$(BIN)/registry: LIBS = -framework CoreFoundation -framework IOKit
 $(BIN)/client $(BIN)/service $(BIN)/ipc $(BIN)/adi: xpc_request.h
 $(BIN)/client $(BIN)/service $(BIN)/ipc $(BIN)/adi $(BIN)/server: darwin.h
 $(BIN)/server $(BIN)/client: service.h

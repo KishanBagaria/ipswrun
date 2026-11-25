@@ -38,10 +38,11 @@ func BaseEnv(home string) []string {
 }
 
 // DefaultSystem is what a guest may read from the build's system volume unless told otherwise:
-// the feature flags, the system version, ICU's data (locales, calendars, time zones) and the
-// Objective-C runtime's block trampolines, which are not in the shared cache.
+// the feature flags, the system version, ICU's data (locales, calendars, time zones), the
+// Objective-C runtime's block trampolines, which are not in the shared cache, and the sandbox
+// profiles, which a daemon that cannot read its own gives up over.
 var DefaultSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/CoreServices/SystemVersion.plist", "/usr/share/icu/",
-	"/usr/lib/libobjc-trampolines.dylib"}
+	"/usr/lib/libobjc-trampolines.dylib", "/System/Library/Sandbox/Profiles/", "/usr/share/sandbox/"}
 
 // SystemPrefix starts the name of an executable that is taken from the build's system volume
 // and not from the host: system:/usr/libexec/dirhelper.
@@ -306,7 +307,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 	}
 
 	build := image.Build()
-	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, System: system, Trace: run.Trace, Survey: run.Survey,
+	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, System: system, Trace: run.Trace, Survey: run.Survey,
 		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device(), "board": image.Board()}})
 	if err != nil {
 		return nil, cache, err

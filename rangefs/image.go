@@ -144,6 +144,45 @@ func (m *Image) Board() string {
 	return ""
 }
 
+// DeviceTree is the device tree the restore image has for Device, as the boot loader is given
+// it: flattened, with the values the boot loader fills in still to be filled. The error is
+// ErrEncrypted's for a tree only the device can decrypt.
+func (m *Image) DeviceTree() ([]byte, error) {
+	identities, err := m.deviceIdentities()
+	if err != nil {
+		return nil, err
+	}
+	var name string
+	for _, identity := range identities {
+		p := identity.Manifest["DeviceTree"].Info.Path
+		if strings.Contains(identity.Info.Variant, "Recovery") || p == "" {
+			continue
+		}
+		if name != "" && name != p {
+			return nil, fmt.Errorf("several device trees for %s (%s, %s)", m.device, name, p)
+		}
+		name = p
+	}
+	if name == "" {
+		return nil, fmt.Errorf("the restore image names no device tree for %s", m.device)
+	}
+	for _, f := range m.archive.File {
+		if f.Name != name {
+			continue
+		}
+		raw, err := readMember(f, maxDeviceTreeSize)
+		if err != nil {
+			return nil, err
+		}
+		data, err := im4pPayloadData(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		return data, nil
+	}
+	return nil, fmt.Errorf("no ZIP member %s", name)
+}
+
 // Stats reports the range requests made so far and the bytes they returned.
 func (m *Image) Stats() (requests, bytes int64) {
 	if m.remote == nil {

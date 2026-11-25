@@ -1,6 +1,7 @@
 package emulator
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -469,4 +470,38 @@ func TestMacSyscall(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Who a process is logged in as, how many descriptors it may have, and becoming a user or a
+// group, as macOS 27.2.1 answers a process that is not root.
+func TestIdentityCalls(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		const buf = dataAddr + 0x100
+		p.write(buf, bytes.Repeat([]byte{'x'}, 300))
+		if got, name := p.result(t, "getlogin", buf, 6), p.read(buf, 8); got != 0 || string(name) != "emu\x00\x00\x00xx" {
+			t.Errorf("getlogin into 6 bytes: %d %q", got, name)
+		}
+		if got, name := p.result(t, "getlogin", buf, 300), p.read(buf, 300); got != 0 || name[254] != 0 || name[255] != 'x' {
+			t.Errorf("getlogin into 300 bytes: %d, and byte 254 is %q and 255 %q", got, name[254], name[255])
+		}
+		if got := p.result(t, "getdtablesize"); got != 256 {
+			t.Errorf("getdtablesize: %d", got)
+		}
+		for _, call := range []string{"setuid", "seteuid"} {
+			if own, root, other := p.result(t, call, uint64(p.uid)), p.result(t, call, 0), p.result(t, call, uint64(p.uid+1)); own != 0 || root != -ePERM || other != -ePERM {
+				t.Errorf("%s to itself %d, to root %d, to another %d", call, own, root, other)
+			}
+		}
+		for _, call := range []string{"setgid", "setegid"} {
+			if own, wheel, other := p.result(t, call, uint64(p.gid)), p.result(t, call, 0), p.result(t, call, uint64(p.gid+1000)); own != 0 || wheel != -ePERM || other != -ePERM {
+				t.Errorf("%s to itself %d, to wheel %d, to another %d", call, own, wheel, other)
+			}
+		}
+		// Root becoming another user would have two, which a process here has not.
+		p.uid = 0
+		if _, _, stopped := p.trap(number(t, "seteuid"), 501); stopped == "" {
+			t.Errorf("root became another user")
+		}
+	})
 }

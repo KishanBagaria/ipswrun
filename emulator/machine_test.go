@@ -119,7 +119,7 @@ func TestProcesses(t *testing.T) {
 			le.PutUint64(body[56:], addr)
 			le.PutUint32(body[64:], how)
 			reply := migMakeMemoryEntry(in, body)
-			if !reply.port {
+			if !reply.complex {
 				t.Fatalf("mach_make_memory_entry: % x", reply.body)
 			}
 			return le.Uint32(reply.body[4:])

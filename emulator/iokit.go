@@ -115,32 +115,64 @@ func (ioMain) request(p *Process, id uint32, body []byte) (migReply, bool) {
 		if len(found) == 0 {
 			return migCode(ioReturnNotFound), true
 		}
-		return p.migObject(ioService{found[0]}), true
+		return found[0].found(p), true
+	case 2884: // io_service_add_notification_bin
+		// To be told when a service of a description arrives, is matched to its driver, or
+		// goes. The answer is an iterator of those already there, and the port given is sent
+		// a message for each one after: none, as the drivers of a machine are all it will have.
+		at, ok := descriptors(body, func(int, byte) {})
+		r := ioReader{data: body, at: at + 8}
+		kind := r.text()
+		matching := r.bytes(int(r.u32()))
+		if !ok || r.failed {
+			return migCode(migBadArguments), true
+		}
+		var found []ioFound
+		switch kind {
+		case "IOServicePublish", "IOServiceFirstPublish", "IOServiceMatched", "IOServiceFirstMatch":
+			found = p.m.matching(p, matching)
+		case "IOServiceTerminate", "IOServiceWillTerminate":
+		default:
+			return migReply{}, false
+		}
+		return p.migObject(&ioIterator{services: found}), true
 	}
-	return migReply{}, false
+	return p.registryRequest(id, body)
 }
 
-// matching are the drivers a search describes. The description is a dictionary in the kernel's
-// binary serialization, and the one key understood in it is the class.
-func (m *Machine) matching(p *Process, description []byte) []Driver {
+// matching are the services a search describes: drivers, and the device itself, which is the
+// one service the kernel makes with no driver (see registry.go). The description is a dictionary
+// in the kernel's binary serialization, and the one key understood in it is the class.
+func (m *Machine) matching(p *Process, description []byte) []ioFound {
 	d, ok := ioDictionary(description)
 	class, _ := d["IOProviderClass"].(string)
 	p.note("  IOKit search for %v", d)
 	if !ok || class == "" || len(d) != 1 {
 		return nil
 	}
-	var found []Driver
+	var found []ioFound
+	if class == deviceClass {
+		if device := m.device(); device != nil {
+			found = append(found, device)
+		}
+	}
 	for _, driver := range m.cfg.Drivers {
 		if driver.Class() == class {
-			found = append(found, driver)
+			found = append(found, ioService{driver})
 		}
 	}
 	return found
 }
 
+// ioFound is what an iterator hands out: a service, or an entry of the registry.
+type ioFound interface {
+	// found is a reply that hands over a right to it.
+	found(p *Process) migReply
+}
+
 // ioIterator is the result of a search: the services found, handed out one at a time.
 type ioIterator struct {
-	services []Driver
+	services []ioFound
 	next     int
 }
 
@@ -153,10 +185,12 @@ func (o *ioIterator) request(p *Process, id uint32, body []byte) (migReply, bool
 			return migPort(0), true
 		}
 		o.next++
-		return p.migObject(ioService{o.services[o.next-1]}), true
+		return o.services[o.next-1].found(p), true
 	case 2803: // io_iterator_reset
 		o.next = 0
 		return migCode(0), true
+	case 2834: // io_iterator_is_valid: no service arrives or goes
+		return migData(le32(1)), true
 	}
 	return migReply{}, false
 }
@@ -165,6 +199,8 @@ func (o *ioIterator) request(p *Process, id uint32, body []byte) (migReply, bool
 type ioService struct{ driver Driver }
 
 func (ioService) released() {}
+
+func (o ioService) found(p *Process) migReply { return p.migObject(o) }
 
 func (o ioService) request(p *Process, id uint32, body []byte) (migReply, bool) {
 	if id != 2862 { // io_service_open_extended

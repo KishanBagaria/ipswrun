@@ -52,6 +52,8 @@ func init() {
 		// process
 		"exit": {1, sysExit}, "getpid": {0, sysGetpid}, "getppid": {0, constant(1)}, "getuid": {0, sysGetuid},
 		"geteuid": {0, sysGetuid}, "getgid": {0, sysGetgid}, "getegid": {0, sysGetgid}, "gettid": {2, constant(-eSRCH)},
+		"setuid": {1, sysSetuid}, "seteuid": {1, sysSetuid}, "setgid": {1, sysSetgid}, "setegid": {1, sysSetgid},
+		"getlogin": {2, sysGetlogin}, "getdtablesize": {0, sysGetdtablesize},
 		"issetugid": {0, constant(0)}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
 		"__pthread_sigmask": {3, sysSigprocmask}, "__pthread_kill": {2, sysPthreadKill}, "kill": {3, sysKill},
 		"sigaltstack": {2, sysSigaltstack}, "setitimer": {3, sysSetitimer}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
@@ -261,6 +263,54 @@ func sysExit(p *Process, a []uint64) int64 {
 func sysGetpid(p *Process, a []uint64) int64 { return int64(p.pid) }
 func sysGetuid(p *Process, a []uint64) int64 { return int64(p.uid) }
 func sysGetgid(p *Process, a []uint64) int64 { return int64(p.gid) }
+
+// sysSetuid is setuid and seteuid, and sysSetgid the same of the group. A process has one user
+// and one group here, real, effective and saved alike, so becoming itself changes nothing, and
+// becoming another is not permitted to anyone but root. Root becoming another, which would
+// leave it with two, is not implemented.
+func sysSetuid(p *Process, a []uint64) int64 { return p.become(a, p.uid, "user") }
+func sysSetgid(p *Process, a []uint64) int64 { return p.become(a, p.gid, "group") }
+
+func (p *Process) become(a []uint64, own uint32, what string) int64 {
+	switch id := uint32(a[0]); {
+	case id == own:
+		return 0
+	case p.uid != 0:
+		return -ePERM
+	}
+	p.unimplemented("root becoming another "+what, a)
+	return -ePERM
+}
+
+// maxLogName is MAXLOGNAME: how long the kernel keeps a login name, with the zero that ends it.
+const maxLogName = 255
+
+// sysGetlogin is getlogin(buffer, size): the name the process's session was logged in under,
+// copied with the zeros after it for as much of the kernel's own buffer as there is room for.
+// A program run by hand on a Mac is in its user's session. What launchd's own session is called,
+// which a daemon and everything on an iPhone are in, is not known here.
+func sysGetlogin(p *Process, a []uint64) int64 {
+	if p.uid == 0 || p.cache.Platform == dyldcache.IOS {
+		p.unimplemented("getlogin of a daemon, or on iOS", a)
+		return -eNOENT
+	}
+	name := make([]byte, maxLogName)
+	copy(name, p.m.user.name)
+	p.write(a[0], name[:min(a[1], maxLogName)])
+	return 0
+}
+
+// sysGetdtablesize is how many descriptors the process may have: its soft limit, or the system's
+// limit for a process if that is lower. That one (kern.maxfilesperproc) is not known here, and is
+// no lower than the most descriptors the kernel was ever built to give a process.
+func sysGetdtablesize(p *Process, a []uint64) int64 {
+	soft := p.rlimit(rlimitNofile)[0]
+	if soft > maxFD {
+		p.unimplemented("getdtablesize with a limit above the system's own", a)
+		return -eINVAL
+	}
+	return int64(soft)
+}
 
 // hostUUID is the machine's own identifier: the same on every run, as everything else about it is.
 var hostUUID = [16]byte{0x1F, 0x5A, 0xE3, 0x70, 0x9C, 0x42, 0x4D, 0x1B, 0x8E, 0x6D, 0x49, 0x50, 0x53, 0x57, 0x52, 0x4E}

@@ -243,8 +243,8 @@ func (p *Process) sendRight(q *port) uint32 {
 }
 
 // enqueue queues on q a message that is not a guest's own: the kernel's (sender 0) or launchd's.
-func enqueue(q *port, bits, id uint32, body []byte, sender uint32) {
-	post(q, machMessage{data: append(header(bits, uint32(24+len(body)), 0, id), body...), sender: sender})
+func enqueue(q *port, bits, id uint32, body []byte, sender uint32, memory ...outOfLine) {
+	post(q, machMessage{data: append(header(bits, uint32(24+len(body)), 0, id), body...), memory: memory, sender: sender})
 }
 
 // notify sends q one of the kernel's notifications, if it is still there to be told.
@@ -600,6 +600,12 @@ func arriving(disposition uint32) uint32 {
 // portDescriptor is a port right as a message carries it out of line.
 func portDescriptor(name uint32, disposition byte) []byte {
 	return append(le32(name, 0), 0, 0, disposition, 0)
+}
+
+// memoryDescriptor is memory as a message carries it out of line: where it is, which the receiver
+// is told as it gets it, that it is a copy, and its size.
+func memoryDescriptor(size int) []byte {
+	return append(append(le64(0), 0, 1, 0, 1), le32(uint32(size))...)
 }
 
 // descriptors calls visit with the place and kind of each descriptor of a complex message: a port

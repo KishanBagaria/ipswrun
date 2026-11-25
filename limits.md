@@ -4,7 +4,7 @@ What ipswrun cannot run or do yet, beyond the short list in the [readme](readme.
 
 The biggest gap is that a guest cannot start another process, and nothing starts Apple's daemons on demand, so most frameworks quietly lose the services they lean on.
 
-This list was made by reading the code, not by running guests against releases. The [last section](#suspicions-not-yet-tested) lists what most needs a run to confirm.
+This list was made by reading the code, and then checked by one [survey](#survey-of-a-releases-own-binaries) of a release's own binaries. The [last section](#suspicions-not-yet-tested) lists what most needs a run to confirm.
 
 ## Ranked limits
 
@@ -15,10 +15,10 @@ This list was made by reading the code, not by running guests against releases. 
 | 3 | No signal delivery: `sigaction`, `sigprocmask` and `sigaltstack` are kept and read back, but a handler never runs; `kill` and `pthread_kill` end the run, as does any CPU fault (a guard page included); `setitimer` that starts a timer stops as unimplemented | Crash handlers, `SIGALRM` timeouts, guard-page tricks, Mach exception ports; `abort()` makes ipswrun exit 70 instead of the guest exiting 134 | `emulator/bsd.go` (`sysSigaction`, `sysSetitimer`, `sysKill`), `emulator/process.go` (`interrupt`) | Yes. Build a signal frame and return through `__sigtramp` and `sigreturn` |
 | 4 | No descriptor I/O beyond files: no `pipe`, `socketpair` or sockets (`socket` answers EACCES); `kevent` and `kevent64` on a guest's own kqueue take changes and answer `EV_RECEIPT`, but a wait for events stops as unimplemented; `select` finds nothing ready; `EVFILT_READ`, `EVFILT_WRITE`, `EVFILT_VNODE` and `EVFILT_PROC` never fire | `NSPipe`, `dispatch_io`, `NSFileHandle` readability, `CFSocket`, Unix-socket clients (syslog, mDNSResponder), any network code | `emulator/files.go` (descriptor kinds), `emulator/kevent.go` (`change`) | Pipes and socketpairs, yes. A real network is a policy call, since it breaks reproducibility |
 | 5 | Accelerate's BLAS and LAPACK: every release's libBLAS runs `cblas_sgemm` and the like on Apple's matrix coprocessor (AMX), whatever chip the guest is told it has, and Unicorn has no AMX; the run stops at the first AMX instruction and names it | Linear algebra through Accelerate, and what is built on it (CoreML's and BNNS's CPU paths, likely vDSP's matrix calls) | `emulator/process.go` (`amx`, `interrupt`) | Yes, [below](#amx-emulation): emulate the coprocessor in the invalid-instruction hook |
-| 6 | No hardware at all: IOKit finds nothing, and no IORegistry properties are served | MobileGestalt, serial number and platform UUID, power, HID, and on iOS most facts about the device | `emulator/iokit.go` | Partly: a read-only IODeviceTree from the restore image's own DeviceTree file, without drivers |
+| 6 | No hardware beyond the device tree: the I/O Registry holds the restore image's device tree and nothing a driver or the boot loader adds ([below](#the-io-registry)), and a search finds no service but the device itself | Serial number and platform UUID, NVRAM, power, HID, most of MobileGestalt (it answers the marketing name, and no product type) | `emulator/registry.go`, `emulator/iokit.go` | Partly: each further fact needs a source in the restore image |
 | 7 | Shared file memory: `MAP_SHARED` of a real file is a private copy, and there is no `msync`. Protections are kept per region (`mmap`, `mprotect`, `mach_vm_protect`, the `mach_vm_map` trap, the shared cache's own) and a forbidden access faults, but memory from the MIG `vm_map` and `mach_vm_remap` is mapped with every protection | SQLite WAL `-shm` files shared by two connections or processes; anything that writes a mapped file | `emulator/bsd.go` (`sysMmap`), `emulator/mach.go` | Shared file mappings, yes, through the `shm_open` path |
 | 8 | Threads take turns on one CPU, with no preemption, and `hw.ncpu` is 1 | Spin-waits without a system call hang; nothing runs in parallel, so compute-heavy guests are slow | `emulator/threads.go` | Hard: Unicorn does not resume reliably after a stop from outside a hook |
-| 9 | The system volume is closed by default: only feature flags, `SystemVersion.plist`, ICU data and the Objective-C trampolines can be read, and the directories (and the symbolic links among them) on the way to the shared cache's images, which dyld walks, listing only what leads there | Frameworks' `Resources` (Info.plist, `.strings`, `.car`), fonts and other `/System/Library` data: frameworks behave differently with no error | `emulator/build.go` (`DefaultSystem`) | Yes, it is a default; `--system` already opens more |
+| 9 | The system volume is closed by default: only feature flags, `SystemVersion.plist`, ICU data, the Objective-C trampolines and the sandbox profiles can be read, and the directories (and the symbolic links among them) on the way to the shared cache's images, which dyld walks, listing only what leads there | Frameworks' `Resources` (Info.plist, `.strings`, `.car`), fonts and other `/System/Library` data: frameworks behave differently with no error | `emulator/build.go` (`DefaultSystem`) | Yes, it is a default; `--system` already opens more |
 | 10 | Device and OS coverage: iPhones and iPads from the A12 only; no tvOS, watchOS, visionOS or bridgeOS; no macOS before 11 | iOS 14 to 16 on A9 to A11 devices; the other Apple platforms | `cmd/ipswrun` device tables | A9 to A11 (plain arm64 caches) and tvOS look reachable; watchOS is arm64_32; macOS before 11 has no arm64 code |
 | 11 | Hosts: an Apple silicon Mac, or Linux on arm64 or x86-64 with glibc; guests have to be built on a Mac | Intel Macs, Windows, musl Linux, CI without a Mac | `emulator/artifact.go` (pinned libunicorn builds) | Intel Macs and musl need a libunicorn build to pin; building guests on Linux needs an SDK |
 | 12 | What the system says of itself is left out where it isn't known for sure ([below](#sysctls-left-out)) | A guest that needs one of those sysctls gets ENOENT, as from a kernel without it | `emulator/bsd.go` (`sysctlValue`, `cpuFamilies`) | Yes, one value at a time, from a real device or the restore image |
@@ -76,13 +76,57 @@ The calls guests make are answered as a Mac's kernel answers a process that is n
 
 Everything else stops as unimplemented: applying a profile by any other call (Sandbox 1, the kernel's own profiles), issuing or consuming a sandbox extension (Sandbox 5 and 6 on this Mac, whose token is the kernel's), and any other policy, call, filter type, flags, descriptor or process not measured.
 
-The examples' runs let cfprefsd read its profile (`--system /System/Library/Sandbox/Profiles/` beside the defaults), so it compiles and applies it (Sandbox 0) as on a Mac. Without that, its `sandbox_init` fails with "profile not found" and the prefs guest can't synchronize on macOS 15 and later.
+A guest may read the sandbox profiles (`/System/Library/Sandbox/Profiles/` and `/usr/share/sandbox/`, among the defaults of `--system`), so cfprefsd compiles its own and applies it (Sandbox 0) as on a Mac. Without them a daemon's `sandbox_init` fails with "profile not found": cfprefsd then cannot synchronize on macOS 15 and later, and in the survey 56 programs said so as they started.
 
 The answers were measured on a Mac; iOS guests get the same ones, which is not known to be what an iPhone's kernel answers.
 
 ## Preferences on iOS 16 and later
 
 The prefs guest, run beside the release's own cfprefsd, prints `synchronized: 0` on every iOS release from 16.0 that was run (16.0, 18.0, 18.7.12, 26.0, 26.6.2, 27.0, 27.2.1): CoreFoundation never looks up `com.apple.cfprefsd.daemon`, so `CFPreferencesAppSynchronize` returns false, while what was set still reads back from the process itself. On iOS 14 and 15 it looks the daemon up (launchd's routine 804) and synchronizes. Why it doesn't is not known yet; it was so before the sandbox calls were answered.
+
+## The I/O Registry
+
+The registry is the device tree the restore image has for the `--device`, shown as the plane `IODeviceTree`, with the registry's root above it. It is read from the image when a guest first asks. [examples/registry.c](examples/registry.c) prints the same run natively on a Mac15,9 with macOS 27.2.1 as under ipswrun for that device and release ([native.txt](examples/expected/registry/native.txt)), and the release's own `ioreg -p IODeviceTree` prints the tree.
+
+The image holds the tree as the boot loader is given it, not as the boot loader leaves it. What is left out, so as not to be invented:
+
+- **A value the image marks as one for the boot loader to fill,** and **a value that is all zeros**, which is how the image holds the place of most of the others. Measured against that Mac's live registry, over the 42 entries `ioreg` shows of its tree: of the 505 unmarked values the image has, 312 are not zeros, and all but one of those are what the Mac has (the one, `pmap-io-ranges` of `/defaults`, is longer on the Mac); 189 are zeros, of which the Mac has 140 as they are and 49 filled in (`chip-id`, `board-id`, `firmware-version` and the like in `/chosen`). So a property that really is zero (`has-exclaves`) is not there to read either.
+- **What only a running device has:** its serial number and platform UUID, everything in `/options` (the NVRAM, which is there as an entry with no properties), the entries the boot loader adds under `/chosen`, and the properties drivers add.
+- **Classes, locations and identifiers.** An entry's class is its driver's, so only the device's own (`IOPlatformExpertDevice`, which the kernel itself makes of the tree) is answered; a search for that class finds it, and for any other class finds nothing. `io_object_get_class` of another entry, an entry's location, its registry ID and its path are not answered: the guest gets a send error, and the request is listed when the run fails or under `--missing`. A path with a location in it (`cpu0@0`) stops as unimplemented.
+- **The properties of the root, and of an entry the kernel keeps to itself** (`kernel-only`, such as `/chosen/memory-map`), which a Mac shows emptied: they stop as unimplemented.
+- **The order of the entries under one.** They come in the tree's order. A Mac's kernel has the device's in another (`chosen`, `aliases`, `memory`, `options`, `cpus`, where the tree has `chosen`, `options`, `cpus`, `aliases`, `memory`).
+- **Every plane but the tree's.** Among the services there is the root and the device and nothing under it, as no driver is here: `IOService:/IOResources/AppleKeyStore`, which is there on every device, is not. A search or walk that would leave the device tree's plane from any other entry stops as unimplemented.
+
+To be told of services arriving (`io_service_add_notification_bin`) is to be handed those already there, and no message after: the services of a machine here are all it will have.
+
+Not known to hold on an iPhone: the rule for zeros and the device's name (the first of its `compatible` strings) were measured on a Mac. The iOS runs were read, not compared with a device.
+
+## Survey of a release's own binaries
+
+Every Mach-O executable in `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` and `/usr/libexec` of macOS 27.2.1 (26B131), 1,293 of them, was run once with no arguments under `--missing` and a 60-second limit, before and after the registry, the sandbox profiles and the calls below were added. With no arguments most only start up, or print their usage (344 did), so this counts what a program needs to start, not to do its work. It was not run on iOS or on another release.
+
+| | Before | After |
+| --- | --- | --- |
+| Made no call that is not implemented | 1,098 | 1,134 |
+| Made at least one | 195 | 157 |
+| Sent the registry or IOKit a request nothing answered | 48 | 2 (`ioreg`, asking for classes, and one asking for a driver's connection) |
+| Said its sandbox profile was not found | 56 | 1 |
+| Ran until it was a service waiting for a client, which is how a daemon run alone ends | 45 | 63 |
+| Ended with a crash of its own (an abort or a trap) | 71 | 68 |
+
+What is asked for most that is still not there, by programs asking: `getrusage` (21), launchd's routine in message 1073742225 (16), the kqueue filter for user events (13), `pipe` (9), the properties of the registry's root (9, the kext tools), `kqueue_workloop_ctl`, `memorystatus_control` and `mach_port_get_attributes` (5 each).
+
+One run of it filled the disk: `/usr/bin/yes` writes without end, and a guest's output is kept until it ends, with no limit on how much (27 GB in its 60 seconds).
+
+What it did not confirm from the ranked list: pipes (9 programs), and `fork`, `execve` and `posix_spawn` (6 between them), which a program asked for nothing does not reach.
+
+Added after it, each answered as macOS 27.2.1 answers a process that is not root: `getlogin` (the user's name, with the zeros after it for as much of the kernel's 255 bytes as there is room for; it stops as unimplemented for a daemon and on iOS, where the name of launchd's own session is not known), `getdtablesize` (the soft limit on descriptors; unimplemented above 10240, where `kern.maxfilesperproc`, which is not known, could be the lower), and `setuid`, `seteuid`, `setgid` and `setegid` (0 to become what the process already is, EPERM for anything else; root becoming another user or group stops as unimplemented, as a process here has one of each).
+
+Left as they were, still stopping or listed by name:
+
+- **`getrusage`** (21 programs: the shells, and net-snmp's tools through libc). There is no account of the CPU time a process has used to answer it with.
+- **`mach_port_get_attributes`** (5 programs, and the release's `dirhelper` as it checks in). A port's status counts the rights to send once that exist for it, which is not kept. What a Mac answers is recorded and waits for that count.
+- **Starting `dirhelper` when it is looked up.** `confstr(_CS_DARWIN_USER_CACHE_DIR)` fails without it (some ten daemons end on that), and it cannot check in until the call above is there. It is one case of limit 2.
 
 ## Sysctls left out
 
@@ -115,7 +159,6 @@ Each of these needs a kernel driver, so with no kext emulation they stay out. Of
 These come from reading the code and are the ones most worth a run on a Mac.
 
 - **JavaScriptCore's JIT.** `MAP_JIT` and `pthread_jit_write_protect_np` use system registers that only Apple's cores have, which is probably an undefined instruction here. `JSC_useJIT=0` should still run JavaScriptCore as an interpreter.
-- **IORegistry calls.** `emulator/iokit.go` answers only matching, iterators, opening, method calls and closing. A guest that reads the root entry or a property directly probably stops as unimplemented instead of getting an empty answer.
 - **SQLite WAL and Core Data.** Core Data opens WAL stores and may hold two connections to one. With `-shm` mapped privately, each connection sees its own copy.
 - **os_log output.** Without logd, logs go nowhere. `--env OS_ACTIVITY_DT_MODE=1` may copy them to standard error, which would help when debugging daemons.
 - **Speed.** Only one guest thread runs at a time, on one host core. A CPU-bound benchmark, such as 10 MB through CommonCrypto's SHA-256, would put a number on the slowdown against native.

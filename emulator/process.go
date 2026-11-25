@@ -205,6 +205,9 @@ type Config struct {
 	Mounts   []Mount          // more host directories the guests may change (see CheckMounts)
 	Dyld     []byte           // the build's /usr/lib/dyld
 	Drivers  []Driver         // the kernel's services, which guests reach through IOKit: none unless given
+	// DeviceTree reads the device's flattened device tree, which is what the I/O Registry holds;
+	// with none, the registry is not there to ask. It is read when a guest first asks.
+	DeviceTree func() ([]byte, error)
 	// System serves read-only files from the build's system volume; a lookup failure stops the run.
 	System func(path string) (SystemFile, error)
 	OS     map[string]string // "version", "build" and "release" reported by sysctl
@@ -317,7 +320,7 @@ type missingCall struct {
 func (p *Process) unimplemented(name string, args []uint64) bool {
 	lr := p.uc.reg(regLR)
 	if !p.survey {
-		stopKind(StopUnimplemented, "unimplemented %s(%s) from %s", name, hexArgs(args[:6]), p.where(lr))
+		stopKind(StopUnimplemented, "unimplemented %s(%s) from %s", name, hexArgs(args[:min(6, len(args))]), p.where(lr))
 	}
 	i := slices.IndexFunc(p.missing, func(m *missingCall) bool { return m.name == name })
 	if i < 0 {
@@ -325,7 +328,7 @@ func (p *Process) unimplemented(name string, args []uint64) bool {
 		p.missing = append(p.missing, &missingCall{name: name, lr: lr})
 	}
 	p.missing[i].count++
-	p.note("%s(%s) is not implemented", name, hexArgs(args[:6]))
+	p.note("%s(%s) is not implemented", name, hexArgs(args[:min(6, len(args))]))
 	return true
 }
 
