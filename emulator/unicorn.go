@@ -184,9 +184,10 @@ func check(err int32) error {
 }
 
 // must is for calls whose failure means the emulator itself is wrong, not the guest.
-func must(err int32, what string) {
+// must stops the run on an engine error; what says of which call, formatted only then.
+func must(err int32, what string, args ...any) {
 	if err != 0 {
-		panic(stop{message: fmt.Sprintf("unicorn %s: %v", what, ucError(err))})
+		panic(stop{message: fmt.Sprintf("unicorn %s: %v", fmt.Sprintf(what, args...), ucError(err))})
 	}
 }
 
@@ -279,21 +280,21 @@ func (e *engine) setCPReg(crn, crm, op0, op1, op2 uint32, v uint64) {
 }
 
 func (e *engine) memMap(addr, size uint64, prot uint32) {
-	must(api.memMap(e.uc, addr, size, prot), fmt.Sprintf("mem_map %#x+%#x", addr, size))
+	must(api.memMap(e.uc, addr, size, prot), "mem_map %#x+%#x", addr, size)
 }
 
 // memMapHost maps host memory, which every engine that maps it then shares. Its length is a
 // whole number of pages.
 func (e *engine) memMapHost(addr uint64, memory []byte, prot uint32) {
-	must(api.memPtr(e.uc, addr, uint64(len(memory)), prot, unsafe.Pointer(&memory[0])), fmt.Sprintf("mem_map_ptr %#x+%#x", addr, len(memory)))
+	must(api.memPtr(e.uc, addr, uint64(len(memory)), prot, unsafe.Pointer(&memory[0])), "mem_map_ptr %#x+%#x", addr, len(memory))
 }
 
 func (e *engine) memProtect(addr, size uint64, prot uint32) {
-	must(api.memProt(e.uc, addr, size, prot), fmt.Sprintf("mem_protect %#x+%#x", addr, size))
+	must(api.memProt(e.uc, addr, size, prot), "mem_protect %#x+%#x", addr, size)
 }
 
 func (e *engine) memUnmap(addr, size uint64) {
-	must(api.memUnmap(e.uc, addr, size), fmt.Sprintf("mem_unmap %#x+%#x", addr, size))
+	must(api.memUnmap(e.uc, addr, size), "mem_unmap %#x+%#x", addr, size)
 }
 
 func (e *engine) memRead(addr uint64, n int) ([]byte, error) {
@@ -310,7 +311,7 @@ func (e *engine) memReadInto(addr uint64, out []byte) error {
 
 func (e *engine) memWrite(addr uint64, data []byte) {
 	if len(data) > 0 {
-		must(api.memWrite(e.uc, addr, unsafe.Pointer(&data[0]), uint64(len(data))), fmt.Sprintf("mem_write %#x+%#x", addr, len(data)))
+		must(api.memWrite(e.uc, addr, unsafe.Pointer(&data[0]), uint64(len(data))), "mem_write %#x+%#x", addr, len(data))
 	}
 }
 

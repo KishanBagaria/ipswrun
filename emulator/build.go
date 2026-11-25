@@ -69,10 +69,10 @@ type Run struct {
 
 var leadingDigits = regexp.MustCompile(`^\d+`)
 
-// underCacheDir says whether path is below one of dirs, other than / itself: whether a symbolic
-// link on its way could lead it into another.
-func underCacheDir(dirs map[string]bool, path string) bool {
-	for d := pathpkg.Dir(path); d != "/" && d != "."; d = pathpkg.Dir(d) {
+// inCacheDir says whether path is one of dirs or below one, other than / itself: whether it, or
+// a symbolic link on its way, could lead into one.
+func inCacheDir(dirs map[string]bool, path string) bool {
+	for d := path; d != "/" && d != "."; d = pathpkg.Dir(d) {
 		if dirs[d] {
 			return true
 		}
@@ -109,6 +109,23 @@ func realDirectory(image *rangefs.Image, path string) (string, error) {
 		}
 	}
 	return real, nil
+}
+
+// visibleEntries lists a directory of the volume with only the entries visible says may be seen.
+func visibleEntries(image *rangefs.Image, vol, dir string, visible func(string) bool) func() ([]string, error) {
+	return sync.OnceValues(func() ([]string, error) { // the image does not change
+		entries, err := image.ReadDir(vol, dir)
+		if err != nil {
+			return nil, err
+		}
+		var shown []string
+		for _, name := range entries {
+			if visible(pathpkg.Join(dir, name)) {
+				shown = append(shown, name)
+			}
+		}
+		return shown, nil
+	})
 }
 
 // RunBuild starts the guest, and the daemons beside it, inside the userland of the build in image
@@ -204,6 +221,17 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		}
 		return dirs, nil
 	})
+	reals := map[string]string{} // realDirectory, once for each path: walks share their directories
+	realDir := func(path string) (string, error) {
+		if real, ok := reals[path]; ok {
+			return real, nil
+		}
+		real, err := realDirectory(image, path)
+		if err == nil {
+			reals[path] = real
+		}
+		return real, err
+	}
 	known := map[string]SystemFile{}
 	system := func(path string) (SystemFile, error) {
 		if f, ok := known[path]; ok {
@@ -231,34 +259,26 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 				return SystemFile{}, err
 			}
 			real := ""
-			if dirs[path] || underCacheDir(dirs, path) {
-				if real, err = realDirectory(image, path); err != nil {
+			if inCacheDir(dirs, path) {
+				if real, err = realDir(path); err != nil {
 					return SystemFile{}, err
 				}
 			}
 			var f SystemFile
 			if dirs[real] {
-				f = SystemFile{Dir: true, ReadDir: sync.OnceValues(func() ([]string, error) {
-					entries, err := image.ReadDir(vol, real)
-					if err != nil {
-						return nil, err
-					}
-					var visible []string
-					for _, name := range entries {
-						if p := pathpkg.Join(real, name); dirs[p] || isAllowed(p) {
-							visible = append(visible, name)
-						}
-					}
-					return visible, nil
-				})}
+				f = SystemFile{Dir: true, ReadDir: visibleEntries(image, vol, real, func(p string) bool { return dirs[p] || isAllowed(p) })}
 				if real != path {
-					f.Real = real
 					// Its last part may be a link itself, which those who walk the path see.
-					if parent, err := realDirectory(image, pathpkg.Dir(path)); err != nil {
+					parent, err := realDir(pathpkg.Dir(path))
+					if err != nil {
 						return SystemFile{}, err
-					} else if entry, err := image.Stat(vol, pathpkg.Join(parent, pathpkg.Base(path))); err != nil {
+					}
+					entry, err := image.Stat(vol, pathpkg.Join(parent, pathpkg.Base(path)))
+					if err != nil {
 						return SystemFile{}, err
-					} else if entry.Kind == rangefs.Symlink {
+					}
+					f.Real = real
+					if entry.Kind == rangefs.Symlink {
 						f.Link = entry.Target
 					}
 				}
@@ -277,20 +297,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		var f SystemFile
 		switch entry.Kind {
 		case rangefs.Directory:
-			dirPath := rel
-			f = SystemFile{Dir: true, ReadDir: sync.OnceValues(func() ([]string, error) { // the image does not change
-				entries, err := image.ReadDir(vol, dirPath)
-				if err != nil {
-					return nil, err
-				}
-				var visible []string
-				for _, name := range entries {
-					if isAllowed(pathpkg.Join(dirPath, name)) {
-						visible = append(visible, name)
-					}
-				}
-				return visible, nil
-			})}
+			f = SystemFile{Dir: true, ReadDir: visibleEntries(image, vol, rel, isAllowed)}
 		case rangefs.Regular:
 			f = SystemFile{File: entry.File}
 		}

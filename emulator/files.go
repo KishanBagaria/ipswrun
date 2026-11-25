@@ -905,15 +905,15 @@ func sysTruncate(p *Process, a []uint64) int64 {
 
 // doReadlink serves the links a guest makes under its home or a mount; nothing else is a symbolic link.
 func (p *Process) doReadlink(path string, buf, size uint64) int64 {
-	var link string
-	if t, ok := p.writableTarget(path); ok {
+	t, ok := p.resolve(path)
+	link := t.link // one of the system volume's
+	switch {
+	case t.root != nil:
 		var err error
 		if link, err = t.root.Readlink(t.rel); err != nil {
 			return hostErrno(err)
 		}
-	} else if t, ok := p.resolve(path); ok && t.link != "" { // one of the system volume's
-		link = t.link
-	} else {
+	case !ok || link == "":
 		return -eINVAL
 	}
 	n := min(uint64(len(link)), size)

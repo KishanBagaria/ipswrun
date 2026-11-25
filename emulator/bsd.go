@@ -125,7 +125,7 @@ func (p *Process) bsd(n int64) {
 
 func sysMmap(p *Process, a []uint64) int64 {
 	addr, length, flags, fdn, off := a[0], a[1], a[3], a[4], a[5]
-	deny := protAll &^ uint32(a[2]&protAll)
+	deny := denied(uint32(a[2]))
 	fixed := flags&0x10 != 0
 	if fixed && addr&tbiMask+length > vaLimit {
 		return -eNOMEM
@@ -145,11 +145,7 @@ func sysMmap(p *Process, a []uint64) int64 {
 		return -eACCES
 	}
 	if f.shared != nil && flags&mapShared != 0 {
-		start := p.mapShared(f.shared, addr, length, off, fixed)
-		if start >= 0 {
-			p.protect(uint64(start), uint64(start)+align(length, pageSize), protAll&^deny)
-		}
-		return start
+		return p.mapShared(f.shared, addr, length, off, fixed, deny)
 	}
 	name := "?"
 	if f.path != "" {
@@ -236,7 +232,7 @@ func sysSharedRegionMap(p *Process, a []uint64) int64 {
 		p.unmap(addr, addr+align(size, pageSize))
 		if !backing {
 			// Not file backed: dyld hands over a buffer (its dynamic config) to copy in.
-			r := &region{start: addr, end: addr + align(size, pageSize), name: "shared-region", deny: protAll &^ (prot & protAll)}
+			r := &region{start: addr, end: addr + align(size, pageSize), name: "shared-region", deny: denied(prot)}
 			if f == nil && p.findRegion(fileOff) != nil {
 				if r.data = p.read(fileOff, size); len(r.data) > 0 {
 					r.kind = fileRegion
@@ -250,7 +246,7 @@ func sysSharedRegionMap(p *Process, a []uint64) int64 {
 			stopf("inconsistent shared region slide")
 		}
 		p.slide, p.slideSet = slide, true
-		p.addRegion(&region{start: addr, end: addr + size, kind: cacheRegion, name: "cache", deny: protAll &^ (prot & protAll)})
+		p.addRegion(&region{start: addr, end: addr + size, kind: cacheRegion, name: "cache", deny: denied(prot)})
 	}
 	return 0
 }
@@ -375,9 +371,8 @@ func sysSetitimer(p *Process, a []uint64) int64 {
 		return -eINVAL
 	}
 	if set != 0 && slices.ContainsFunc(p.read(set+16, 16), func(b byte) bool { return b != 0 }) {
-		if p.unimplemented("setitimer that starts a timer", a) {
-			return -eNOSYS
-		}
+		p.unimplemented("setitimer that starts a timer", a)
+		return -eNOSYS
 	}
 	if old != 0 {
 		p.write(old, make([]byte, 32))
@@ -519,12 +514,12 @@ func sysPtrace(p *Process, a []uint64) int64 {
 func sysIopolicysys(p *Process, a []uint64) int64 {
 	const get, set = 1, 2 // IOPOL_CMD_GET and _SET
 	b := p.read(a[1], 12) // struct _iopol_param_t: scope, type, policy
-	scope, kind := le.Uint32(b), le.Uint32(b[4:])
+	scope, kind, policy := le.Uint32(b), le.Uint32(b[4:]), le.Uint32(b[8:])
 	key := [2]uint32{scope, kind}
 	if scope == 1 { // IOPOL_SCOPE_THREAD: the thread's own
 		key[0] = 1<<16 | uint32(p.current.port)
 	}
-	p.note("  iopolicysys cmd %d scope %d type %d policy %d", a[0], scope, kind, le.Uint32(b[8:]))
+	p.note("  iopolicysys cmd %d scope %d type %d policy %d", a[0], scope, kind, policy)
 	switch {
 	case scope > 2:
 		return -eINVAL
@@ -535,7 +530,7 @@ func sysIopolicysys(p *Process, a []uint64) int64 {
 		if p.iopolicies == nil {
 			p.iopolicies = map[[2]uint32]uint32{}
 		}
-		p.iopolicies[key] = le.Uint32(b[8:])
+		p.iopolicies[key] = policy
 	case a[0] == get:
 		p.write(a[1]+8, le32(p.iopolicies[key])) // IOPOL_DEFAULT until set
 	default:
@@ -554,10 +549,11 @@ func sysMemorystatusGetLevel(p *Process, a []uint64) int64 {
 // Priorities are a process's nice value, by PRIO_PROCESS, PRIO_PGRP or PRIO_USER of its own pid,
 // group (its pid) or user, as getpriority and setpriority keep them. A user may raise its nice
 // value but not lower it again. Darwin's own kinds (PRIO_DARWIN_THREAD and the like) stop.
-func (p *Process) priorityOf(which, who uint64) int64 {
+func (p *Process) priorityOf(a []uint64) int64 {
+	which, who := a[0], a[1]
 	switch {
 	case which > 2:
-		p.unimplemented("getpriority or setpriority of a Darwin kind", []uint64{which, who, 0, 0, 0, 0})
+		p.unimplemented("getpriority or setpriority of a Darwin kind", a)
 		return -eNOSYS
 	case who != 0 && who != uint64(p.pid) && (which != 2 || who != uint64(p.uid)):
 		return -eSRCH
@@ -566,7 +562,7 @@ func (p *Process) priorityOf(which, who uint64) int64 {
 }
 
 func sysGetpriority(p *Process, a []uint64) int64 {
-	if errno := p.priorityOf(a[0], a[1]); errno != 0 {
+	if errno := p.priorityOf(a); errno != 0 {
 		return errno
 	}
 	if p.nice < 0 { // a negative result here is an errno: only root can have one
@@ -577,7 +573,7 @@ func sysGetpriority(p *Process, a []uint64) int64 {
 }
 
 func sysSetpriority(p *Process, a []uint64) int64 {
-	if errno := p.priorityOf(a[0], a[1]); errno != 0 {
+	if errno := p.priorityOf(a); errno != 0 {
 		return errno
 	}
 	nice := min(max(int64(int32(a[2])), -20), 20)
@@ -664,30 +660,30 @@ func sysGettimeofday(p *Process, a []uint64) int64 {
 // expect no container, and quarantine, which it takes. Applying a sandbox profile succeeds and
 // confines nothing, by choice (see limits.md). Anything not measured stops.
 func sysMacSyscall(p *Process, a []uint64) int64 {
-	policy, call := p.cstr(a[0]), uint32(a[1])
-	p.note("  mac_syscall %s %d", policy, call)
-	switch {
-	case policy == "AMFI" && call == 90: // amfi_check_dyld_policy_self: {flags in, &flags out}
+	name := p.cstr(a[0]) + " " + strconv.Itoa(int(uint32(a[1]))) // the policy and its call
+	p.note("  mac_syscall %s", name)
+	switch name {
+	case "AMFI 90": // amfi_check_dyld_policy_self: {flags in, &flags out}
 		p.write(p.u64(a[2]+8), le64(0x1df))
 		return 0
-	case policy == "Sandbox" && call == 0: // applying a compiled profile: succeeds, confines nothing, by choice
+	case "Sandbox 0": // applying a compiled profile: succeeds, confines nothing, by choice
 		return 0
-	case policy == "Sandbox" && call == 2:
+	case "Sandbox 2":
 		return p.sandboxCheck(a)
-	case policy == "Sandbox" && call == 4:
+	case "Sandbox 4":
 		return p.sandboxQuery(a)
-	case policy == "Sandbox" && call == 12:
+	case "Sandbox 12":
 		return p.sandboxPassthrough(a)
-	case policy == "Sandbox" && call == 22: // a profile the kernel has by name: none, so libsandbox compiles it
+	case "Sandbox 22": // a profile the kernel has by name: none, so libsandbox compiles it
 		return -eNOENT
-	case policy == "Sandbox" && call == 67: // sandbox_get_container_expected: {&expected, &second}
+	case "Sandbox 67": // sandbox_get_container_expected: {&expected, &second}
 		p.write(p.u64(a[2]), le64(0))
 		p.write(p.u64(a[2]+8), le64(0))
 		return 0
-	case policy == "Quarantine" && call == 87: // _qtn_proc_apply_to_pid: taken, nothing written
+	case "Quarantine 87": // _qtn_proc_apply_to_pid: taken, nothing written
 		return 0
 	}
-	p.unimplemented("__mac_syscall "+policy+" "+strconv.Itoa(int(call)), a)
+	p.unimplemented("__mac_syscall "+name, a)
 	return -eNOSYS
 }
 
@@ -727,11 +723,13 @@ func (p *Process) sandboxPassthrough(a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	var st syscall.Stat_t
-	regular, dir := f.kind == cacheFD, f.kind == dirFD
-	if f.kind == hostFD && syscall.Fstat(f.host, &st) == nil {
-		regular, dir = st.Mode&syscall.S_IFMT == syscall.S_IFREG, st.Mode&syscall.S_IFMT == syscall.S_IFDIR
+	var kind uint16 // as fstat shows it, of the descriptors measured
+	if f.kind == cacheFD || f.kind == dirFD || f.kind == hostFD {
+		if info, errno := p.describeFD(f); errno == 0 {
+			kind = info.mode & syscall.S_IFMT
+		}
 	}
+	regular, dir := kind == syscall.S_IFREG, kind == syscall.S_IFDIR
 	switch {
 	case dir && flags == 0x102, regular && flags == 1:
 		return -eACCES
@@ -749,8 +747,7 @@ func (p *Process) sandboxQuery(a []uint64) int64 {
 	w := p.read(a[2], 16)
 	pid, kind := le.Uint64(w), le.Uint64(w[8:])
 	switch {
-	case kind == 0 && pid != uint64(p.pid) && p.m.process(uint32(pid)) == nil: // not measured
-	case kind == 0:
+	case kind == 0 && (pid == uint64(p.pid) || p.m.process(uint32(pid)) != nil): // of a dead process: not measured
 		return -eNOTSUP
 	case kind == 1:
 		return -eSRCH
@@ -919,9 +916,9 @@ var cpuFamilies = map[string]uint64{
 	"iPad16,2":     0x2876f5b5,
 }
 
-// chipFamily is the hw.cpufamily of the device of a product type (iPhone11,2), or fallback for
-// one cpuFamilies does not know.
-func chipFamily(product string, fallback uint64) uint64 {
+// chipFamily is the hw.cpufamily of the device of a product type (iPhone11,2), or 0 for one
+// cpuFamilies does not know.
+func chipFamily(product string) uint64 {
 	if family, ok := cpuFamilies[product]; ok {
 		return family
 	}
@@ -929,7 +926,7 @@ func chipFamily(product string, fallback uint64) uint64 {
 	if family, ok := cpuFamilies[generation]; ok {
 		return family
 	}
-	return fallback
+	return 0
 }
 
 // sysctlValue is a uint64 or a string.
@@ -971,7 +968,7 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			p.sysctls["hw.machine"], p.sysctls["hw.model"] = os("model", "iPhone"), board
 			p.sysctls["kern.osvariant_status"] = n(osVariantIOS)
 		}
-		family := chipFamily(os("model", "Macmini9,1"), 0)
+		family := chipFamily(os("model", "Macmini9,1"))
 		if family != 0 {
 			p.sysctls["hw.cpufamily"] = n(family)
 		}

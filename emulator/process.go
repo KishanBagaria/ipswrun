@@ -141,6 +141,9 @@ type region struct {
 
 func (r *region) prot() uint32 { return protAll &^ r.deny }
 
+// denied is what a protection does not allow, as a region keeps it.
+func denied(prot uint32) uint32 { return protAll &^ (prot & protAll) }
+
 // stop is the panic value that ends a run: the guest did something the emulator cannot carry on
 // from. fault is the panic value for a system call touching unmapped guest memory, which the
 // call reports to the guest as EFAULT.
@@ -604,7 +607,7 @@ func (p *Process) protect(start, end uint64, prot uint32) bool {
 	p.split(start)
 	p.split(end)
 	for _, r := range p.overlaps(start, end) {
-		r.deny = protAll &^ prot
+		r.deny = denied(prot)
 	}
 	for a := start; a < end; {
 		if !p.isMapped(a) {

@@ -84,7 +84,7 @@ func (p *Process) vmMap(addr, size, mask, flags uint64, what allocation) (uint64
 }
 
 func (p *Process) vmAllocate(addrp, size, mask, flags uint64, prot uint32, name string) int64 {
-	start, ok := p.vmMap(p.u64(addrp), size, mask, flags, allocation{name: name, deny: protAll &^ prot})
+	start, ok := p.vmMap(p.u64(addrp), size, mask, flags, allocation{name: name, deny: denied(prot)})
 	if !ok {
 		return kernNoSpace
 	}

@@ -39,6 +39,9 @@ const (
 // hostFile is a host file as the host knows it, whatever the guest calls it.
 type hostFile struct{ dev, ino uint64 }
 
+// hostFileOf is the host file a stat describes.
+func hostFileOf(st *syscall.Stat_t) hostFile { return hostFile{uint64(st.Dev), st.Ino} }
+
 // changeable is the file under the home or a mount that a path names, or why a call that changes
 // a file cannot change it: ENOENT; for the system volume and what is made up beside it, EPERM as a
 // user who does not own those files is told, or EROFS for root; or EPERM for the host files that
@@ -57,7 +60,7 @@ func (p *Process) changeable(path string, follow bool) (target, hostFile, int64)
 	if err := statInRoot(t.root, t.rel, follow, &st); err != nil {
 		return t, hostFile{}, hostErrno(err)
 	}
-	return t, hostFile{uint64(st.Dev), st.Ino}, 0
+	return t, hostFileOf(&st), 0
 }
 
 // systemVolume is why a file of the system volume cannot be changed: its files are root's, so a
@@ -75,8 +78,8 @@ func (p *Process) changeableFD(n uint64) (*fd, hostFile, int64) {
 	if f == nil {
 		return nil, hostFile{}, -eBADF
 	}
-	switch t, _ := p.resolve(f.path); {
-	case f.kind == hostFD && f.path != "" && t.root != nil:
+	switch _, writable := p.writableTarget(f.path); {
+	case f.kind == hostFD && f.path != "" && writable:
 	case f.kind == hostFD || f.kind == stdioFD:
 		return f, hostFile{}, -ePERM
 	default:
@@ -86,7 +89,7 @@ func (p *Process) changeableFD(n uint64) (*fd, hostFile, int64) {
 	if err := syscall.Fstat(f.host, &st); err != nil {
 		return f, hostFile{}, hostErrno(err)
 	}
-	return f, hostFile{uint64(st.Dev), st.Ino}, 0
+	return f, hostFileOf(&st), 0
 }
 
 // fileMode is a mode's permission bits as Go says them.
@@ -134,19 +137,16 @@ func (p *Process) chown(uid, gid uint32, a []uint64) int64 {
 	return -eNOSYS
 }
 
-func sysChown(p *Process, a []uint64) int64 {
-	if _, _, errno := p.changeable(p.cstr(a[0]), true); errno != 0 {
+// chownPath is chown and lchown, which follows a final symbolic link or not.
+func (p *Process) chownPath(a []uint64, follow bool) int64 {
+	if _, _, errno := p.changeable(p.cstr(a[0]), follow); errno != 0 {
 		return errno
 	}
 	return p.chown(uint32(a[1]), uint32(a[2]), a)
 }
 
-func sysLchown(p *Process, a []uint64) int64 {
-	if _, _, errno := p.changeable(p.cstr(a[0]), false); errno != 0 {
-		return errno
-	}
-	return p.chown(uint32(a[1]), uint32(a[2]), a)
-}
+func sysChown(p *Process, a []uint64) int64  { return p.chownPath(a, true) }
+func sysLchown(p *Process, a []uint64) int64 { return p.chownPath(a, false) }
 
 func sysFchown(p *Process, a []uint64) int64 {
 	if _, _, errno := p.changeableFD(a[0]); errno != 0 {
@@ -264,7 +264,7 @@ func sysFsetattrlist(p *Process, a []uint64) int64 {
 // namespaces, and some of its file systems have none). The files of the system volume have none.
 
 // xattrFile is what an extended-attribute call acts on: the host file, or why it cannot be
-// changed (see changeable), or with ok false for reading one that has no attributes kept.
+// changed (see changeable).
 func (p *Process) xattrFile(path uint64, fdn int64, options uint64) (hostFile, int64) {
 	if options&^xattrOptions != 0 {
 		return hostFile{}, -eINVAL
@@ -418,7 +418,7 @@ func sysFremovexattr(p *Process, a []uint64) int64 { return p.removexattr(0, int
 func (p *Process) forgetFile(t target) {
 	var st syscall.Stat_t
 	if statInRoot(t.root, t.rel, false, &st) == nil && st.Nlink <= 1 {
-		delete(p.m.xattrs, hostFile{uint64(st.Dev), st.Ino})
+		delete(p.m.xattrs, hostFileOf(&st))
 	}
 }
 
