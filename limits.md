@@ -55,7 +55,20 @@ The `trivial` map in `emulator/bsd.go` used to answer 0 for calls that did nothi
 
 The rest of what the `trivial` map answered 0 now has no handler, and stops the run: `memorystatus_control`, `proc_rlimit_control`, `thread_selfusage`, `kqueue_workloop_ctl`, `audit_session_self`, `debug_syscall_reject_config`, `debug_syscall_reject`, `record_system_event`, `log_data`, `oslog_coproc_reg` and `oslog_coproc`. None of the example guests calls them on the releases tested. `objc_bp_assist_cfg_np`, which libobjc of iOS 16.0 calls as it starts, fails with ENOTSUP, as on a core without the hardware that assists Objective-C breakpoints.
 
-Still to check against a real kernel: the map's constant errors (`necp_open` and `getaudit_addr`, `coalition_info` and `persona` answer ENOSYS, `socket` EACCES, `work_interval_ctl` and `crossarch_trap` ENOTSUP), which fail but perhaps not as a Mac does. And `__mac_syscall`, which answers 0 to every Sandbox and Quarantine call and a made-up value to AMFI's 90: `sandbox_init` succeeds and confines nothing.
+Still to check against a real kernel: the map's constant errors (`necp_open` and `getaudit_addr`, `coalition_info` and `persona` answer ENOSYS, `socket` EACCES, `work_interval_ctl` and `crossarch_trap` ENOTSUP), which fail but perhaps not as a Mac does..
+
+## `__mac_syscall`
+
+The calls guests make are answered as a Mac's kernel answers a process that is not sandboxed, as [examples/macsyscall.c](examples/macsyscall.c) measures them (run natively on macOS 27.2.1, with the arguments the guests pass):
+
+| Call | Answer |
+| --- | --- |
+| AMFI 90, `amfi_check_dyld_policy_self` | 0, with the flags 0x1df |
+| Sandbox 2, a check of the process or launchd | 0, nothing written, for the filter types the guests use (none, 5, 6, 0x1c, 0x41); a descriptor (0xf0) is EBADF if it is not open |
+| Sandbox 4, a query of the process | ENOTSUP for its container (kind 0), ESRCH for kind 1; the buffer is not written |
+| Sandbox 67, `sandbox_get_container_expected` (iOS 18 and later, as every process starts) | 0, with both words it is given set to 0: no container is expected |
+
+Everything else stops as unimplemented: applying a sandbox profile (Sandbox 1 and 22, `sandbox_init` and the like), since nothing would confine the guest; issuing a sandbox extension (Sandbox 12), whose token is the kernel's own; Quarantine 87, which marks the process quarantined; and any other policy, call, filter type or process. cfprefsd, which the prefs guest runs beside it, makes these calls as it starts, so prefs stops: on macOS 15.6.1 and 27.2.1 at Quarantine 87, on macOS 11.0.1 and iOS 14.0 at a sandbox check of a path (filter type 1, not measured). On iOS 18.7.12, 16.0 and 27.2.1 it still runs. The answers were measured on a Mac; iOS guests get the same ones, which is not known to be what an iPhone's kernel answers.
 
 ## Sysctls left out
 

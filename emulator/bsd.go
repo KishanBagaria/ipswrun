@@ -657,18 +657,66 @@ func sysGettimeofday(p *Process, a []uint64) int64 {
 	return 0
 }
 
+// sysMacSyscall answers the __mac_syscall calls guests make as a Mac's kernel answers them for a
+// process that is not sandboxed, as examples/macsyscall.c measures: AMFI's dyld policy, sandbox
+// checks, which allow everything, and the sandbox's queries of a process, which find nothing and
+// expect no container. Anything else stops: applying a sandbox profile (nothing would confine
+// the guest), issuing a sandbox extension (its token is the kernel's), quarantine, and calls not
+// measured.
 func sysMacSyscall(p *Process, a []uint64) int64 {
-	policy := p.cstr(a[0])
-	p.note("  mac_syscall %s %d", policy, a[1])
+	policy, call := p.cstr(a[0]), uint32(a[1])
+	p.note("  mac_syscall %s %d", policy, call)
 	switch {
-	case policy == "AMFI" && a[1] == 90:
-		p.write(p.u64(a[2]+8), le64(0x7F))
+	case policy == "AMFI" && call == 90: // amfi_check_dyld_policy_self: {flags in, &flags out}
+		p.write(p.u64(a[2]+8), le64(0x1df))
 		return 0
-	case policy == "Sandbox":
-		return 0
-	case policy == "Quarantine": // nothing is quarantined, and nothing a guest writes will be
+	case policy == "Sandbox" && call == 2:
+		return p.sandboxCheck(a)
+	case policy == "Sandbox" && call == 4:
+		return p.sandboxQuery(a)
+	case policy == "Sandbox" && call == 67: // sandbox_get_container_expected: {&expected, &second}
+		p.write(p.u64(a[2]), le64(0))
+		p.write(p.u64(a[2]+8), le64(0))
 		return 0
 	}
+	p.unimplemented("__mac_syscall "+policy+" "+strconv.Itoa(int(call)), a)
+	return -eNOSYS
+}
+
+// sandboxCheck is Sandbox 2, {&result, pid, operation, filter type, argument, flags}, of the
+// process or of launchd: allowed, with nothing written, unless the filter is a descriptor
+// (type 0xf0) that is not open. Filter types not measured stop.
+func (p *Process) sandboxCheck(a []uint64) int64 {
+	w := p.read(a[2], 40)
+	pid, kind, arg := le.Uint64(w[8:]), le.Uint64(w[24:]), le.Uint64(w[32:])
+	switch {
+	case pid != uint64(p.pid) && pid != 1:
+	case kind == 0xf0:
+		if p.fds[arg&0xFFFFFFFF] == nil {
+			return -eBADF
+		}
+		return 0
+	case kind == 0 && le.Uint64(w[16:]) == 0, kind == 5, kind == 6, kind == 0x1c, kind == 0x41:
+		return 0
+	}
+	p.unimplemented(fmt.Sprintf("sandbox check of pid %d, filter type %#x", pid, kind), a)
+	return -eNOSYS
+}
+
+// sandboxQuery is Sandbox 4, {pid, kind, buffer, size, ...}, of the process: kind 0, its
+// container, is not supported where there is no sandbox, and kind 1 finds no such process.
+// Neither writes the buffer.
+func (p *Process) sandboxQuery(a []uint64) int64 {
+	w := p.read(a[2], 16)
+	pid, kind := le.Uint64(w), le.Uint64(w[8:])
+	switch {
+	case pid != uint64(p.pid):
+	case kind == 0:
+		return -eNOTSUP
+	case kind == 1:
+		return -eSRCH
+	}
+	p.unimplemented(fmt.Sprintf("sandbox query %d of pid %d", kind, pid), a)
 	return -eNOSYS
 }
 

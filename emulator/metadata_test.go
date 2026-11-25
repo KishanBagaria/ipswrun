@@ -381,3 +381,69 @@ func TestIOPolicy(t *testing.T) {
 		}
 	})
 }
+
+// __mac_syscall answers as examples/macsyscall.c measured a Mac answering a process that is not
+// sandboxed, writes nothing it did not write, and stops on everything else.
+func TestMacSyscall(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		strs, arg, out := uint64(dataAddr), uint64(dataAddr+0x100), uint64(dataAddr+0x200)
+		p.write(strs, []byte("AMFI\x00Sandbox\x00syscall-unix\x00file-write-data\x00"))
+		amfi, sandbox, op, write := strs, strs+5, strs+13, strs+26
+		mac := func(policy uint64, call uint64, words ...uint64) int64 {
+			p.write(arg, le64(append(words, make([]uint64, 8-len(words))...)...))
+			p.write(out, le64(0xaaaaaaaaaaaaaaaa))
+			return p.result(t, "__mac_syscall", policy, call, arg)
+		}
+		if got := mac(amfi, 90, 0, out); got != 0 || p.u64(out) != 0x1df {
+			t.Errorf("AMFI 90: %d, flags %#x", got, p.u64(out))
+		}
+		pid := uint64(p.pid)
+		for _, c := range []struct {
+			words []uint64
+			want  int64
+		}{
+			{[]uint64{out, pid}, 0},
+			{[]uint64{out, pid, op, 0x41, 0x226, 1}, 0},
+			{[]uint64{out, 1, write, 0xf0, 2, 0x20000005}, 0}, // stderr is open
+			{[]uint64{out, 1, write, 0xf0, 99, 0x20000005}, -eBADF},
+		} {
+			if got := mac(sandbox, 2, c.words...); got != c.want || p.u64(out) != 0xaaaaaaaaaaaaaaaa {
+				t.Errorf("Sandbox 2 %#x: %d, result %#x", c.words[1:], got, p.u64(out))
+			}
+		}
+		if got := mac(sandbox, 4, pid, 0, out, 8, 0, 1); got != -eNOTSUP || p.u64(out) != 0xaaaaaaaaaaaaaaaa {
+			t.Errorf("Sandbox 4, the container: %d", got)
+		}
+		if got := mac(sandbox, 4, pid, 1, out, 8, 1); got != -eSRCH {
+			t.Errorf("Sandbox 4, kind 1: %d", got)
+		}
+		if got := mac(sandbox, 67, out, out+8); got != 0 || p.u64(out) != 0 || p.u64(out+8) != 0 {
+			t.Errorf("Sandbox 67: %d, %#x %#x", got, p.u64(out), p.u64(out+8))
+		}
+	})
+	for _, c := range []struct {
+		policy string
+		call   uint64
+		words  []uint64
+		stop   string
+	}{
+		{"Sandbox", 1, nil, "__mac_syscall Sandbox 1"},
+		{"Sandbox", 22, nil, "__mac_syscall Sandbox 22"},
+		{"Sandbox", 12, nil, "__mac_syscall Sandbox 12"},
+		{"Quarantine", 87, nil, "__mac_syscall Quarantine 87"},
+		{"AMFI", 91, nil, "__mac_syscall AMFI 91"},
+		{"Sandbox", 2, []uint64{0, 1234}, "sandbox check of pid 1234"},
+		{"Sandbox", 2, []uint64{0, 1, 0, 3}, "filter type 0x3"},
+		{"Sandbox", 4, []uint64{1, 0}, "sandbox query 0 of pid 1"},
+	} {
+		p := newProcess(t)
+		onMain(func() {
+			p.write(dataAddr, []byte(c.policy+"\x00"))
+			p.write(dataAddr+0x100, le64(append(c.words, make([]uint64, 8-len(c.words))...)...))
+			if _, _, stopped := p.trap(number(t, "__mac_syscall"), dataAddr, c.call, dataAddr+0x100); !strings.Contains(stopped, c.stop) {
+				t.Errorf("%s %d %#x stopped with %q", c.policy, c.call, c.words, stopped)
+			}
+		})
+	}
+}
