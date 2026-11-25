@@ -1,0 +1,67 @@
+kqueue: a descriptor: 1
+an empty kqueue, not waited for: 0
+an empty kqueue, waited for 30 ms: 0
+it took at least that: 1
+add one of the user's, cleared when it is taken: 0
+before it is made to happen: 0
+make it happen: 0
+after: 1; ident 1 filter -10 flags 0x21 fflags 0 data 0 udata 0
+again: 0
+add one that is not cleared: 0; make it happen: 0
+taken: 1; ident 2 filter -10 flags 0x1 fflags 0 data 0 udata 0
+taken again: 1; ident 2 filter -10 flags 0x1 fflags 0 data 0 udata 0
+disable it: 0
+disabled: 0
+enable it: 0
+enabled: 1; ident 2 filter -10 flags 0x1 fflags 0 data 0 udata 0
+delete it: 0; delete it again: -1 (No such file or directory)
+deleted: 0
+make one happen that is not there: -1 (No such file or directory)
+add with flags 0x5: 0; or 0x2 in: 0
+its flags: 1; ident 3 filter -10 flags 0x21 fflags 0xc0000007 data 0 udata 0
+and with 0x6: 0
+its flags: 1; ident 3 filter -10 flags 0x21 fflags 0x6 data 0 udata 0
+copy 0x30: 0
+its flags: 1; ident 3 filter -10 flags 0x21 fflags 0x30 data 0 udata 0
+add one for once: 0, make it happen: 0
+once: 1; ident 4 filter -10 flags 0x11 fflags 0 data 0 udata 0
+make it happen again: -1 (No such file or directory)
+add one that is disabled when taken: 0, make it happen: 0
+taken: 1; ident 5 filter -10 flags 0xa1 fflags 0 data 0 udata 0
+make it happen again: 0
+while disabled: 0
+enable it: 0
+enabled: 1; ident 5 filter -10 flags 0xa1 fflags 0 data 0 udata 0
+a receipt asked for, and a change that fails, with room: 2; ident 6 flags 0x4041 data 0 udata 0x66; ident 8 flags 0x4002 data 2 udata 0
+waited for, with another thread to make it happen: 1; ident 9 filter -10 flags 0x21 fflags 0 data 0 udata 0
+a timer for once, in 20 ms: 0
+before it is due: 0
+waited for: 1; ident 1 filter -7 flags 0x31 fflags 0 data 1 udata 0x71
+and after, for 60 ms: 0
+a timer every 10 ms: 0
+after 35 ms: 1; ident 2 filter -7 flags 0x21 fflags 0, due more than once: 1
+waited for again: 1, due at least once: 1
+delete it: 0
+a timer in microseconds, 15000 of them, for once: 0
+waited for: 1; ident 3 filter -7 flags 0x31 fflags 0 data 1 udata 0
+it took at least 15 ms: 1
+watch the reading end: 0
+an empty pipe: 0
+with 5 in it: 1; ident 4 filter -1 flags 0x1 fflags 0 data 5 udata 0x81
+and still: 1; ident 4 filter -1 flags 0x1 fflags 0 data 5 udata 0x81
+with 3 left: 1; ident 4 filter -1 flags 0x1 fflags 0 data 3 udata 0x81
+emptied: 0
+only what is new: 0
+3 written: 1; ident 4 filter -1 flags 0x1 fflags 0 data 3 udata 0x82
+nothing since: 1; ident 4 filter -1 flags 0x1 fflags 0 data 3 udata 0x82
+2 more: 1; ident 4 filter -1 flags 0x1 fflags 0 data 5 udata 0x82
+watch the writing end: 0
+both ends: 2; ident 4 filter -1 flags 0x1 fflags 0 data 5 udata 0x82; ident 5 filter -2 flags 0x1 fflags 0 data 16379 udata 0x83
+the writer gone: 1; ident 4 filter -1 flags 0x8001 fflags 0 data 5 udata 0x82
+and what it left read: 1; ident 4 filter -1 flags 0x8001 fflags 0 data 0 udata 0x82
+the pipe closed: 0
+a child ending: 1; it is the child: 1, filter -5 flags 0x8031 fflags 0x84000000 data 0x300 udata 0x91
+kevent64 of a kqueue that kevent was asked of: -1 (Invalid argument)
+kevent64 of one of its own: 1; ident 1 filter -10 flags 0x11 fflags 0x1000007 data 0 udata 0x64, and its two words 0xaaaa 0xbbbb
+kevent of that one: -1 (Invalid argument)
+closing the kqueue: 0; asking it afterwards: -1 (Bad file descriptor)

@@ -220,6 +220,8 @@ func (p *Process) inherit(parent *Process, actions []byte, closeAll bool) int64 
 	p.fds = map[uint64]*fd{}
 	for n, f := range parent.fds {
 		switch {
+		case f.kq != nil:
+			continue // a kqueue is its process's alone
 		case f.kind == hostFD:
 			h, err := syscall.Dup(f.host)
 			if err != nil {

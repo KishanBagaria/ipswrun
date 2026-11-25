@@ -69,7 +69,8 @@ type fd struct {
 	pipe      *pipe
 	flags     uint32
 	noSigpipe bool
-	refs      int // the descriptors it is, in every process: a duplicate and a child's are the same end
+	kq        *userKqueue // of a kqueue: what it watches (see kqueue.go)
+	refs      int         // the descriptors it is, in every process: a duplicate and a child's are the same end
 }
 
 func (f *fd) size() int64 {

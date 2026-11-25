@@ -516,15 +516,6 @@ const (
 	csOpsEntitlementsDER = 16 // as DER, which is what Security reads
 )
 
-// sysKqueue gives a descriptor that can be described and closed like any other. The events asked
-// of it never happen: only libdispatch's own kqueues, which have no descriptor, are emulated.
-func sysKqueue(p *Process, a []uint64) int64 {
-	if p.full() {
-		return -eMFILE
-	}
-	return int64(p.newFD(&fd{kind: dataFD}))
-}
-
 // selectNothing is select on descriptors nothing ever happens to: none is ready, once the time
 // the caller would wait has passed. It never passes for a caller that set none.
 func (p *Process) selectNothing(a []uint64, nanoseconds uint64) int64 {

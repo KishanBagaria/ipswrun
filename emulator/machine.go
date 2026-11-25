@@ -248,10 +248,17 @@ func (m *Machine) schedule() bool {
 	m.running.yield = false
 	main := m.procs[0]
 	for {
+		// What a system call left to be done. The thread that made it has not given up its
+		// turn for that: it goes on, as a parent does before the child it started first runs.
+		did := len(m.deferred) > 0
 		for len(m.deferred) > 0 {
 			do := m.deferred[0]
 			m.deferred = m.deferred[1:]
 			do()
+		}
+		if p := m.running; did && !p.exited && p.current.state == runnable {
+			p.switchTo(p.current)
+			return true
 		}
 		now := m.clock.now()
 		var until time.Time

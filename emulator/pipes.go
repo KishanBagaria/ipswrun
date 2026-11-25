@@ -41,6 +41,7 @@ type pipe struct {
 	readers, writers int       // descriptors open at each end, a duplicate counting once
 	made, written    time.Time // when; the first until it is written to
 	read             time.Time // when it was last read; zero until then
+	changes          uint64    // how often something has happened to it: written, read, or an end closed
 }
 
 // pipeOp is what a thread that waits on a pipe is in the middle of.
@@ -191,6 +192,7 @@ func (p *Process) brokenPipe(f *fd) int64 {
 // pipeChanged gives the threads that wait on a pipe what they waited for, if it is there now,
 // and the threads in select their answer: of every process, as a pipe's ends may be in two.
 func (p *Process) pipeChanged(q *pipe) {
+	q.changes++
 	for _, owner := range p.m.procs {
 		if owner.exited {
 			continue
