@@ -672,6 +672,12 @@ const (
 // cpuFamilyFirestorm is CPUFAMILY_ARM_FIRESTORM_ICESTORM, of the A14 and the M1: a Mac's here.
 const cpuFamilyFirestorm = 0x1b588bb3
 
+// The hw.cpusubfamily of a phone's chip (CPUSUBFAMILY_ARM_HP) and of an M1 (CPUSUBFAMILY_ARM_HG).
+const (
+	cpuSubfamilyHP = 1
+	cpuSubfamilyHG = 2
+)
+
 // cpuFamilies is the CPUFAMILY_ARM_* of mach/machine.h of the chip in each iPhone and iPad an iOS
 // release of 14 or later runs on, by the product type's generation (iPhone14) or, where one
 // generation has two chips, by the product type itself.
@@ -728,7 +734,8 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			"hw.cpusubtype": n(cpuSubtypeARM64E), "hw.cpufamily": n(cpuFamilyFirestorm), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128),
 			"hw.l1dcachesize": n(65536), "hw.l1icachesize": n(131072), "hw.l2cachesize": n(4 << 20), "hw.packages": n(1),
 			"hw.nperflevels": n(1), "hw.perflevel0.logicalcpu": n(1), "hw.perflevel0.physicalcpu": n(1),
-			"hw.perflevel0.logicalcpu_max": n(1), "hw.machine": "arm64", "hw.model": os("model", "Macmini9,1"), "hw.targettype": "J274",
+			"hw.perflevel0.logicalcpu_max": n(1), "hw.perflevel0.physicalcpu_max": n(1), "hw.perflevel0.name": "Performance",
+			"hw.perflevel0.l2cachesize": n(4 << 20), "hw.perflevel0.cpusperl2": n(1), "hw.cpusubfamily": n(cpuSubfamilyHG), "hw.machine": "arm64", "hw.model": os("model", "Macmini9,1"), "hw.targettype": "J274",
 			"hw.cpubrand": "Apple M1", "kern.ostype": "Darwin", "kern.hostname": "emu.local", "kern.argmax": n(1 << 20),
 			"kern.usrstack64": n(stackTop), "kern.safeboot": n(0), "kern.ngroups": n(16), "kern.maxfilesperproc": n(10240),
 			"kern.secure_kernel": n(0), "kern.bootargs": "", "kern.osvariant_status": n(osVariantMac), "kern.willshutdown": n(0),
@@ -750,6 +757,7 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			p.sysctls["kern.osvariant_status"] = n(osVariantIOS)
 			// Its processor is the device's chip, not the Mac's M1.
 			p.sysctls["hw.cpufamily"] = n(chipFamily(os("model", ""), cpuFamilyFirestorm))
+			p.sysctls["hw.cpusubfamily"] = n(cpuSubfamilyHP)
 			// What a Mac says of the macOS version it reports to old programs (10.16) and of the
 			// iOS its Catalyst apps see: an iPhone has neither. Nor has it hw.cpubrand, which no
 			// kernel has (a Mac's brand is machdep.cpu.brand_string).

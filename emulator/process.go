@@ -817,6 +817,11 @@ func (p *Process) setupMMU() error {
 	return nil
 }
 
+// amx says whether an instruction is one of Apple's matrix coprocessor (AMX), which every Apple
+// chip of a supported release has and Unicorn does not: 0x00201000, its operation in bits 5 to 9
+// and its operand register or immediate in bits 0 to 4.
+func amx(instruction uint32) bool { return instruction&^0x3FF == 0x00201000 }
+
 func (p *Process) setupCommpage() {
 	for _, base := range []uint64{commPage, commPageRO} {
 		page := hostPage(base, pageSize)
@@ -838,6 +843,10 @@ func (p *Process) setupCommpage() {
 			le.PutUint64(page[0x10:], caps)
 			le.PutUint32(page[0x20:], uint32(caps))
 			page[0x22], page[0x34], page[0x35], page[0x36] = 1, 1, 1, 1
+			// The chip is the guest's, as hw.cpufamily says, not the host's: libraries that pick
+			// their kernels by chip (libBLAS) read it here.
+			family, _ := p.sysctlValue("hw.cpufamily")
+			le.PutUint32(page[0x80:], uint32(family.(uint64))) // _COMM_PAGE_CPUFAMILY
 		}
 		p.uc.memMap(base, pageSize, protAll)
 		p.uc.memWrite(base, page)
@@ -1099,13 +1108,19 @@ func (p *Process) interrupt(number uint32) {
 	}
 	if number != 2 {
 		pc := p.uc.reg(regPC)
-		words := "?"
+		words, instruction := "?", uint32(0)
 		func() {
 			defer func() { recover() }()
+			instruction = p.u32(pc)
 			w := p.read(pc-8, 16)
 			words = fmt.Sprintf("%08x %08x %08x %08x", le.Uint32(w), le.Uint32(w[4:]), le.Uint32(w[8:]), le.Uint32(w[12:]))
 		}()
 		p.fault = fmt.Sprintf("CPU exception %d at %s (code around pc: %s)", number, p.where(pc), words)
+		if number == 1 && amx(instruction) {
+			p.fault = fmt.Sprintf("AMX instruction %08x at %s: Accelerate's BLAS and LAPACK need Apple's matrix coprocessor, which is not emulated",
+				instruction, p.where(pc))
+			p.faultKind = StopUnimplemented
+		}
 		p.uc.stop()
 		return
 	}
