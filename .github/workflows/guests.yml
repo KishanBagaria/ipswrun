@@ -92,13 +92,19 @@ jobs:
           for f in examples/expected/ios/*/*.json; do echo "== $f"; jq -c '{version, build, exit_code, output}' "$f"; done
       - run: |
           cd ${{ runner.temp }}/results
-          for f in */*.err; do [ -s "$f" ] || continue; echo "== $f"; grep -m3 "^ipswrun:" "$f"; tail -n 12 "$f"; done
+          for f in */*.err; do [ -s "$f" ] || continue; echo "== $f"; grep -m3 "^ipswrun:" "$f" || true; tail -n 12 "$f"; done
       - run: |
           go build -o ipswrun ./cmd/ipswrun
-          for guest in foundation service; do
-            echo "=== $guest 18H17"
-            flags=; [ $guest != service ] || flags="--service com.example.ipswrun.echo"
-            ./ipswrun --trace --cache ${{ runner.temp }}/cache/18H17 --device iPhone11,2 $flags 18H17 examples/bin/ios/$guest 2>&1 | grep -v "mach_vm_\\(de\\)\\?allocate\\|mach_vm_protect" | grep -i -B3 -A3 "errno\\|ENOENT\\|EPERM\\|EACCES\\|unhandled\\|no port\\|launchd\\|routine" | tail -120 || true
+          for run in "foundation 18A373" "service 18H17" "client 18H17"; do
+            set -- $run
+            echo "=== $1 $2"
+            case $1 in
+            service) flags="--service com.example.ipswrun.echo" ;;
+            client) flags="--agent com.example.ipswrun.echo,com.example.ipswrun.reverse=examples/bin/ios/server" ;;
+            *) flags= ;;
+            esac
+            ./ipswrun --trace --cache ${{ runner.temp }}/cache/$2 --device iPhone11,2 $flags $2 examples/bin/ios/$1 >out.txt 2>&1 || true
+            grep -v "mach_vm_\\(de\\)\\?allocate\\|mach_vm_protect\\|mach_vm_map\\|mmap\\|munmap" out.txt | grep -i -B4 -A2 "errno\\|unhandled\\|no port\\|launchd\\|routine\\|xpc\\|bootstrap" | head -250 || true
           done
       - uses: actions/upload-artifact@v4
         if: always()

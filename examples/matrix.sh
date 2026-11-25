@@ -108,6 +108,12 @@ run_one() {
 
 failed=0
 for guest in ${guests//,/ }; do
+	# adi asks the release's adid, which on iOS is another daemon, of FairPlay's, that needs more
+	# of an iPhone than there is.
+	if [ "$platform" = ios ] && [ "$guest" = adi ]; then
+		echo "== adi: not run on iOS"
+		continue
+	fi
 	[ "$guests" = "$guest" ] || echo "== $guest"
 	if [ "$(uname)" = Darwin ]; then
 		make -s -C examples PLATFORM=$platform "${bin#examples/}/$guest" || exit
