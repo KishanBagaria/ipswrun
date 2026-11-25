@@ -1,0 +1,12 @@
+at the start: time on the CPU already: 1; memory, in whole pages: 1; faults: 1
+what a Mac keeps at zero: 0 0 0 0 0 0 0 0
+work adds to the time as the user: 1, and takes none from the system's: 1
+waiting 0.3 seconds adds less than 0.1 of them: 1
+system calls add to the system's time: 1
+another thread's work is the process's: 1
+nothing goes down: 1
+the time used since the start is no more than has passed, for each thread: 1
+clock() counts the same time: 1
+of the children it has none of: 0, all zeros: 1
+of anything else: -1 (Invalid argument)
+to nowhere: -1 (Bad address)

@@ -296,6 +296,7 @@ type Process struct {
 	entropy int
 	stdout  strings.Builder
 	stderr  strings.Builder
+	usage   usage // what the process has used of the machine (see usage.go)
 
 	cacheDir   string
 	cachePaths map[string]dyldcache.File
@@ -549,6 +550,7 @@ func (p *Process) unmap(start, end uint64) {
 			continue
 		}
 		b := a
+		p.usage.peak = max(p.usage.peak, len(p.mapped)) // before it has fewer
 		for ; b < end && p.isMapped(b); b += pageSize {
 			delete(p.mapped, b/pageSize)
 		}
@@ -640,6 +642,13 @@ func (p *Process) materialize(addr uint64) bool {
 	}
 	b0 := r.start + (addr-r.start)/blockSize*blockSize
 	b1 := min(b0+blockSize, r.end)
+	// A fault, if it brings anything in: a major one if that is read from a file of the build.
+	before, read := len(p.mapped), false
+	defer func() {
+		if len(p.mapped) > before {
+			p.usage.fault(read, len(p.mapped))
+		}
+	}()
 	for a := b0; a < b1; {
 		if p.isMapped(a) {
 			a += pageSize
@@ -658,6 +667,7 @@ func (p *Process) materialize(addr uint64) bool {
 		p.uc.memMap(a, b-a, r.prot())
 		switch r.kind {
 		case cacheRegion:
+			read = true
 			data, err := away(p.m.clock, func() ([]byte, error) { return p.cache.Page(a-p.slide, b-a, p.slide) })
 			if err != nil {
 				stopf("shared cache page %#x: %v", a-p.slide, err)
@@ -665,6 +675,7 @@ func (p *Process) materialize(addr uint64) bool {
 			p.uc.memWrite(a, data)
 		case fileRegion:
 			if o := r.off + (a - r.start); r.file != nil {
+				read = true
 				data, err := away(p.m.clock, func() ([]byte, error) { return r.file.Pread(int64(o), int64(b-a)) })
 				if err != nil {
 					stopf("page in %s: %v", r.name, err)
@@ -681,6 +692,8 @@ func (p *Process) materialize(addr uint64) bool {
 
 func (p *Process) unmapped(addr uint64, size int) (ok bool) {
 	defer p.hookGuard(func() { ok = false })
+	p.usage.enter(p.m.clock, true)
+	defer p.usage.enter(p.m.clock, false)
 	addr &= tbiMask
 	ok = p.materialize(addr)
 	if last := addr + uint64(size) - 1; ok && last/pageSize != addr/pageSize {
@@ -1107,7 +1120,9 @@ func (p *Process) step() bool {
 		limit = p.m.settling
 	}
 	off := p.m.clock.alarm(limit, p.uc.stop)
+	p.usage.start(p.m.clock)
 	err := p.uc.start(p.current.pc, 0, 0)
+	p.usage.stop(p.m.clock)
 	timedOut := off()
 	pc := p.uc.reg(regPC)
 	if err != nil {
@@ -1137,6 +1152,8 @@ func (p *Process) step() bool {
 
 func (p *Process) interrupt(number uint32) {
 	defer p.hookGuard(nil)
+	p.usage.enter(p.m.clock, true)
+	defer p.usage.enter(p.m.clock, false)
 	if number == 1 && p.undefined() {
 		p.resume = true
 		p.uc.stop()

@@ -17,7 +17,7 @@ SWIFT_TARGET = arm64-apple-macos11.0
 ASYNC_TARGET = arm64-apple-macos12.0
 BIN = bin
 endif
-GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service client prefs adi files registry portstatus pipes pipeevents
+GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service client prefs adi files registry portstatus pipes pipeevents usage
 # What a guest is run beside, and not by itself.
 DAEMONS = server
 

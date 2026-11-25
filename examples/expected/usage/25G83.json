@@ -1,0 +1,7 @@
+{
+  "build": "25G83",
+  "cache_uuid": "F2E86C53-6052-388B-BA71-5A0C9B569413",
+  "exit_code": 0,
+  "output": "at the start: time on the CPU already: 1; memory, in whole pages: 1; faults: 1\nwhat a Mac keeps at zero: 0 0 0 0 0 0 0 0\nwork adds to the time as the user: 1, and takes none from the system's: 1\nwaiting 0.3 seconds adds less than 0.1 of them: 1\nsystem calls add to the system's time: 1\nanother thread's work is the process's: 1\nnothing goes down: 1\nthe time used since the start is no more than has passed, for each thread: 1\nclock() counts the same time: 1\nof the children it has none of: 0, all zeros: 1\nof anything else: -1 (Invalid argument)\nto nowhere: -1 (Bad address)\n",
+  "version": "26.6.2"
+}

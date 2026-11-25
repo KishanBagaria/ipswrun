@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // What a guest changes about a file in its home lands on the host file, and reads back.
@@ -561,6 +562,53 @@ func TestPipe(t *testing.T) {
 		p.result(t, "close", again)
 		if left, end := p.result(t, "read", r, buf, 16), p.result(t, "read", r, buf, 16); left != 2 || end != 0 {
 			t.Errorf("what was left %d, then %d", left, end)
+		}
+	})
+}
+
+// What a process has used: its time on the CPU by where it spent it, and its faults.
+func TestUsage(t *testing.T) {
+	c := newClock()
+	var u usage
+	u.enter(c, true) // nobody has the CPU: nothing to account
+	if u.user != 0 || u.system != 0 {
+		t.Errorf("time with no thread on the CPU: %v, %v", u.user, u.system)
+	}
+	u.start(c)
+	time.Sleep(2 * time.Millisecond)
+	u.enter(c, true)
+	time.Sleep(2 * time.Millisecond)
+	u.enter(c, false)
+	u.stop(c)
+	user, system := u.user, u.system
+	if user < 2*time.Millisecond || system < 2*time.Millisecond {
+		t.Errorf("2 ms as the user and 2 ms in the kernel: %v, %v", user, system)
+	}
+	time.Sleep(2 * time.Millisecond)
+	u.start(c)
+	u.stop(c)
+	if u.user-user > time.Millisecond || u.system != system {
+		t.Errorf("time off the CPU was counted: %v, %v", u.user-user, u.system-system)
+	}
+	u.fault(false, 3)
+	u.fault(true, 9)
+	u.fault(false, 5)
+	if u.minor != 2 || u.major != 1 || u.peak != 9 {
+		t.Errorf("faults %d and %d, peak %d", u.minor, u.major, u.peak)
+	}
+
+	p := newProcess(t)
+	onMain(func() {
+		const buf = dataAddr + 0x100
+		p.write(buf, bytes.Repeat([]byte{0xAA}, 144))
+		if got := p.result(t, "getrusage", 0, buf); got != 0 || p.u64(buf+32) == 0 || p.u64(buf+32)%pageSize != 0 || p.u64(buf+40) != 0 || p.u64(buf+136) != 0 {
+			t.Errorf("of itself: %d, % x", got, p.read(buf, 144))
+		}
+		if got := p.result(t, "getrusage", uint64(1<<32-1), buf); got != 0 || !bytes.Equal(p.read(buf, 144), make([]byte, 144)) {
+			t.Errorf("of its children: %d, % x", got, p.read(buf, 144))
+		}
+		if other, nowhere := p.result(t, "getrusage", 1, buf), p.result(t, "getrusage", 0, nowhere); other != -eINVAL || nowhere != -eFAULT {
+			t.Errorf("of something else %d, to nowhere %d", other, nowhere)
 		}
 	})
 }
