@@ -13,6 +13,7 @@ type fileInfo struct {
 	size  int64
 	ino   uint64
 	mtime int64
+	owner *Owner // if it is not the guests' user's (see Machine.owners)
 }
 
 // describe looks at a resolved path or an open descriptor. Paths with a pinned inode number
@@ -31,6 +32,9 @@ func (p *Process) describe(kind fdKind, path string, size int64, hostStat func(*
 			return fileInfo{}, hostErrno(err)
 		}
 		info.mode, info.size, info.mtime = uint16(st.Mode), st.Size, mtimeSeconds(&st)
+		if owner, ok := p.m.owners[hostFileOf(&st)]; ok {
+			info.owner = &owner
+		}
 		if info.ino == 0 {
 			info.ino = st.Ino & 0xFFFFFFFF
 		}
@@ -159,8 +163,8 @@ var (
 		{0x100, 4, nil}, // script
 		{0x200, 16, attrTime}, {0x400, 16, attrTime}, {0x800, 16, attrTime}, {0x1000, 16, attrTime},
 		{0x2000, 16, nil}, {0x4000, -32, nil}, // backup time, no Finder info
-		{0x8000, 4, func(c *attrContext) []byte { return le32(c.p.m.user.uid) }},
-		{0x10000, 4, func(c *attrContext) []byte { return le32(c.p.m.user.gid) }},
+		{0x8000, 4, func(c *attrContext) []byte { return le32(c.p.m.ownerOf(c.fileInfo).UID) }},
+		{0x10000, 4, func(c *attrContext) []byte { return le32(c.p.m.ownerOf(c.fileInfo).GID) }},
 		{0x20000, 4, func(c *attrContext) []byte { return le32(uint32(c.mode)) }},
 		{0x40000, 4, nil}, {0x80000, 4, nil}, {0x100000, 4, nil}, // flags, generation, document id
 		{0x200000, 4, func(c *attrContext) []byte { // user access: what the owner bits allow

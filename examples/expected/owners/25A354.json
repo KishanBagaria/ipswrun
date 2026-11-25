@@ -1,0 +1,7 @@
+{
+  "build": "25A354",
+  "cache_uuid": "52E4EEC0-379E-31C7-AC62-BFED14D90F52",
+  "exit_code": 0,
+  "output": "mkdir: 0\na directory in it: 0\nthe file: mode 640, its user is mine: 1, its group is its directory's: 1\nthe directory: mode 700, its user is mine: 1, its group is its directory's: 1\nfchmodat: 0; not following a link: 0; of nothing: -1 (No such file or directory); with a flag there is not: -1 (Invalid argument)\nthe file: mode 604, its user is mine: 1, its group is its directory's: 1\nthe directory: mode 750, its user is mine: 1, its group is its directory's: 1\nfchownat, to whom it is already: 0; to nobody in particular: 0; to root: -1 (Operation not permitted); of nothing: -1 (No such file or directory)\nchown to root: -1 (Operation not permitted); fchown to root: -1 (Operation not permitted); lchown to another user: -1 (Operation not permitted)\nthe file: mode 604, its user is mine: 1, its group is its directory's: 1\ntidied: 0\n",
+  "version": "26.0"
+}

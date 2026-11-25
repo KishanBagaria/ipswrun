@@ -65,6 +65,33 @@ func TestFileMetadata(t *testing.T) {
 		call("remove", 0, "removexattr", path, name, 0)
 		call("list after remove", 0, "listxattr", path, buf, 256, 0)
 
+		// Root gives a file away, and what root makes is root's, of its directory's group.
+		owner := func(what string, at uint64, uid, gid uint32) {
+			t.Helper()
+			call(what, 0, "stat64", at, buf)
+			if st := p.read(buf, 24); le.Uint32(st[16:]) != uid || le.Uint32(st[20:]) != gid {
+				t.Errorf("%s: owned by %d:%d, want %d:%d", what, le.Uint32(st[16:]), le.Uint32(st[20:]), uid, gid)
+			}
+		}
+		user := p.m.user
+		p.write(path, []byte(GuestHome+"/dir\x00"))
+		call("a directory", 0, "mkdir", path, 0o755)
+		owner("the user's directory", path, user.uid, user.gid)
+		p.uid = 0
+		call("root gives it to a group", 0, "chown", path, ^uint64(0), 80)
+		owner("given to a group", path, user.uid, 80)
+		inner := uint64(dataAddr + 0x400)
+		p.write(inner, []byte(GuestHome+"/dir/inner\x00"))
+		call("root makes a directory in it", 0, "mkdir", inner, 0o755)
+		owner("root's directory", inner, 0, 80)
+		call("root gives it away", 0, "fchownat", ^uint64(1), inner, 7, 8, 0x20)
+		owner("given away", inner, 7, 8)
+		p.uid = user.uid
+		call("its owner may not take it back", -ePERM, "chown", inner, uint64(user.uid), ^uint64(0))
+		call("the directory removed", 0, "rmdir", inner)
+		call("and made again", 0, "mkdir", inner, 0o755)
+		owner("a new directory, the user's", inner, user.uid, 80)
+
 		// Files that are not the guest's cannot be changed, and have no attributes.
 		p.write(path, []byte("/dev/null\x00"))
 		call("a device", -ePERM, "chmod", path, 0o600)

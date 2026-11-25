@@ -369,6 +369,9 @@ func statBuf(i fileInfo, owner user) []byte {
 	le.PutUint16(b[4:], i.mode)
 	le.PutUint16(b[6:], 1)
 	le.PutUint64(b[8:], i.ino)
+	if i.owner != nil {
+		owner.uid, owner.gid = i.owner.UID, i.owner.GID
+	}
 	le.PutUint32(b[16:], owner.uid)
 	le.PutUint32(b[20:], owner.gid)
 	for at := 32; at < 96; at += 16 { // access, modification, change and birth times
@@ -472,6 +475,7 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 				if err = syscall.Fchmod(h, uint32(mode&0o777)&^p.umask()); err != nil {
 					syscall.Close(h)
 				}
+				p.created(t)
 			}
 		} else {
 			h, err = syscall.Open(t.host, hostFlags|syscall.O_CLOEXEC, uint32(mode&0o777))
@@ -1008,6 +1012,7 @@ func (p *Process) doMkdir(path string, mode uint64) int64 {
 	if err := t.root.Mkdir(t.rel, os.FileMode(mode&0o777)); err != nil {
 		return hostErrno(err)
 	}
+	p.created(t)
 	return hostCall(t.root.Chmod(t.rel, os.FileMode(uint32(mode&0o777)&^p.umask())))
 }
 

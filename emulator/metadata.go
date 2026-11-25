@@ -3,6 +3,7 @@ package emulator
 import (
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"syscall"
 	"time"
@@ -115,6 +116,26 @@ func sysChmod(p *Process, a []uint64) int64 {
 	return hostCall(t.root.Chmod(t.rel, fileMode(a[1])))
 }
 
+// sysFchmodat is fchmodat(directory, path, mode, flags): chmod of a path from a directory, of
+// the link itself if asked (AT_SYMLINK_NOFOLLOW).
+func sysFchmodat(p *Process, a []uint64) int64 {
+	const noFollow, flags = 0x20, 0x3FFF // every flag there is for a path from a directory
+	switch {
+	case a[3]&^flags != 0:
+		return -eINVAL
+	case a[3]&^noFollow != 0:
+		p.unimplemented("fchmodat with flags other than AT_SYMLINK_NOFOLLOW", a)
+		return -eNOSYS
+	}
+	return p.atPath(a[0], a[1], func(path string) int64 {
+		t, _, errno := p.changeable(path, a[3]&noFollow == 0)
+		if errno != 0 {
+			return errno
+		}
+		return hostCall(t.root.Chmod(t.rel, fileMode(a[2])))
+	})
+}
+
 func sysFchmod(p *Process, a []uint64) int64 {
 	f, _, errno := p.changeableFD(a[0])
 	if errno != 0 {
@@ -123,36 +144,102 @@ func sysFchmod(p *Process, a []uint64) int64 {
 	return hostCall(syscall.Fchmod(f.host, uint32(a[1]&0o7777)))
 }
 
-// chown can only leave a file as it is: every file belongs to the guests' user, which is all that
-// can be said of the host files the home and the mounts are. Giving one away is refused, as the
-// kernel refuses it to anyone but root; root could, but the emulator has no owner to keep.
-func (p *Process) chown(uid, gid uint32, a []uint64) int64 {
-	if (uid == ^uint32(0) || uid == p.m.user.uid) && (gid == ^uint32(0) || gid == p.m.user.gid) {
-		return 0
+// ownerOf is who a file belongs to: the guests' user, which is all that can be said of the host
+// files the home and the mounts are, unless a process that is another user made it, or root gave
+// it away.
+func (m *Machine) ownerOf(i fileInfo) Owner {
+	if i.owner != nil {
+		return *i.owner
 	}
-	if p.uid != 0 {
+	return Owner{m.user.uid, m.user.gid}
+}
+
+// owned is ownerOf for a host file.
+func (m *Machine) owned(id hostFile) Owner {
+	if owner, ok := m.owners[id]; ok {
+		return owner
+	}
+	return Owner{m.user.uid, m.user.gid}
+}
+
+// own records whom a host file belongs to.
+func (m *Machine) own(id hostFile, owner Owner) {
+	if owner == (Owner{m.user.uid, m.user.gid}) {
+		delete(m.owners, id)
+	} else {
+		m.owners[id] = owner
+	}
+}
+
+// created is a process having made a file or a directory: it is the process's user's, and of
+// the group of the directory it is in, as on a Mac's file system.
+func (p *Process) created(t target) {
+	var st, dir syscall.Stat_t
+	if statInRoot(t.root, t.rel, false, &st) != nil {
+		return
+	}
+	owner := Owner{p.uid, p.m.user.gid}
+	if statInRoot(t.root, filepath.Dir(t.rel), true, &dir) == nil {
+		owner.GID = p.m.owned(hostFileOf(&dir)).GID
+	}
+	p.m.own(hostFileOf(&st), owner)
+}
+
+// chown gives a file to a user and a group, either left as it is if all ones. Leaving both is
+// anyone's to ask. Anything else is root's: a Mac's kernel also lets an owner give a file to
+// another group of its own, and which groups a user is in is not kept here.
+func (p *Process) chown(id hostFile, uid, gid uint32, a []uint64) int64 {
+	owner := p.m.owned(id)
+	was := owner
+	if uid != ^uint32(0) {
+		owner.UID = uid
+	}
+	if gid != ^uint32(0) {
+		owner.GID = gid
+	}
+	switch {
+	case owner == was:
+		return 0
+	case p.uid != 0:
 		return -ePERM
 	}
-	p.unimplemented("chown to an owner other than the user", a)
-	return -eNOSYS
+	p.m.own(id, owner)
+	return 0
 }
 
 // chownPath is chown and lchown, which follows a final symbolic link or not.
 func (p *Process) chownPath(a []uint64, follow bool) int64 {
-	if _, _, errno := p.changeable(p.cstr(a[0]), follow); errno != 0 {
+	return p.chownAt(p.cstr(a[0]), a[1], a[2], follow, a)
+}
+
+func (p *Process) chownAt(path string, uid, gid uint64, follow bool, a []uint64) int64 {
+	_, id, errno := p.changeable(path, follow)
+	if errno != 0 {
 		return errno
 	}
-	return p.chown(uint32(a[1]), uint32(a[2]), a)
+	return p.chown(id, uint32(uid), uint32(gid), a)
+}
+
+// sysFchownat is fchownat(directory, path, user, group, flags): chown of a path from a
+// directory, of the link itself if asked (AT_SYMLINK_NOFOLLOW).
+func sysFchownat(p *Process, a []uint64) int64 {
+	const noFollow = 0x20
+	if a[4]&^noFollow != 0 {
+		p.unimplemented("fchownat with flags other than AT_SYMLINK_NOFOLLOW", a)
+		return -eNOSYS
+	}
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.chownAt(path, a[2], a[3], a[4]&noFollow == 0, a) })
 }
 
 func sysChown(p *Process, a []uint64) int64  { return p.chownPath(a, true) }
 func sysLchown(p *Process, a []uint64) int64 { return p.chownPath(a, false) }
 
 func sysFchown(p *Process, a []uint64) int64 {
-	if _, _, errno := p.changeableFD(a[0]); errno != 0 {
+	_, id, errno := p.changeableFD(a[0])
+	if errno != 0 {
 		return errno
 	}
-	return p.chown(uint32(a[1]), uint32(a[2]), a)
+	return p.chown(id, uint32(a[1]), uint32(a[2]), a)
 }
 
 // times reads the access and modification times of utimes, two struct timevals; with none it is
@@ -200,7 +287,7 @@ func (p *Process) setattrlist(path string, list, buf, size, options uint64, a []
 		p.unimplemented("setattrlist of attributes the emulator cannot keep", a)
 		return -eNOSYS
 	}
-	t, _, errno := p.changeable(path, options&optNoFollow == 0)
+	t, id, errno := p.changeable(path, options&optNoFollow == 0)
 	if errno != 0 {
 		return errno
 	}
@@ -231,7 +318,7 @@ func (p *Process) setattrlist(path string, list, buf, size, options uint64, a []
 	if common&attrCmnGroupID != 0 {
 		gid = le.Uint32(value(4))
 	}
-	if errno := p.chown(uid, gid, a); errno != 0 {
+	if errno := p.chown(id, uid, gid, a); errno != 0 {
 		return errno
 	}
 	if common&attrCmnAccMask != 0 {
@@ -419,6 +506,7 @@ func (p *Process) forgetFile(t target) {
 	var st syscall.Stat_t
 	if statInRoot(t.root, t.rel, false, &st) == nil && st.Nlink <= 1 {
 		delete(p.m.xattrs, hostFileOf(&st))
+		delete(p.m.owners, hostFileOf(&st))
 	}
 }
 

@@ -1,0 +1,7 @@
+{
+  "build": "19A346",
+  "cache_uuid": "6F028D68-85D6-300F-929A-AA58CA8327AA",
+  "exit_code": 0,
+  "output": "kern.boottime: 0, 16 bytes; in the past: 1; no longer ago than the clock has counted: 1, and within a minute of that: 1\nby name: 0, the same: 1\nkern.bootsessionuuid: 0, 37 bytes, a UUID in capitals: 1, of the random kind: 1; the same when asked again: 1\nexclaves: not a call of this release\n",
+  "version": "15.0"
+}

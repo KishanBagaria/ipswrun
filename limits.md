@@ -26,7 +26,7 @@ This list was made by reading the code, and then checked by one [survey](#survey
 
 These two would unlock the most code for the least work, and each keeps to the rules above.
 
-1. **logd and opendirectoryd under `--on-demand`.** The daemons are found and started from the release's own plists, and notifyd runs. These two are what nearly every program looks up next, and each ends on something of its own (see below), so `--on-demand '*'` does not get far yet, and is not the default.
+1. **A data volume** ([below](#the-data-volume)), read through to the release's own template of one. logd stops for want of it, and after logd opendirectoryd is what nearly every program looks up next; until both run, `--on-demand '*'` does not get far, and is not the default.
 2. **Taking a thread off the CPU** (limit 7). Signals, their handlers, faults and timers are there, but a thread that spins takes no signal, and nothing else runs meanwhile.
 
 ## Stubs that answer success
@@ -35,7 +35,7 @@ The `trivial` map in `emulator/bsd.go` used to answer 0 for calls that did nothi
 
 | Call | Now |
 | --- | --- |
-| `chmod`, `fchmod`, `chown`, `lchown`, `fchown` | Change the host file under the home or a mount. A file of the system volume is refused as a real one is: EPERM for the user, who does not own it, EROFS for root. A guest's executable and devices are EPERM. `chown` to the owner a file already has succeeds, to another is EPERM for the user, and stops as unimplemented for root |
+| `chmod`, `fchmod`, `fchmodat`, `chown`, `lchown`, `fchown`, `fchownat` | Change the host file under the home or a mount. A file of the system volume is refused as a real one is: EPERM for the user, who does not own it, EROFS for root. A guest's executable and devices are EPERM. `chown` to the owner a file already has succeeds, and to another is EPERM for the user ([examples/owners.c](examples/owners.c), as natively). Root gives a file away, and the machine keeps whose it then is: a file is its maker's and of its directory's group, which `stat` and `getattrlist` say. A Mac's kernel also lets an owner give a file to another of its own groups; which groups a user is in is not kept, so that is EPERM too |
 | `setxattr`, `getxattr`, `listxattr`, `removexattr` and their `f` forms | Kept in a table in the `Machine`, keyed by the host file, so they read back alike on macOS and Linux hosts and between guests; dropped with the file's last link. System files have none and take none |
 | `utimes`, `futimes`, `setattrlist`, `fsetattrlist` | Set the host file's dates; `setattrlist` also owner, group and mode, and stops as unimplemented for any other attribute |
 | `flock` | The host's `flock`, so guests sharing a mount lock each other, and so do host processes. A blocking lock waits like the other kinds of wait |
@@ -135,10 +135,21 @@ Left as they were, still stopping or listed by name:
 
 It is not the default, and `'*'` does not get far: a daemon that makes a call that is not implemented stops the run and names it, as any guest does, and two that nearly every program looks up each do, on macOS 27.2.1:
 
-- **logd** (`com.apple.logd`) traps as it starts, for a reason not yet looked for.
+- **logd** (`com.apple.logd`) keeps its files on the data volume, which no run has: it makes `/private/var/db/diagnostics` and, in `/Library/Preferences`, `Logging`, and traps when it cannot. Given `/private/var/db` as a mount it gets as far as the second. On the way it needed, and now has: `fchmodat` and `fchownat`, a file's owner kept (it gives its directory to root and the group admin), `kern.boottime`, `kern.bootsessionuuid`, and the trap for exclaves (88), each [below](#what-logd-asked-for).
 - **opendirectoryd** (`com.apple.system.opendirectoryd.libinfo`) calls `reboot`, which is how a daemon asks the kernel something of the boot here, and is not implemented.
 
 A daemon whose plist names a user the build's password file does not have, or whose program is not on the system volume, is not started, and its service is not there. The other keys of a plist (`LaunchEvents`, `Sockets`, `KeepAlive`, the session an agent is limited to, `RunAtLoad`) are not acted on: a daemon is started for a lookup of one of its Mach services and for nothing else.
+
+### What logd asked for
+
+- **A file's owner** is kept, as above: before, `chown` by root stopped as unimplemented, since every file was the guests' user's.
+- **`kern.boottime`** is when the machine's own counter was at nothing, which is what the guests' time since boot counts from. A Mac's kernel says a time some seconds after that (9.6 on the Mac measured), those it took to come up.
+- **`kern.bootsessionuuid`** names the one boot there is: a UUID of the random kind in capitals, the same on every run, as the machine's own UUID and its entropy are.
+- **The trap for exclaves** (88, `_exclaves_ctl_trap`), the world that the A18 and the M4 and later keep apart from the kernel. A Mac with an M3 was measured to answer every request, whatever it is given, with "not supported" (46), and so does every chip here from before those. For a chip that has them, or one not known, it stops as unimplemented. [examples/boot.c](examples/boot.c) prints the same natively as under ipswrun for these three.
+
+### The data volume
+
+What logd, dirhelper, opendirectoryd and cfprefsd's daemon keep is on a device's data volume, and a run has none: `/private/var`, `/Library` and the like are a few names with nothing in them. A macOS release says what is on one: `/usr/share/firmlinks` lists the paths that are the data volume's (`/Library`, `/private`, `/Users`, `/usr/local` and 15 more on macOS 27.2.1), and `/System/Library/Templates/Data` is what a newly installed Mac's starts as, some 12,000 files in 5,800 directories, `private/var/db` and `Library/Preferences/Logging` among them. That is the next thing to build: a data volume that reads through to the release's template and keeps what is written to it in a directory of the host's, as the home is kept. It was not built here, as it changes how every path is resolved. For iOS the template was not looked for.
 
 ## Starting programs
 
@@ -243,6 +254,7 @@ A sysctl whose value is not known for sure for the release and device is not ans
 - `hw.l1icachesize`, `hw.l1dcachesize` and `hw.l2cachesize`, except on an M1 Mac: an iPhone's or iPad's chip has its own.
 - `hw.cpusubfamily` and the `hw.perflevel0` fields other than its core counts (`name`, `l2cachesize`, `cpusperl2`, `physicalcpu_max`), which libBLAS asks for and does without.
 - `kern.version`, which names the build's kernel and when it was built; `kern.iossupportversion`, which is a Mac release's own (in its `SystemVersion.plist`); `kern.osproductversioncompat`, which a Mac of macOS 27 leaves empty; `kern.maxfilesperproc`, which follows the device's memory.
+- `kern.boottime` and `kern.bootsessionuuid` are answered, as the machine's own ([above](#what-logd-asked-for)).
 - `hw.cpubrand`, which no kernel has (a Mac's brand is `machdep.cpu.brand_string`).
 
 What describes the emulated machine itself stays: one CPU (`hw.ncpu` and the `perflevel0` counts), 8 GB, half of it free (`kern.memorystatus_level`).

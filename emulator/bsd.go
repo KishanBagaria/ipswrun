@@ -36,7 +36,7 @@ func init() {
 		"mkdir": {2, sysMkdir}, "rename": {2, sysRename}, "readlink": {3, sysReadlink}, "readlinkat": {4, sysReadlinkat},
 		"mkdirat": {3, sysMkdirat}, "rmdir": {1, sysRmdir}, "unlinkat": {3, sysUnlinkat}, "renameat": {4, sysRenameat},
 		"renameatx_np": {5, sysRenameatx}, "faccessat": {4, sysFaccessat}, "truncate": {2, sysTruncate}, "fcntl": {3, sysFcntl}, "dup": {1, sysDup}, "dup2": {2, sysDup2},
-		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir}, "chmod": {2, sysChmod}, "fchmod": {2, sysFchmod}, "chown": {3, sysChown},
+		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir}, "chmod": {2, sysChmod}, "fchmod": {2, sysFchmod}, "fchmodat": {4, sysFchmodat}, "chown": {3, sysChown}, "fchownat": {5, sysFchownat},
 		"lchown": {3, sysLchown}, "fchown": {3, sysFchown}, "utimes": {2, sysUtimes}, "futimes": {2, sysFutimes},
 		"setattrlist": {5, sysSetattrlist}, "fsetattrlist": {5, sysFsetattrlist}, "flock": {2, sysFlock},
 		"getxattr": {6, sysGetxattr}, "fgetxattr": {6, sysFgetxattr}, "setxattr": {6, sysSetxattr}, "fsetxattr": {6, sysFsetxattr},
@@ -315,6 +315,14 @@ func sysGetdtablesize(p *Process, a []uint64) int64 {
 
 // hostUUID is the machine's own identifier: the same on every run, as everything else about it is.
 var hostUUID = [16]byte{0x1F, 0x5A, 0xE3, 0x70, 0x9C, 0x42, 0x4D, 0x1B, 0x8E, 0x6D, 0x49, 0x50, 0x53, 0x57, 0x52, 0x4E}
+
+// bootSession is what a kernel makes up each time it boots to tell that boot from any other
+// (kern.bootsessionuuid): here the one boot there is, the same on every run.
+var bootSession = func() string {
+	u := sha256.Sum256([]byte("ipswrun boot session"))
+	u[6], u[8] = u[6]&0x0F|0x40, u[8]&0x3F|0x80 // a random UUID, as a kernel's is
+	return strings.ToUpper(fmt.Sprintf("%x-%x-%x-%x-%x", u[:4], u[4:6], u[6:8], u[8:10], u[10:16]))
+}()
 
 func sysGethostuuid(p *Process, a []uint64) int64 {
 	p.write(a[0], hostUUID[:])
@@ -845,7 +853,7 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 
 var sysctlMIBs = map[[2]int32]string{
 	{1, 1}: "kern.ostype", {1, 2}: "kern.osrelease", {1, 4}: "kern.version", {1, 8}: "kern.argmax", {1, 10}: "kern.hostname",
-	{1, 65}: "kern.osversion", {1, 59}: "kern.usrstack64", {1, 66}: "kern.safeboot", {1, 24}: "kern.ngroups",
+	{1, 65}: "kern.osversion", {1, 21}: "kern.boottime", {1, 59}: "kern.usrstack64", {1, 66}: "kern.safeboot", {1, 24}: "kern.ngroups",
 	{6, 1}: "hw.machine", {6, 2}: "hw.model", {6, 3}: "hw.ncpu", {6, 7}: "hw.pagesize", {6, 24}: "hw.memsize",
 	{6, 25}: "hw.activecpu", {6, 5}: "hw.physmem", {6, 4}: "hw.byteorder",
 }
@@ -938,6 +946,22 @@ var cpuFamilies = map[string]uint64{
 	"iPad16,2":     0x2876f5b5,
 }
 
+// machExclaves is the trap for what runs beside the kernel on the chips that keep such a world
+// apart (exclaves, from the A18 and the M4). A Mac without one, an M3's, was measured to answer
+// every request the same way, whatever it is given: it is not supported. A chip that has them,
+// or one not known here, is not answered for.
+func machExclaves(p *Process, a []uint64) int64 {
+	model := "Macmini9,1"
+	if v, ok := p.os["model"]; ok {
+		model = v
+	}
+	switch chipFamily(model) {
+	case 0, 0x204526d0, 0x75d4acb9, 0x6f5129ac: // not known, or the A18, the A18 Pro and the M4
+		p.unimplemented("exclaves_ctl_trap on a chip that may have exclaves", a)
+	}
+	return kernNotSupported
+}
+
 // chipFamily is the hw.cpufamily of the device of a product type (iPhone11,2), or 0 for one
 // cpuFamilies does not know.
 func chipFamily(product string) uint64 {
@@ -968,7 +992,7 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			"hw.cpusubtype": n(cpuSubtypeARM64E), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128), "hw.packages": n(1),
 			"hw.nperflevels": n(1), "hw.perflevel0.logicalcpu": n(1), "hw.perflevel0.physicalcpu": n(1),
 			"hw.perflevel0.logicalcpu_max": n(1), "hw.machine": "arm64", "hw.model": os("model", "Macmini9,1"),
-			"kern.ostype": "Darwin", "kern.hostname": "emu.local", "kern.argmax": n(1 << 20),
+			"kern.ostype": "Darwin", "kern.bootsessionuuid": bootSession, "kern.hostname": "emu.local", "kern.argmax": n(1 << 20),
 			"kern.usrstack64": n(stackTop), "kern.safeboot": n(0), "kern.ngroups": n(16),
 			"kern.secure_kernel": n(0), "kern.bootargs": "", "kern.osvariant_status": n(osVariantMac), "kern.willshutdown": n(0),
 			"kern.hv_vmm_present": n(0), "sysctl.proc_translated": n(0), "kern.osrelease": os("release", "22.1.0"),
@@ -1002,6 +1026,13 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 	if v, ok := p.sysctls[name]; ok {
 		return v, true
 	}
+	if name == "kern.boottime" {
+		// When the machine's own counter was at nothing, as a struct timeval: the guests' time
+		// since boot (mach_absolute_time) counts from then. A Mac's kernel says a time some
+		// seconds later, those it took to come up, which no machine here spends.
+		boot := p.m.clock.boot
+		return append(le64(uint64(boot.Unix())), le64(uint64(boot.Nanosecond()/1000))...), true
+	}
 	if strings.HasPrefix(name, "hw.optional.") {
 		return uint64(0), true
 	}
@@ -1019,6 +1050,8 @@ func (p *Process) sysctlOut(name string, oldp, oldlenp uint64) int64 {
 	switch v := v.(type) {
 	case string:
 		data = str(v)
+	case []byte:
+		data = v
 	case uint64:
 		want := uint64(8)
 		if oldlenp != 0 {

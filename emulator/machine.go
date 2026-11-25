@@ -31,6 +31,7 @@ type Machine struct {
 	asked    map[string]bool                // the services that were looked for among the build's own, once each
 	replaced []*Process                     // processes that are no longer among procs, to be closed with them
 	deferred []func()                       // what a system call left to be done between stretches of emulation (see spawn.go)
+	owners   map[hostFile]Owner             // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
 	polls    []carried                      // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
 	pipes    uint64                         // how many pipes were ever made: the next one's number
 	started  uint32                         // how many processes were ever made: a pid is not given twice, whatever has ended since
@@ -74,7 +75,7 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, clock: newClock()}, nil
+	return &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, clock: newClock()}, nil
 }
 
 // Spawn makes a process of a guest, ready to run from dyld's entry point. Two guests may not

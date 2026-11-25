@@ -13,7 +13,7 @@ var machNames = map[int64]string{
 	27: "thread_self", 28: "task_self", 29: "host_self", 31: "mach_msg", 32: "mach_msg_overwrite", 33: "semaphore_signal",
 	34: "semaphore_signal_all", 36: "semaphore_wait", 37: "semaphore_wait_signal", 38: "semaphore_timedwait", 40: "port_get_attributes", 41: "port_guard", 42: "port_unguard", 43: "generate_activity_id",
 	46: "pid_for_task", 47: "mach_msg2", 50: "thread_get_special_reply_port", 59: "swtch_pri", 60: "swtch", 61: "thread_switch",
-	70: "host_create_mach_voucher", 76: "port_type", 77: "port_request_notification", 89: "timebase_info", 90: "mach_wait_until",
+	70: "host_create_mach_voucher", 76: "port_type", 77: "port_request_notification", 88: "exclaves_ctl_trap", 89: "timebase_info", 90: "mach_wait_until",
 	91: "mk_timer_create", 92: "mk_timer_destroy", 93: "mk_timer_arm", 94: "mk_timer_cancel", 95: "mk_timer_arm_leeway",
 }
 
@@ -53,7 +53,7 @@ func init() {
 		"task_dyld_process_info_notify_get": {2, constant(kernFailure)}, // nobody is watching
 		"timebase_info":                     {1, machTimebaseInfo}, "generate_activity_id": {3, machGenerateActivityID},
 		"host_create_mach_voucher": {4, machVoucher}, "swtch_pri": {1, sysYield}, "swtch": {0, sysYield}, "thread_switch": {3, sysYield},
-		"mk_timer_create": {0, machNewReceive}, "mk_timer_destroy": {1, machTimerDestroy}, "mk_timer_arm": {2, machTimerArm},
+		"exclaves_ctl_trap": {8, machExclaves}, "mk_timer_create": {0, machNewReceive}, "mk_timer_destroy": {1, machTimerDestroy}, "mk_timer_arm": {2, machTimerArm},
 		"mk_timer_arm_leeway": {4, machTimerArmLeeway}, "mk_timer_cancel": {2, machTimerCancel}, "semaphore_signal": {1, machSemaphoreSignal},
 		"semaphore_signal_all": {1, machSemaphoreSignalAll}, "semaphore_wait": {1, machSemaphoreWait},
 		"semaphore_timedwait": {3, machSemaphoreTimedwait}, "semaphore_wait_signal": {2, machSemaphoreWaitSignal}, "pid_for_task": {2, machPidForTask},

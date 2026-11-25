@@ -1,0 +1,7 @@
+{
+  "build": "22H390",
+  "cache_uuid": "EF0E3993-EA01-3DB0-82D5-F671453A1235",
+  "exit_code": 0,
+  "output": "kern.boottime: 0, 16 bytes; in the past: 1; no longer ago than the clock has counted: 1, and within a minute of that: 1\nby name: 0, the same: 1\nkern.bootsessionuuid: 0, 37 bytes, a UUID in capitals: 1, of the random kind: 1; the same when asked again: 1\nexclaves: looking up services 0x2e; anything else 0x2e and 0x2e\n",
+  "version": "18.7.12"
+}
