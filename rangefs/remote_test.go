@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // origin serves one blob by range and records what was asked of it.
@@ -159,25 +160,193 @@ func TestCacheDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read(t, r, o, 5000, 100)
-	if b, err := os.ReadFile(filepath.Join(r.dir, extentName(5000, 100))); err != nil || !bytes.Equal(b, o.data[5000:5100]) {
-		t.Fatalf("extent file: %v", err)
+	read(t, r, o, 5100, 100)
+	read(t, r, o, 5000, 100) // adjacent non-sequential: coalesces in memory without read-ahead
+	if len(r.spans) != 1 || r.spans[0] != (span{off: 5000, end: 5200}) {
+		t.Fatalf("spans = %v, want [{5000 5200}]", r.spans)
 	}
-	// Files that are not what their names say.
-	os.WriteFile(filepath.Join(r.dir, "00000000"), o.data[:1000], 0o644)
-	os.WriteFile(filepath.Join(r.dir, extentName(9000, 50)), o.data[:49], 0o644)
-	os.WriteFile(filepath.Join(r.dir, "member-00000000-x.dmg"), o.data[:10], 0o644)
+	if _, err := os.Stat(filepath.Join(r.dir, "data")); err != nil {
+		t.Fatalf("missing sparse data file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, "index")); err != nil {
+		t.Fatalf("missing index file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, extentName(5000, 100))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected legacy extent file: %v", err)
+	}
+	// Append enough touching non-sequential chunks to trigger index compaction on reopen.
+	for i := 0; i < compactSlack+4; i++ {
+		off := int64(200000 - i*100)
+		read(t, r, o, off, 100)
+	}
+	cacheSubdir := r.dir
+	r.Close()
+
+	// Append corrupt trailing bytes to index; reopen must recover valid spans and rewrite aligned index.
+	f, err := os.OpenFile(filepath.Join(cacheSubdir, "index"), os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("corrupt"))
+	f.Close()
 
 	o.ranges = nil
 	r, err = newRangeReader(url, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	read(t, r, o, 5000, 100)
+	defer r.Close()
+	read(t, r, o, 5000, 200)
+	read(t, r, o, 200000-int64(compactSlack+3)*100, int64(compactSlack+4)*100)
+	if len(o.ranges) != 0 {
+		t.Fatalf("expected cache hits, got ranges %v", o.ranges)
+	}
+	// Index should have been compacted down to header + 2 coalesced spans.
+	st, err := os.Stat(filepath.Join(cacheSubdir, "index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(indexHeaderSize + 2*indexRecordSize); st.Size() != want {
+		t.Fatalf("compacted index size = %d, want %d", st.Size(), want)
+	}
+
+	// Truncating data below a cached span causes re-fetch on read.
+	if err := os.Truncate(filepath.Join(cacheSubdir, "data"), 5050); err != nil {
+		t.Fatal(err)
+	}
+	read(t, r, o, 5000, 200)
+	if len(o.ranges) == 0 {
+		t.Fatalf("expected re-fetch after data truncation")
+	}
+}
+
+func TestCacheMigratesLegacyFiles(t *testing.T) {
+	o, url := serve(t, 300000)
+	dir := t.TempDir()
+	// Open once to learn the release cache dir path, then close and seed legacy files.
+	r, err := newRangeReader(url, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := r.dir
+	r.Close()
+	os.Remove(filepath.Join(sub, "data"))
+	os.Remove(filepath.Join(sub, "index"))
+
+	os.WriteFile(filepath.Join(sub, extentName(5000, 100)), o.data[5000:5100], 0o644)
+	os.WriteFile(filepath.Join(sub, extentName(5100, 100)), o.data[5100:5200], 0o644)
+	// Invalid legacy files and a streamed member file that must not be touched.
+	os.WriteFile(filepath.Join(sub, "00000000"), o.data[:1000], 0o644)
+	os.WriteFile(filepath.Join(sub, extentName(9000, 50)), o.data[:49], 0o644)
+	os.WriteFile(filepath.Join(sub, "member-00000000-x.dmg"), o.data[:10], 0o644)
+
+	o.ranges = nil
+	r, err = newRangeReader(url, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	read(t, r, o, 5000, 200)
 	read(t, r, o, 9000, 50)
 	want := [][2]int64{{9000, 50}}
 	if fmt.Sprint(o.ranges) != fmt.Sprint(want) {
 		t.Fatalf("requested %v, want %v", o.ranges, want)
+	}
+	if _, err := os.Stat(filepath.Join(sub, extentName(5000, 100))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy extent file was not removed after migration: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sub, "member-00000000-x.dmg")); err != nil {
+		t.Fatalf("streamed member file was removed: %v", err)
+	}
+}
+
+func TestOfflineHeadFallback(t *testing.T) {
+	o := &origin{data: make([]byte, 300000)}
+	rand.New(rand.NewSource(3)).Read(o.data)
+	server := httptest.NewServer(o)
+	dir := t.TempDir()
+
+	r, err := newRangeReader(server.URL, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read(t, r, o, 5000, 4096)
+	r.Close()
+	server.Close() // origin is now unreachable
+
+	r2, err := newRangeReader(server.URL, dir)
+	if err != nil {
+		t.Fatalf("offline reopen failed: %v", err)
+	}
+	defer r2.Close()
+	read(t, r2, o, 5000, 4096)
+	if _, err := r2.ReadAt(make([]byte, 100), 100000); err == nil {
+		t.Fatal("uncached read succeeded while offline")
+	}
+}
+
+func TestPruneCache(t *testing.T) {
+	o1, url1 := serve(t, 300000)
+	o2, url2 := serve(t, 300000)
+	dir := t.TempDir()
+
+	r1, err := newRangeReader(url1, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read(t, r1, o1, 0, 128<<10)
+	dir1 := r1.dir
+	r1.Close()
+
+	r2, err := newRangeReader(url2, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read(t, r2, o2, 0, 128<<10)
+	dir2 := r2.dir
+	r2.Close()
+
+	// Make dir1 older than dir2, and plant an unrelated file that must never be pruned.
+	oldTime := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(dir1, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(dir, "keep-me")
+	if err := os.WriteFile(keep, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sz2 := dirAllocatedBytes(dir2)
+	removed, freed, err := PruneCache(dir, sz2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 || freed <= 0 {
+		t.Fatalf("budget prune: removed=%d freed=%d, want 1 and >0", removed, freed)
+	}
+	if _, err := os.Stat(dir1); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oldest dir1 still exists: %v", err)
+	}
+	if _, err := os.Stat(dir2); err != nil {
+		t.Fatalf("newer dir2 was removed: %v", err)
+	}
+
+	// Full prune (maxBytes <= 0) removes remaining cache dirs and head-* files, leaving unrelated files.
+	removed, freed, err = PruneCache(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 || freed <= 0 {
+		t.Fatalf("full prune: removed=%d freed=%d, want 1 and >0", removed, freed)
+	}
+	if _, err := os.Stat(dir2); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dir2 still exists after full prune: %v", err)
+	}
+	if _, err := os.Stat(metaPath(dir, url2)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("head metadata file still exists after full prune: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("unrelated file was removed: %v", err)
 	}
 }
 
@@ -215,16 +384,34 @@ func TestStreamedMemberResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r.Close()
+	img := &Image{remote: r}
 	files, err := zip.NewReader(r, r.size)
 	if err != nil {
 		t.Fatal(err)
 	}
 	o.ranges, o.breakAfter, o.breaks = nil, 50000, 3
+	// Observe StreamProgress mid-stream via a wrapper around the origin on the resumed chunk.
+	var midDone, midTotal int64
+	wrapped := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if len(o.ranges) == 2 {
+			midDone, midTotal = img.StreamProgress()
+		}
+		o.ServeHTTP(w, req)
+	}))
+	defer wrapped.Close()
+	r.url = wrapped.URL
 	f, err := r.inflated(files.File[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
+	if midTotal != int64(files.File[0].CompressedSize64) || midDone <= 0 || midDone >= midTotal {
+		t.Fatalf("mid-stream progress = (%d, %d), want (0 < done < %d)", midDone, midTotal, files.File[0].CompressedSize64)
+	}
+	if done, total := img.StreamProgress(); done != 0 || total != 0 {
+		t.Fatalf("post-stream progress = (%d, %d), want (0, 0)", done, total)
+	}
 	got, err := io.ReadAll(io.NewSectionReader(f, 0, int64(len(content))+1))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("inflated copy differs (%v)", err)
