@@ -1,0 +1,7 @@
+{
+  "build": "20G165",
+  "cache_uuid": "5F50D953-A228-3416-A982-9FDE102DB036",
+  "exit_code": 0,
+  "output": "register to check: 0; a token: 1; valid: 1\ncheck: 0, posted since: 1; again: 0, 0\nits state: 0, 0; set to 42: 0; read through a second registration: 0, 0, 42\npost: 0; check: 0, posted since: 1; again: 0, 0\nregister a block: 0\npost: 0\n  told, by its own token: 1; the state is 43\nthe block ran: 1, 1 times\nregister a port: 0; a port: 1\npost: 0\na message came: 0, saying its token: 1\n  told, by its own token: 1; the state is 43\nsuspend: 0; told while suspended: 0; resume: 0\n  told, by its own token: 1; the state is 43\ntold after: 1, in all 3 times\ncancel: 0, 0, 0 and 0; valid: 0; its state: 2; cancel again: 2\npost to nobody: 0\n",
+  "version": "11.6"
+}

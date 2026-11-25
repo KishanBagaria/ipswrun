@@ -32,6 +32,7 @@ const (
 	routineCheckIn      = 805
 	routineCheckInMach  = 206 // a check-in as bootstrap_check_in asks it: how a daemon that is not an XPC listener gets its port
 	routineEventStream  = 403 // a daemon asking for the events launchd keeps for it (xpc_set_event_stream_handler)
+	routineEventPoll    = 406 // a daemon that publishes events asking to be told when those who subscribe to them change (xpc_event_publisher_activate)
 	routineJobValue     = 301 // a process asking for one of the values launchd keeps about its job, by number
 	routineStarted      = 802 // libxpc of iOS 14 to 16.0 telling launchd of the process as it starts: its environment, where it is from
 	routineUncork       = 803 // and then that launchd may start the services the process declares (_xpc_uncork_domain)
@@ -77,6 +78,15 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 		s.port = &port{m: m}
 	}
 	checkIn := routine == routineCheckIn || routine == routineCheckInMach
+	if routine == routineEventPoll {
+		// libxpc sends this with a port to be answered on and goes on: the answer is for when
+		// what subscribes to the stream has changed, after which it asks for the events again
+		// (routine 403) and then this again. Nothing subscribes here, as no plist's LaunchEvents
+		// are acted on, so nothing changes: launchd keeps the right to answer, and does not.
+		m.polls = append(m.polls, p.takeIn(msg.local, msg.bits>>8&0x1F))
+		p.note("  to launchd, routine %d: %v, to be answered when something changes", routine, request)
+		return true
+	}
 	switch {
 	case routine == routineEventStream:
 		// What launchd has for a daemon on one of its streams of events, by name: nothing.

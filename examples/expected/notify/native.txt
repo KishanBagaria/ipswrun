@@ -1,0 +1,17 @@
+register to check: 0; a token: 1; valid: 1
+check: 0, posted since: 1; again: 0, 0
+its state: 0, 0; set to 42: 0; read through a second registration: 0, 0, 42
+post: 0; check: 0, posted since: 1; again: 0, 0
+register a block: 0
+post: 0
+  told, by its own token: 1; the state is 43
+the block ran: 1, 1 times
+register a port: 0; a port: 1
+post: 0
+a message came: 0, saying its token: 1
+  told, by its own token: 1; the state is 43
+suspend: 0; told while suspended: 0; resume: 0
+  told, by its own token: 1; the state is 43
+told after: 1, in all 3 times
+cancel: 0, 0, 0 and 0; valid: 0; its state: 2; cancel again: 2
+post to nobody: 0

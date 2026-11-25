@@ -31,6 +31,7 @@ type Machine struct {
 	asked    map[string]bool                // the services that were looked for among the build's own, once each
 	replaced []*Process                     // processes that are no longer among procs, to be closed with them
 	deferred []func()                       // what a system call left to be done between stretches of emulation (see spawn.go)
+	polls    []carried                      // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
 	pipes    uint64                         // how many pipes were ever made: the next one's number
 	started  uint32                         // how many processes were ever made: a pid is not given twice, whatever has ended since
 	ioRoot   *ioEntry                       // the root of the I/O Registry, once a process has asked for it (see registry.go)

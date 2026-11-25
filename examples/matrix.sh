@@ -136,6 +136,8 @@ for guest in ${guests//,/ }; do
 	# cfprefsd is started when it is first looked up, in both of its roles, as its launchd plists
 	# say; on iOS, where the agent has no plist of its own, both are started by hand. cfprefsd
 	# reads its sandbox profile, which every guest may.
+	# notify asks the release's own notifyd, started when it is first looked up.
+	[ "$guest" != notify ] || options=(--on-demand com.apple.system.notification_center)
 	[ "$guest" != prefs ] || options=(--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME --on-demand 'com.apple.cfprefsd.*')
 	[ "$guest" != prefs ] || [ "$platform" != ios ] || options=(--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME
 		--agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon')

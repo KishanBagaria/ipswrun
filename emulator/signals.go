@@ -81,6 +81,7 @@ func (p *Process) faulted(s pendingSignal, pc uint64) {
 	if handler <= sigIgnore || t.sigmask>>(s.sig-1)&1 != 0 {
 		p.crash = fmt.Sprintf("%s at %s lr %s\n%s", p.faultText(s), p.where(pc), p.where(p.uc.reg(regLR)), p.Diagnostics())
 		p.endSignal, p.exited = int(s.sig), true
+		p.note("%s", p.crash)
 		return
 	}
 	p.current.pc = pc
