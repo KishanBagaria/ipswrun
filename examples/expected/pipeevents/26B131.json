@@ -1,0 +1,7 @@
+{
+  "build": "26B131",
+  "cache_uuid": "C208F2EB-29B0-3D9E-BA56-45FD90E37B16",
+  "exit_code": 0,
+  "output": "write 5: 5\nevent 1: 5 to read, read 5 \"hello\"\nwrite 3: 3\nevent 2: 3 to read, read 3 \"abc\"\nevent 3: 0 to read, read 0 \"\"\nthe reading source is cancelled\nround 1: room for 16384, wrote 30000\nround 2: room for 35536, wrote 30000\nround 3: room for 5536, wrote 5536\nin the pipe: 65536\ndispatch_write: error 0, 0 left\ndispatch_read: error 0, 16 bytes \"through dispatch\"\nwrite 4: 4\nthe channel read 4, in all 4\nwrite 4: 4\nthe channel read 4, in all 8\nthe channel's read is finished: error 0, after 2 reads\nthe channel is closed: error 0\n",
+  "version": "27.2.1"
+}

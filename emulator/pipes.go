@@ -1,6 +1,9 @@
 package emulator
 
 import (
+	"cmp"
+	"maps"
+	"slices"
 	"syscall"
 	"time"
 )
@@ -372,4 +375,87 @@ func (p *Process) selected(s *selecting) int64 {
 		}
 	}
 	return count
+}
+
+// pipeWatch names a kqueue's interest in reading or in writing an end of a pipe, which is kept
+// as the event that asked for it.
+type pipeWatch struct {
+	filter       int16
+	ident, udata uint64
+}
+
+// changePipe takes a change to a kqueue's interest in a descriptor; false if it is no pipe's.
+func (p *Process) changePipe(q *kqueue, c kevent) bool {
+	key := pipeWatch{c.filter, c.ident, c.udata}
+	w, ok := q.pipes[key]
+	f := p.fds[c.ident]
+	switch {
+	case c.flags&evDelete != 0 && ok:
+		delete(q.pipes, key)
+	case ok && c.flags&evAdd == 0 && c.flags&evEnable != 0:
+		w.flags &^= evDisable
+		q.pipes[key] = w
+	case ok && c.flags&evAdd == 0 && c.flags&evDisable != 0:
+		w.flags |= evDisable
+		q.pipes[key] = w
+	case f == nil || f.kind != pipeFD:
+		return ok
+	case c.flags&evAdd != 0:
+		q.pipes[key] = c
+	}
+	return true
+}
+
+// watchedPipes makes an event of every end of a pipe a kqueue watches that can be read, or
+// written: with how much there is to read, or room to write, and whether the other end has gone.
+func (p *Process) watchedPipes(q *kqueue) {
+	keys := slices.SortedFunc(maps.Keys(q.pipes), func(a, b pipeWatch) int {
+		return cmp.Or(cmp.Compare(a.ident, b.ident), cmp.Compare(b.filter, a.filter), cmp.Compare(a.udata, b.udata))
+	})
+	for _, key := range keys {
+		w := q.pipes[key]
+		f := p.fds[key.ident]
+		if f == nil || f.kind != pipeFD { // closed since: what watched it went with it
+			delete(q.pipes, key)
+			continue
+		}
+		if w.flags&evDisable != 0 || slices.ContainsFunc(q.ready, func(e kevent) bool { return e.filter == key.filter && e.ident == key.ident && e.udata == key.udata }) {
+			continue
+		}
+		pipe, least := f.pipe, int64(1)
+		event := w
+		event.flags &^= evAdd | evEnable | evVanished // what was asked for, not what happened
+		event.fflags = 0
+		switch {
+		case key.filter == filterRead && !f.writing():
+			if w.fflags&noteLowWater != 0 {
+				least = max(w.data, 1)
+			}
+			if event.data = int64(len(pipe.data)); pipe.writers == 0 {
+				event.flags |= evEOF
+			} else if event.data < least {
+				continue
+			}
+		case key.filter == filterWrite && f.writing():
+			if event.data = int64(pipe.size - len(pipe.data)); pipe.readers == 0 {
+				event.flags |= evEOF
+			} else if event.data < pipeBuf {
+				continue
+			}
+		default:
+			// The end that is not read, or not written: what a Mac's kernel says of it to a
+			// kqueue was not measured.
+			p.unimplemented("a kqueue watching the wrong end of a pipe", nil)
+			delete(q.pipes, key)
+			continue
+		}
+		q.ready = append(q.ready, event)
+		switch {
+		case w.flags&evOneshot != 0:
+			delete(q.pipes, key)
+		case w.flags&evDispatch != 0:
+			w.flags |= evDisable
+			q.pipes[key] = w
+		}
+	}
 }

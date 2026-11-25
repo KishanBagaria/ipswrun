@@ -28,6 +28,8 @@ type kevent struct {
 const (
 	keventSize = 72
 
+	filterRead     = -1
+	filterWrite    = -2
 	filterSignal   = -6
 	filterTimer    = -7
 	filterMachport = -8
@@ -44,6 +46,9 @@ const (
 	evDispatch = 0x80  // disabled once it has happened, until enabled again
 	evVanished = 0x200 // asked for: to be told if what is watched goes away. In an event: it did
 	evError    = 0x4000
+	evEOF      = 0x8000 // in an event: the other end has gone
+
+	noteLowWater = 0x1 // of a read or write filter: its data is how much there has to be
 
 	// Units and clocks of a timer.
 	noteSeconds  = 0x1
@@ -96,10 +101,11 @@ func (k kevent) bytes() []byte {
 type kqueue struct {
 	id      uint64
 	timers  map[uint64]*timer
-	users   map[uint64]kevent   // events that happen when the guest says so
-	signals map[uint64]kevent   // the signals it is to be told of, by number
-	ports   map[watchKey]kevent // the ports and sets it watches (see ports.go)
-	ready   []kevent            // events that happened and have not been handed to a thread yet
+	users   map[uint64]kevent    // events that happen when the guest says so
+	signals map[uint64]kevent    // the signals it is to be told of, by number
+	ports   map[watchKey]kevent  // the ports and sets it watches (see ports.go)
+	pipes   map[pipeWatch]kevent // the ends of pipes it watches, to read or to write (see pipes.go)
+	ready   []kevent             // events that happened and have not been handed to a thread yet
 
 	// Of a workloop: its request for a thread while that waits to be answered, the thread that
 	// answered the last one, and the turns given to threads that had not asked yet.
@@ -117,7 +123,7 @@ type timer struct {
 func (p *Process) kqueue(id uint64) *kqueue {
 	q := p.kqueues[id]
 	if q == nil {
-		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, signals: map[uint64]kevent{}, ports: map[watchKey]kevent{}, woken: map[uint64]bool{}}
+		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, signals: map[uint64]kevent{}, ports: map[watchKey]kevent{}, pipes: map[pipeWatch]kevent{}, woken: map[uint64]bool{}}
 		p.kqueues[id] = q
 	}
 	return q
@@ -221,6 +227,10 @@ func (p *Process) change(q *kqueue, changes []kevent) {
 			}
 		case filterMachport:
 			p.changeMachport(q, c)
+		case filterRead, filterWrite:
+			if !p.changePipe(q, c) { // of a descriptor that is no pipe's: nothing here says when
+				p.ignored[int(c.filter)]++
+			}
 		case filterMemory:
 		default:
 			p.ignored[int(c.filter)]++
@@ -347,6 +357,7 @@ func (p *Process) serve(now time.Time) (next time.Time) {
 			}
 		}
 		p.watched(q)
+		p.watchedPipes(q)
 		if q.servicer != nil || q.request == nil && len(q.ready) == 0 {
 			continue
 		}

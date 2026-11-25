@@ -1,0 +1,18 @@
+write 5: 5
+event 1: 5 to read, read 5 "hello"
+write 3: 3
+event 2: 3 to read, read 3 "abc"
+event 3: 0 to read, read 0 ""
+the reading source is cancelled
+round 1: room for 16384, wrote 30000
+round 2: room for 35536, wrote 30000
+round 3: room for 5536, wrote 5536
+in the pipe: 65536
+dispatch_write: error 0, 0 left
+dispatch_read: error 0, 16 bytes "through dispatch"
+write 4: 4
+the channel read 4, in all 4
+write 4: 4
+the channel read 4, in all 8
+the channel's read is finished: error 0, after 2 reads
+the channel is closed: error 0
