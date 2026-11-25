@@ -125,7 +125,9 @@ for guest in ${guests//,/ }; do
 	# cfprefsd, in both of its roles.
 	[ "$guest" != client ] || options=(--agent com.example.ipswrun.echo,com.example.ipswrun.reverse=$bin/server)
 	# adi is run beside the release's adid, the daemon it asks.
-	[ "$guest" != adi ] || options=(--daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid)
+	adid=/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid
+	[ "$platform" != ios ] || adid=/usr/libexec/adid
+	[ "$guest" != adi ] || options=(--daemon com.apple.adid=system:$adid)
 	# Two variables of ipswrun's keep CoreFoundation from asking for cfprefsd, and go.
 	[ "$guest" != prefs ] || options=(--agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon'
 		--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME)

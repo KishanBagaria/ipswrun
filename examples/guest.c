@@ -7,6 +7,7 @@
 //   ipswrun --home out 'https://…/UniversalMac_15.6.1_24G90_Restore.ipsw' ./guest
 //
 // An argument, if given, is the framework to load instead of the default.
+#include <TargetConditionals.h>
 #include <dlfcn.h>
 #include <sqlite3.h>
 #include <stdio.h>
@@ -32,7 +33,7 @@ int main(int argc, char **argv) {
 	char version[64], build[64], path[1024];
 	sysctl_string("kern.osproductversion", version, sizeof version);
 	sysctl_string("kern.osversion", build, sizeof build);
-	printf("macOS %s (%s)\n", version, build);
+	printf("%s %s (%s)\n", TARGET_OS_OSX ? "macOS" : "iOS", version, build);
 
 	const char *framework = argc > 1 ? argv[1] : "/System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking";
 	if (!dlopen(framework, RTLD_NOW)) {

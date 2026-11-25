@@ -73,3 +73,14 @@ func TestCheckDevice(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckIOSReleases(t *testing.T) {
+	if err := checkIOSReleases([]release{{Version: "14.0", Build: "18A373"}, {Version: "18.7.12", Build: "22H390"}, {URL: "https://x/y.ipsw"}}); err != nil {
+		t.Error(err)
+	}
+	for _, version := range []string{"12.4.1", "13.0"} {
+		if err := checkIOSReleases([]release{{Version: "18.0"}, {Version: version}}); err == nil || !strings.Contains(err.Error(), "iOS "+version) {
+			t.Errorf("iOS %s: %v", version, err)
+		}
+	}
+}

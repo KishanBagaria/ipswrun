@@ -864,7 +864,7 @@ releases of iOS for it.`)
 			if err != nil {
 				return 0, fmt.Errorf("the releases of %s are those api.ipsw.me lists, which %w: %w", *device, errSource, err)
 			}
-			known = every
+			known = filter(every, func(r release) bool { return supportedIOS(r.Version) })
 		}
 	}
 	if *listReleases {
@@ -896,6 +896,9 @@ releases of iOS for it.`)
 			// Every iOS release named other than by its image is the index's, and as for one of
 			// macOS, the index is followed only to Apple's hosts.
 			err = offApple(filter(releases, func(r release) bool { return r.Build != "" }))
+			if err == nil {
+				err = checkIOSReleases(releases)
+			}
 		}
 		if err == nil {
 			feedNote(note)

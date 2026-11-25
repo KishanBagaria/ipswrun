@@ -75,6 +75,27 @@ func osOf(device string) string {
 	return ""
 }
 
+// oldestIOS is the first major version of iOS that ipswrun runs. The system volume of iOS 12 and
+// 13 cannot be read by range (its root directory ends early), so they are left out of the
+// releases of the index, and refused when named.
+const oldestIOS = 14
+
+// supportedIOS reports whether ipswrun runs an iOS version.
+func supportedIOS(version string) bool {
+	major, err := strconv.Atoi(strings.SplitN(version, ".", 2)[0])
+	return err != nil || major >= oldestIOS
+}
+
+// checkIOSReleases refuses the first selected iOS release before oldestIOS.
+func checkIOSReleases(rs []release) error {
+	for _, r := range rs {
+		if r.Version != "" && !supportedIOS(r.Version) {
+			return fmt.Errorf("iOS %s (%s) is not supported: ipswrun runs iOS %d and later, as the system volume of iOS 12 and 13 cannot be read by range yet", r.Version, r.Build, oldestIOS)
+		}
+	}
+	return nil
+}
+
 // homeOf is the guest's home on system (see osOf).
 func homeOf(system string) string {
 	if system == iOS {

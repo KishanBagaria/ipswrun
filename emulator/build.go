@@ -186,7 +186,17 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		if f, ok := known[path]; ok {
 			return f, nil
 		}
-		if !isAllowed(path) {
+		// What the SystemOS cryptex has is under its mount point, as dyld looks for it there when
+		// it is not on the system volume (libobjc-trampolines.dylib from iOS 16). The same
+		// paths of it are allowed as of the system volume.
+		vol, rel := rangefs.FileSystem, path
+		if inCryptex, ok := strings.CutPrefix(path, cryptex+"/"); ok {
+			vol, rel = rangefs.SystemOS, "/"+inCryptex
+			if !isAllowed(rel) {
+				return SystemFile{}, nil
+			}
+		}
+		if !isAllowed(rel) {
 			// A framework inside another is reached through a symbolic link (Frameworks, for
 			// Versions/Current/Frameworks). Its code is in the shared cache under its real path,
 			// which dyld finds by opening the framework's directory: that much of it exists.
@@ -204,16 +214,19 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 			known[path] = f
 			return f, nil
 		}
-		entry, err := image.Stat(rangefs.FileSystem, path)
+		entry, err := image.Stat(vol, rel)
+		if errors.Is(err, rangefs.ErrNoSystemOS) {
+			return SystemFile{}, nil
+		}
 		if err != nil {
 			return SystemFile{}, err
 		}
 		var f SystemFile
 		switch entry.Kind {
 		case rangefs.Directory:
-			dirPath := path
+			dirPath := rel
 			f = SystemFile{Dir: true, ReadDir: sync.OnceValues(func() ([]string, error) { // the image does not change
-				entries, err := image.ReadDir(rangefs.FileSystem, dirPath)
+				entries, err := image.ReadDir(vol, dirPath)
 				if err != nil {
 					return nil, err
 				}

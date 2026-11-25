@@ -499,6 +499,11 @@ func sysOpenat(p *Process, a []uint64) int64 {
 
 func sysGuardedOpen(p *Process, a []uint64) int64 { return p.doOpen(p.cstr(a[0]), a[3], a[4]) }
 
+// sysOpenDprotected (open_dprotected_np) opens a file with a data protection class, which only a
+// device with a passcode enforces: here it is an open. dyld of iOS 15 to 17.0 creates files this
+// way. Its arguments are the path, the flags, the class, flags of its own and the mode.
+func sysOpenDprotected(p *Process, a []uint64) int64 { return p.doOpen(p.cstr(a[0]), a[1], a[4]) }
+
 func sysGuardedClose(p *Process, a []uint64) int64 { return sysClose(p, a[:1]) }
 func sysGuardedWrite(p *Process, a []uint64) int64 { return sysWrite(p, []uint64{a[0], a[2], a[3]}) }
 func sysGuardedPwrite(p *Process, a []uint64) int64 {
