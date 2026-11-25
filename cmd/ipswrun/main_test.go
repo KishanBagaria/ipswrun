@@ -372,7 +372,7 @@ func TestFix(t *testing.T) {
 func TestProgressOnlyOnATerminal(t *testing.T) {
 	var piped bytes.Buffer
 	p := newProgress(&piped, false)
-	p.set("macOS 15.6.1 (24G90)", func() (int64, int64) { return 3, 42e6 })
+	p.set("macOS 15.6.1 (24G90)", func() (int64, int64) { return 3, 42e6 }, nil)
 	time.Sleep(700 * time.Millisecond)
 	fmt.Fprint(p, "note: one\n")
 	p.stop()
@@ -382,7 +382,7 @@ func TestProgressOnlyOnATerminal(t *testing.T) {
 
 	out := &locked{}
 	p = newProgress(out, true)
-	p.set("macOS 15.6.1 (24G90)", func() (int64, int64) { return 3, 42e6 })
+	p.set("macOS 15.6.1 (24G90)", func() (int64, int64) { return 3, 42e6 }, nil)
 	time.Sleep(700 * time.Millisecond)
 	fmt.Fprint(p, "note: one\n")
 	p.stop()
@@ -394,6 +394,57 @@ func TestProgressOnlyOnATerminal(t *testing.T) {
 	// The line is erased before anything else is written, and nothing is left of it at the end.
 	if !strings.Contains(got, "\r\x1b[Knote: one\n") || !strings.HasSuffix(got, "note: one\n") {
 		t.Errorf("the status line was not cleared around other output: %q", got)
+	}
+
+	// Streaming progress replaces "MB fetched" while total > 0 and reverts once done.
+	p = newProgress(&bytes.Buffer{}, false)
+	var streaming atomic.Bool
+	streaming.Store(true)
+	p.set("macOS 14.7 (23H124)", func() (int64, int64) { return 3, 42e6 }, func() (int64, int64) {
+		if streaming.Load() {
+			return 1240e6, 4100e6
+		}
+		return 0, 0
+	})
+	if line := p.line(); !strings.Contains(line, "streaming 1240/4100 MB (30%)") {
+		t.Errorf("streaming line = %q", line)
+	}
+	streaming.Store(false)
+	if line := p.line(); !strings.Contains(line, "42 MB fetched") {
+		t.Errorf("post-stream line = %q", line)
+	}
+}
+
+func TestPruneCacheFlag(t *testing.T) {
+	cacheDir := t.TempDir()
+	cached := filepath.Join(cacheDir, "0123456789abcdef")
+	if err := os.MkdirAll(cached, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cached, "data"), make([]byte, 8192), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	headFile := filepath.Join(cacheDir, "head-0123456789abcdef")
+	if err := os.WriteFile(headFile, []byte("12345\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(cacheDir, "keep.txt")
+	if err := os.WriteFile(keep, []byte("stay"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	status, stderr, fetched := command(t, "--cache", cacheDir, "--prune-cache")
+	if status != 0 || fetched {
+		t.Fatalf("status=%d fetched=%v stderr=%q", status, fetched, stderr)
+	}
+	if _, err := os.Stat(cached); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cached release dir still exists: %v", err)
+	}
+	if _, err := os.Stat(headFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("head file still exists: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("unrelated file was deleted: %v", err)
 	}
 }
 

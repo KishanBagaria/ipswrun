@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
 
 // AllowStreaming lets the image read deflate-compressed disk image members. A deflate stream has
@@ -39,20 +40,39 @@ func (r *rangeReader) inflated(member *zip.File) (*os.File, error) {
 		if err != nil {
 			return nil, err
 		}
-		end := offset + int64(member.CompressedSize64)
+		total := int64(member.CompressedSize64)
+		end := offset + total
 		client := *r.client
 		client.Timeout = 0 // gigabytes; the transfer is bounded by its length instead
 		body := r.open(&client, offset, end)
-		return &inflateBody{ReadCloser: flate.NewReader(body), underlying: body}, nil
+		r.streamDone.Store(0)
+		r.streamTotal.Store(total)
+		counted := &countingReader{Reader: body, n: &r.streamDone}
+		return &inflateBody{ReadCloser: flate.NewReader(counted), underlying: body, r: r}, nil
 	})
 }
 
+// countingReader adds the bytes read through it to n.
+type countingReader struct {
+	io.Reader
+	n *atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.Reader.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// inflateBody is a streamed member's inflater; closing it ends the stream's progress report.
 type inflateBody struct {
 	io.ReadCloser
 	underlying io.Closer
+	r          *rangeReader
 }
 
 func (b *inflateBody) Close() error {
+	b.r.streamTotal.Store(0)
 	return errors.Join(b.ReadCloser.Close(), b.underlying.Close())
 }
 

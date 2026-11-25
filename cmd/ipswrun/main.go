@@ -288,6 +288,7 @@ type progress struct {
 	shown   bool
 	phase   string
 	stats   func() (requests, bytes int64)
+	stream  func() (done, total int64)
 	started time.Time
 	quit    chan struct{}
 	done    sync.WaitGroup
@@ -321,17 +322,23 @@ func newProgress(out io.Writer, live bool) *progress {
 
 func (p *progress) line() string {
 	line := "ipswrun: " + p.phase
-	if p.stats != nil {
+	var done, total int64
+	if p.stream != nil {
+		done, total = p.stream()
+	}
+	if total > 0 {
+		line += fmt.Sprintf(", streaming %.0f/%.0f MB (%.0f%%)", float64(done)/1e6, float64(total)/1e6, float64(done)*100/float64(total))
+	} else if p.stats != nil {
 		_, fetched := p.stats()
 		line += fmt.Sprintf(", %.0f MB fetched", float64(fetched)/1e6)
 	}
 	return line + fmt.Sprintf(", %ds", int(time.Since(p.started).Seconds()))
 }
 
-// set names what the run is doing; stats, if not nil, is where the transfer so far is read.
-func (p *progress) set(phase string, stats func() (int64, int64)) {
+// set names what the run is doing; stats and stream, if not nil, report transfer and streaming progress.
+func (p *progress) set(phase string, stats, stream func() (int64, int64)) {
 	p.mu.Lock()
-	p.phase, p.stats = phase, stats
+	p.phase, p.stats, p.stream = phase, stats, stream
 	p.mu.Unlock()
 }
 
@@ -411,7 +418,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		return out
 	}
 	started := time.Now()
-	status.set(label+"opening the restore image", nil)
+	status.set(label+"opening the restore image", nil, nil)
 	image, err := rangefs.Open(r.URL, o.Cache, o.Device)
 	if err != nil {
 		return failed(err)
@@ -439,11 +446,11 @@ func (o *options) runOne(r release, label string) (out outcome) {
 			return failed(err)
 		}
 	}
-	var stats func() (int64, int64)
+	var stats, stream func() (int64, int64)
 	if !r.local() {
-		stats = image.Stats
+		stats, stream = image.Stats, image.StreamProgress
 	}
-	status.set(label+out.name, stats)
+	status.set(label+out.name, stats, stream)
 	machine, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.Unicorn, Home: home, Mounts: mounts, Services: o.Services, Executable: o.Guest, Args: o.Args,
 		Daemons: o.Daemons, Env: o.Env, System: o.System, Timeout: time.Duration(o.Timeout * float64(time.Second)), Trace: o.Trace, Survey: o.Missing, Notes: status})
 	status.stop()
@@ -764,7 +771,7 @@ func (o *options) runParallel(releases []release, run func(release) outcome, std
 		shown     = sections{stdout: stdout, stderr: prog}
 	)
 	updateStatus := func(running int) {
-		prog.set(fmt.Sprintf("running %d release(s) (%d/%d done)", running, done, len(releases)), nil)
+		prog.set(fmt.Sprintf("running %d release(s) (%d/%d done)", running, done, len(releases)), nil, nil)
 	}
 	flush := func() {
 		for nextPrint < len(releases) && ready[nextPrint] {
@@ -803,11 +810,21 @@ func (o *options) runParallel(releases []release, run func(release) outcome, std
 	return shown.status
 }
 
+// defaultCacheDir returns the persistent per-user cache directory for downloaded IPSW ranges,
+// falling back to the system temporary directory if the user cache directory is unavailable.
+func defaultCacheDir() string {
+	if base, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(base, "ipswrun", "cache")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("ipswrun-%d", os.Getuid()))
+}
+
 // run returns the exit status, or an error when a single guest never got to exit.
 func run() (int, error) {
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: "+usage+`
        ipswrun --releases
+       ipswrun --prune-cache
        ipswrun --setup
 <release> is the version or build of any macOS release since 11 (15.2, 24C101), latest, all (the first
 and last release of each major version), a major version (15, for those of all under it, or 15.* for
@@ -825,7 +842,8 @@ releases of iOS for it.`)
 	flag.Var(&env, "env", "KEY=VALUE added to the environment of every guest, or KEY alone taken out of it (repeatable)")
 	flag.Var(&system, "system", "system-volume file, or directory ending in /, the guest may read (repeatable; default: feature flags, SystemVersion.plist, /usr/share/icu/ and libobjc-trampolines.dylib; giving any replaces the default)")
 	device := flag.String("device", "Macmini9,1", "BuildManifest product used to pick disk images and the releases looked up; an iPhone or iPad (iPhone11,2) runs iOS")
-	cache := flag.String("cache", "", "directory that keeps what was downloaded between runs (default: one in the system temporary directory, cleared on reboot)")
+	cache := flag.String("cache", "", "directory that keeps what was downloaded between runs (default: the user cache directory)")
+	pruneCache := flag.Bool("prune-cache", false, "remove cached restore image downloads from --cache (skipping any a running ipswrun has open), then exit")
 	stream := flag.Bool("stream-compressed", false, "download a compressed disk image member front to back when it cannot be read by range")
 	timeout := flag.Float64("timeout", 900, "seconds the guest may run on each release, counted from when it starts (opening the image and fetching its pages are not counted)")
 	trace := flag.Bool("trace", false, "print every emulated system call")
@@ -837,6 +855,10 @@ releases of iOS for it.`)
 	setup := flag.Bool("setup", false, "only fetch and verify libunicorn")
 	listReleases := flag.Bool("releases", false, "print the releases all stands for (version, build, URL): the first and last of each major version, and the one Apple currently offers")
 	flag.Parse()
+	defaultCache := *cache == ""
+	if defaultCache {
+		*cache = defaultCacheDir()
+	}
 
 	known, builtIn := parseReleases(releasesText), macBuiltIn
 	current := func() ([]release, error) { return fetchCurrent(*device) }
@@ -872,6 +894,17 @@ releases of iOS for it.`)
 		feedNote(err)
 		for _, r := range withCurrent(sampled(known), offered) {
 			fmt.Printf("%s\t%s\t%s\n", r.Version, r.Build, r.URL)
+		}
+		return 0, nil
+	}
+	if *pruneCache {
+		removed, inUse, freed, err := rangefs.PruneCache(*cache)
+		if err != nil {
+			return 0, err
+		}
+		fmt.Printf("removed %d cached image(s) (%.1f MB) from %s\n", removed, float64(freed)/1e6, *cache)
+		if inUse > 0 {
+			fmt.Printf("left %d image(s) in use by a running ipswrun\n", inUse)
 		}
 		return 0, nil
 	}
@@ -957,14 +990,13 @@ releases of iOS for it.`)
 		*unicornDir = filepath.Join(base, "ipswrun")
 	}
 	status := newProgress(os.Stderr, showStatus)
-	status.set("preparing libunicorn", nil)
+	status.set("preparing libunicorn", nil, nil)
 	unicorn, err := emulator.EnsureUnicorn(*unicornDir)
 	status.stop()
 	if err != nil || *setup {
 		return 0, err
 	}
-	if *cache == "" {
-		*cache = filepath.Join(os.TempDir(), fmt.Sprintf("ipswrun-%d", os.Getuid()))
+	if defaultCache {
 		if err := os.MkdirAll(*cache, 0o700); err != nil {
 			return 0, err
 		}
