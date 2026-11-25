@@ -55,17 +55,16 @@ func TestUserByPlatform(t *testing.T) {
 		{dyldcache.MacOS, "/Users/emu", 20, "emu:*:501:20:emu:/Users/emu:/bin/zsh\n"},
 		{dyldcache.IOS, "/var/mobile", 501, "mobile:*:501:501:mobile:/var/mobile:/bin/sh\n"},
 	} {
-		cache := &dyldcache.Cache{Platform: c.platform}
 		if got := HomeOf(c.platform); got != c.home {
 			t.Errorf("%v: home %s, want %s", c.platform, got, c.home)
 		}
 		if env := BaseEnv(HomeOf(c.platform)); !slices.Contains(env, "HOME="+c.home) || !slices.Contains(env, "TMPDIR="+c.home+"/tmp/") {
 			t.Errorf("%v: environment %q", c.platform, env)
 		}
-		if got := passwd(userOf(cache), false); !strings.HasSuffix(got, c.entry) {
+		if got := passwd(userOf(c.platform), false); !strings.HasSuffix(got, c.entry) {
 			t.Errorf("%v: passwd %q, want it to end in %q", c.platform, got, c.entry)
 		}
-		if st := statBuf(fileInfo{}, userOf(cache)); le.Uint32(st[16:]) != 501 || le.Uint32(st[20:]) != c.gid {
+		if st := statBuf(fileInfo{}, userOf(c.platform)); le.Uint32(st[16:]) != 501 || le.Uint32(st[20:]) != c.gid {
 			t.Errorf("%v: files owned by %d:%d", c.platform, le.Uint32(st[16:]), le.Uint32(st[20:]))
 		}
 		if err := CheckMounts([]Mount{{c.home, t.TempDir()}}, c.home); err == nil {

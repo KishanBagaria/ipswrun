@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/KishanBagaria/ipswrun/emulator"
 	"github.com/KishanBagaria/ipswrun/rangefs"
 	"github.com/blacktop/go-plist"
 )
@@ -57,9 +56,9 @@ func (r release) compressed() bool {
 	return strings.HasPrefix(r.Version, "13.") || strings.HasPrefix(r.Version, "14.")
 }
 
-// builtIn is what the releases selectReleases knows without asking are, as its errors say: those
-// of releases.tsv, or for iOS, which has none there, those of the index for the --device.
-var builtIn = "the releases built in"
+// macBuiltIn is what the releases selectReleases knows without asking are for macOS, as its
+// errors say: those of releases.tsv. For iOS, which has none there, they are the index's.
+const macBuiltIn = "the releases built in"
 
 // iOS is the OS of a release for an iPhone, iPad or iPod touch.
 const iOS = "iOS"
@@ -82,7 +81,8 @@ const oldestIOS = 14
 
 // supportedIOS reports whether ipswrun runs an iOS version.
 func supportedIOS(version string) bool {
-	major, err := strconv.Atoi(strings.SplitN(version, ".", 2)[0])
+	first, _, _ := strings.Cut(version, ".")
+	major, err := strconv.Atoi(first)
 	return err != nil || major >= oldestIOS
 }
 
@@ -94,14 +94,6 @@ func checkIOSReleases(rs []release) error {
 		}
 	}
 	return nil
-}
-
-// homeOf is the guest's home on system (see osOf).
-func homeOf(system string) string {
-	if system == iOS {
-		return emulator.GuestHomeIOS
-	}
-	return emulator.GuestHome
 }
 
 // splitSelector is the comma-separated parts of a release selector. The URL or path of an iOS
@@ -343,7 +335,7 @@ func filter(pool []release, keep func(release) bool) []release {
 // Apple offers now, and a version or build that this does not settle either asks index, at most
 // once, for every release there has been. When current fails and the names can do without it, the
 // failure comes back as note.
-func selectReleases(known, betas []release, selector string, current, index func() ([]release, error)) (out []release, note error, err error) {
+func selectReleases(known, betas []release, builtIn, selector string, current, index func() ([]release, error)) (out []release, note error, err error) {
 	current, index = sync.OnceValues(current), sync.OnceValues(index)
 	seen := map[string]bool{}
 	for _, part := range splitSelector(selector) {

@@ -456,18 +456,28 @@ func migClockGetTime(p *Process, _ []byte) migReply {
 // counted is a MIG variable-length array of 32-bit words: its count, then the words.
 func counted(info []byte) migReply { return migData(append(le32(uint32(len(info)/4)), info...)) }
 
-func migHostInfo(p *Process, body []byte) migReply {
+// hostFlavor answers a host_info-shaped request, a flavor and how many words the caller has room
+// for, with what info says for the flavor, cut to fit; nil from info is a flavor it does not know.
+func hostFlavor(p *Process, body []byte, call string, info func(flavor int32) []byte) migReply {
 	flavor, count := int32(le.Uint32(body[32:])), uint64(le.Uint32(body[36:]))
-	var info []byte
-	switch flavor {
-	case 1: // HOST_BASIC_INFO
-		info = append(le32(1, 1, 0, cpuARM64, cpuSubtypeARM64E, 0x10000, cpuARM64, 0, 0, 1), le64(guestMemory)...)
-	case 5: // HOST_PRIORITY_INFO
-		info = le32(0, 31, 31, 31, 0, 31, 0, 127)
-	default:
+	p.note("  %s flavor %d", call, flavor)
+	out := info(flavor)
+	if out == nil {
 		return migCode(kernInvalidArg)
 	}
-	return counted(info[:min(count*4, uint64(len(info)))])
+	return counted(out[:min(count*4, uint64(len(out)))])
+}
+
+func migHostInfo(p *Process, body []byte) migReply {
+	return hostFlavor(p, body, "host_info", func(flavor int32) []byte {
+		switch flavor {
+		case 1: // HOST_BASIC_INFO
+			return append(le32(1, 1, 0, cpuARM64, cpuSubtypeARM64E, 0x10000, cpuARM64, 0, 0, 1), le64(guestMemory)...)
+		case 5: // HOST_PRIORITY_INFO
+			return le32(0, 31, 31, 31, 0, 31, 0, 127)
+		}
+		return nil
+	})
 }
 
 // The pages of guestMemory as host_statistics tells them: half free, as kern.memorystatus_level
@@ -480,49 +490,44 @@ const (
 	pagesWired    = guestMemory/pageSize - pagesFree - pagesActive - pagesInactive
 )
 
-// vmStatistics64 is a vm_statistics64: the page counts, then what the pager has done since boot.
-func vmStatistics64() []byte {
-	var b []byte
-	b = append(b, le32(pagesFree, pagesActive, pagesInactive, pagesWired)...)
-	b = append(b, le64(100000, 0, 2000, 0, 300000, 5000, 0, 0, 0)...) // zero fills, reactivations, pageins, pageouts, faults, copy-on-write faults, lookups, hits, purges
-	b = append(b, le32(0, 0)...)                                      // purgeable, speculative
-	b = append(b, le64(0, 0, 0, 0)...)                                // decompressions, compressions, swapins, swapouts
-	b = append(b, le32(0, 0, pagesInactive, pagesActive)...)          // compressor, throttled, file-backed and anonymous pages
-	return append(b, le64(0)...)                                      // pages held compressed
-}
+// vmCounters is what the pager has done since boot, as vm_statistics has it: zero fills,
+// reactivations, pageins, pageouts, faults, copy-on-write faults, lookups, hits and purges.
+var vmCounters = []uint64{100000, 0, 2000, 0, 300000, 5000, 0, 0, 0}
 
-// hostStatistics is what host_statistics and host_statistics64 answer for a flavor, or nil for
-// one they do not know. The 32-bit vm_statistics is the 64-bit one with its counters cut down.
-func hostStatistics(flavor int32, wide bool) []byte {
-	switch flavor {
-	case 1: // HOST_LOAD_INFO: load averages and Mach factors, in fixed point of 1000
-		return le32(0, 0, 0, 1000, 1000, 1000)
-	case 2: // HOST_VM_INFO
-		if wide {
-			return nil
+// hostStatistics is what host_statistics (wide false) and host_statistics64 answer for a flavor,
+// or nil for one they do not know.
+func hostStatistics(wide bool) func(flavor int32) []byte {
+	return func(flavor int32) []byte {
+		pages := le32(pagesFree, pagesActive, pagesInactive, pagesWired)
+		switch {
+		case flavor == 1: // HOST_LOAD_INFO: load averages and Mach factors, in fixed point of 1000
+			return le32(0, 0, 0, 1000, 1000, 1000)
+		case flavor == 2 && !wide: // HOST_VM_INFO: the counters cut to 32 bits, and no purgeable or speculative pages
+			for _, c := range vmCounters {
+				pages = append(pages, le32(uint32(c))...)
+			}
+			return append(pages, le32(0, 0)...)
+		case flavor == 3: // HOST_CPU_LOAD_INFO: ticks spent in user, system, idle and nice
+			return le32(0, 0, 0, 0)
+		case flavor == 4: // HOST_VM_INFO64
+			b := append(pages, le64(vmCounters...)...)
+			b = append(b, le32(0, 0)...)                             // purgeable, speculative
+			b = append(b, le64(0, 0, 0, 0)...)                       // decompressions, compressions, swapins, swapouts
+			b = append(b, le32(0, 0, pagesInactive, pagesActive)...) // compressor, throttled, file-backed and anonymous pages
+			return append(b, le64(0)...)                             // pages held compressed
 		}
-		return le32(pagesFree, pagesActive, pagesInactive, pagesWired, 100000, 0, 2000, 0, 300000, 5000, 0, 0, 0, 0, 0)
-	case 3: // HOST_CPU_LOAD_INFO: ticks spent in user, system, idle and nice
-		return le32(0, 0, 0, 0)
-	case 4: // HOST_VM_INFO64
-		return vmStatistics64()
+		return nil
 	}
-	return nil
 }
 
 // migHostStatistics (host_statistics) and migHostStatistics64 (host_statistics64) are how vm_stat
-// and top see memory and load. Their request is a flavor and how many words the caller has room for.
-func migHostStatistics(p *Process, body []byte) migReply   { return hostStatisticsReply(p, body, false) }
-func migHostStatistics64(p *Process, body []byte) migReply { return hostStatisticsReply(p, body, true) }
+// and top see memory and load.
+func migHostStatistics(p *Process, body []byte) migReply {
+	return hostFlavor(p, body, "host_statistics", hostStatistics(false))
+}
 
-func hostStatisticsReply(p *Process, body []byte, wide bool) migReply {
-	flavor, count := int32(le.Uint32(body[32:])), uint64(le.Uint32(body[36:]))
-	p.note("  host_statistics flavor %d", flavor)
-	info := hostStatistics(flavor, wide)
-	if info == nil {
-		return migCode(kernInvalidArg)
-	}
-	return counted(info[:min(count*4, uint64(len(info)))])
+func migHostStatistics64(p *Process, body []byte) migReply {
+	return hostFlavor(p, body, "host_statistics64", hostStatistics(true))
 }
 
 // auditToken is who a process is, as the kernel says it: its audit user (none), its user and

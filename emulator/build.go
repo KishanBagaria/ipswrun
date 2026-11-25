@@ -192,15 +192,12 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		vol, rel := rangefs.FileSystem, path
 		if inCryptex, ok := strings.CutPrefix(path, cryptex+"/"); ok {
 			vol, rel = rangefs.SystemOS, "/"+inCryptex
-			if !isAllowed(rel) {
-				return SystemFile{}, nil
-			}
 		}
 		if !isAllowed(rel) {
 			// A framework inside another is reached through a symbolic link (Frameworks, for
 			// Versions/Current/Frameworks). Its code is in the shared cache under its real path,
 			// which dyld finds by opening the framework's directory: that much of it exists.
-			if !nestedFramework.MatchString(path) {
+			if vol != rangefs.FileSystem || !nestedFramework.MatchString(path) {
 				return SystemFile{}, nil
 			}
 			real, err := realDirectory(image, path)
@@ -215,7 +212,8 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 			return f, nil
 		}
 		entry, err := image.Stat(vol, rel)
-		if errors.Is(err, rangefs.ErrNoSystemOS) {
+		if errors.Is(err, rangefs.ErrNoSystemOS) { // a release with no cryptex has nothing there
+			known[path] = SystemFile{}
 			return SystemFile{}, nil
 		}
 		if err != nil {

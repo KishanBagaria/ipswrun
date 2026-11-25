@@ -191,7 +191,7 @@ type Config struct {
 	Unicorn  string           // path of the verified libunicorn (see EnsureUnicorn)
 	Cache    *dyldcache.Cache // the build's dyld shared cache
 	CacheDir string           // guest directory the cache files appear in
-	Home     string           // host directory behind GuestHome
+	Home     string           // host directory behind the guest's home (see HomeOf)
 	Mounts   []Mount          // more host directories the guests may change (see CheckMounts)
 	Dyld     []byte           // the build's /usr/lib/dyld
 	Drivers  []Driver         // the kernel's services, which guests reach through IOKit: none unless given
@@ -357,18 +357,16 @@ var (
 	iosUser = user{name: "mobile", home: GuestHomeIOS, shell: "/bin/sh", uid: guestUID, gid: guestUID}
 )
 
-// userOf is the user of a build whose cache this is, the Mac's when there is none.
-func userOf(cache *dyldcache.Cache) user {
-	if cache != nil && cache.Platform == dyldcache.IOS {
+// userOf is the user of a platform's builds.
+func userOf(platform dyldcache.Platform) user {
+	if platform == dyldcache.IOS {
 		return iosUser
 	}
 	return macUser
 }
 
 // HomeOf is the guest's home directory on a platform: GuestHome, or GuestHomeIOS.
-func HomeOf(platform dyldcache.Platform) string {
-	return userOf(&dyldcache.Cache{Platform: platform}).home
-}
+func HomeOf(platform dyldcache.Platform) string { return userOf(platform).home }
 
 // heapStart is where anonymous mappings start for a process of the platform's.
 func heapStart(platform dyldcache.Platform) uint64 {
@@ -382,7 +380,7 @@ func heapStart(platform dyldcache.Platform) uint64 {
 // load.
 func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Process, err error) {
 	cfg := m.cfg
-	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: userOf(cfg.Cache).uid, gid: userOf(cfg.Cache).gid, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cwd: "/", cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
+	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: m.user.uid, gid: m.user.gid, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cwd: "/", cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
 		system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
 		mapped: map[uint64]struct{}{}, brk: heapStart(cfg.Cache.Platform), nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},

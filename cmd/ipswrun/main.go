@@ -57,7 +57,7 @@ const usage = "ipswrun [flags] <release> <guest executable or source> [guest arg
 
 // checkArgs says what is wrong with the positional arguments, before anything is fetched for
 // them, or returns the releases the first one names.
-func checkArgs(known, betas []release, args []string, current, index func() ([]release, error)) (selected []release, note error, err error) {
+func checkArgs(known, betas []release, builtIn string, args []string, current, index func() ([]release, error)) (selected []release, note error, err error) {
 	if len(args) < 2 {
 		return nil, nil, fmt.Errorf("expected a release and a guest executable, got %d argument(s)", len(args))
 	}
@@ -65,7 +65,7 @@ func checkArgs(known, betas []release, args []string, current, index func() ([]r
 	if err := checkExecutable(args[1]); err != nil {
 		return nil, nil, fmt.Errorf("guest executable: %w", err)
 	}
-	return selectReleases(known, betas, args[0], current, index)
+	return selectReleases(known, betas, builtIn, args[0], current, index)
 }
 
 // checkExecutable says what is wrong with the path of an executable on the host, or of a source
@@ -838,7 +838,7 @@ releases of iOS for it.`)
 	listReleases := flag.Bool("releases", false, "print the releases all stands for (version, build, URL): the first and last of each major version, and the one Apple currently offers")
 	flag.Parse()
 
-	known := parseReleases(releasesText)
+	known, builtIn := parseReleases(releasesText), macBuiltIn
 	current := func() ([]release, error) { return fetchCurrent(*device) }
 	index := func() ([]release, error) { return fetchIndex(*device) }
 	guestOS := osOf(*device)
@@ -890,7 +890,7 @@ releases of iOS for it.`)
 			err = fmt.Errorf("--jobs must be at least 1, got %d", *jobs)
 		}
 		if err == nil {
-			releases, note, err = checkArgs(known, parseBetas(betasText, *device), flag.Args(), current, index)
+			releases, note, err = checkArgs(known, parseBetas(betasText, *device), builtIn, flag.Args(), current, index)
 		}
 		if err == nil && guestOS == iOS {
 			// Every iOS release named other than by its image is the index's, and as for one of
@@ -909,7 +909,7 @@ releases of iOS for it.`)
 				err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath))
 			}
 			if err == nil {
-				mounts, err = parseMounts(len(releases), mountValues, homeOf(guestOS))
+				mounts, err = parseMounts(len(releases), mountValues, emulator.HomeOf(platformOf(guestOS)))
 			}
 			if err == nil {
 				daemons, err = parseDaemons("agent", agentValues)

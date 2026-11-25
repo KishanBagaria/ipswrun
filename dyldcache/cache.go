@@ -28,8 +28,9 @@ type File interface {
 type Platform uint8
 
 const (
-	MacOS Platform = 1
-	IOS   Platform = 2
+	MacOS    Platform = 1
+	IOS      Platform = 2
+	Catalyst Platform = 6 // an iOS app built to run on macOS, as a Mac's
 )
 
 func (p Platform) String() string {

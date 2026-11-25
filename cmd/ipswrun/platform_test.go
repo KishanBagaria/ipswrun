@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/KishanBagaria/ipswrun/dyldcache"
 )
 
 // machO writes an arm64 Mach-O that has only the one load command given, and returns its path.
@@ -29,9 +31,9 @@ func machO(t *testing.T, cmd uint32, body ...uint32) string {
 }
 
 func TestCheckBuiltFor(t *testing.T) {
-	mac := machO(t, lcBuildVersion, platformMacOS, 11<<16, 15<<16, 0)
-	ios := machO(t, lcBuildVersion, platformIOS, 14<<16, 18<<16, 0)
-	catalyst := machO(t, lcBuildVersion, platformCatalyst, 14<<16, 18<<16, 0)
+	mac := machO(t, lcBuildVersion, uint32(dyldcache.MacOS), 11<<16, 15<<16, 0)
+	ios := machO(t, lcBuildVersion, uint32(dyldcache.IOS), 14<<16, 18<<16, 0)
+	catalyst := machO(t, lcBuildVersion, uint32(dyldcache.Catalyst), 14<<16, 18<<16, 0)
 	oldIOS := machO(t, lcVersionMinIPhone, 12<<16, 12<<16)
 	simulator := machO(t, lcBuildVersion, 7, 14<<16, 18<<16, 0)
 	script := filepath.Join(t.TempDir(), "script")

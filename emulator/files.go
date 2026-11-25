@@ -300,9 +300,9 @@ func (p *Process) lookup(path string) (target, bool) {
 	case path == guestDyld:
 		return target{kind: dataFD, data: p.dyld}, true
 	case path == passwdFile:
-		return target{kind: dataFD, data: []byte(passwd(userOf(p.cache), false))}, true
+		return target{kind: dataFD, data: []byte(passwd(p.m.user, false))}, true
 	case path == masterPasswdFile:
-		return target{kind: dataFD, data: []byte(passwd(userOf(p.cache), true))}, true
+		return target{kind: dataFD, data: []byte(passwd(p.m.user, true))}, true
 	}
 	if f, ok := p.cachePaths[path]; ok {
 		return target{kind: cacheFD, cache: f}, true
@@ -370,7 +370,7 @@ const (
 // putStat writes the struct stat64 of a file that was described without an error.
 func (p *Process) putStat(buf uint64, info fileInfo, errno int64) int64 {
 	if errno == 0 {
-		p.write(buf, statBuf(info, userOf(p.cache)))
+		p.write(buf, statBuf(info, p.m.user))
 	}
 	return errno
 }
