@@ -18,7 +18,7 @@ jobs:
       - run: make -C examples
       # The same guests for iOS, against the iOS SDK that comes with Xcode, into examples/bin/ios.
       - run: make -k -C examples PLATFORM=ios
-      - run: file examples/bin/* examples/bin/ios/* && shasum -a 256 examples/bin/* examples/bin/ios/* 2>/dev/null
+      - run: find examples/bin -type f | sort | xargs file && find examples/bin -type f | sort | xargs shasum -a 256
       # What these guests print on a real Mac, which is what they should print under ipswrun.
       - run: |
           for guest in threads swiftasync ipc; do
