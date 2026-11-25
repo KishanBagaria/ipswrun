@@ -869,26 +869,10 @@ releases of iOS for it.`)
 			fmt.Fprintf(os.Stderr, "ipswrun: %v\n", err)
 			return 2, nil
 		}
-		// Apple names no iOS release in its feed of Macs', and ipswrun has none built in: every
-		// one is the index's, the newest of them the current one, and those it cannot run are
-		// left out of it. It is asked only for a name that is not a restore image.
-		index = sync.OnceValues(func() ([]release, error) {
+		known = parseByDevice(iosText, *device)
+		index = func() ([]release, error) {
 			every, err := fetchIndex(*device)
 			return filter(every, func(r release) bool { return supportedIOS(r.Version) }), err
-		})
-		current = func() ([]release, error) {
-			every, err := index()
-			if err != nil {
-				return nil, err
-			}
-			return every[len(every)-1:], nil
-		}
-		known = nil
-		if *listReleases || (flag.NArg() > 0 && needsIndex(flag.Arg(0))) {
-			var err error
-			if known, err = index(); err != nil {
-				return 0, fmt.Errorf("the releases of %s are those api.ipsw.me lists, which %w: %w", *device, errSource, err)
-			}
 		}
 	}
 	if *listReleases {
@@ -925,12 +909,7 @@ releases of iOS for it.`)
 			err = fmt.Errorf("--jobs must be at least 1, got %d", *jobs)
 		}
 		if err == nil {
-			releases, note, err = checkArgs(known, parseBetas(betasText, *device), flag.Args(), current, index)
-		}
-		if err == nil && guestOS == iOS {
-			// Every iOS release named other than by its image is the index's, and as for one of
-			// macOS, the index is followed only to Apple's hosts.
-			err = offApple(filter(releases, func(r release) bool { return r.Build != "" }))
+			releases, note, err = checkArgs(known, parseByDevice(betasText, *device), flag.Args(), current, index)
 		}
 		if err == nil {
 			feedNote(note)

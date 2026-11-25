@@ -132,9 +132,6 @@ func TestSplitSelectorKeepsCommasOfImages(t *testing.T) {
 			t.Errorf("splitSelector(%q) = %q, want %q", selector, got, want)
 		}
 	}
-	if needsIndex(ios) || !needsIndex(ios+",18.7") || !needsIndex("latest") {
-		t.Error("needsIndex is wrong about which selectors only the index can turn into releases")
-	}
 }
 
 func TestIOSReleases(t *testing.T) {
@@ -317,6 +314,49 @@ func TestFeed(t *testing.T) {
 	}
 }
 
+func TestIOSFeed(t *testing.T) {
+	data, err := os.ReadFile("testdata/ios-feed.xml") // Apple's iOS feed of 2026-11-25, two devices of it
+	if err != nil {
+		t.Fatal(err)
+	}
+	for device, want := range map[string]string{
+		"iPhone11,2": "18.7.12 22H390 https://updates.cdn-apple.com/2026WinterFCS/6cd704b1-a653-4be2-a909-507c6058dcbb/iPhone11,2,iPhone11,4,iPhone11,6_18.7.12_22H390_Restore.ipsw",
+		"iPhone15,2": "27.2.1 24B156 https://updates.cdn-apple.com/2026FallFCS/c8706739-7c62-4ce1-82dd-5cae7bb63fbe/iPhone15,2_27.2.1_24B156_Restore.ipsw",
+	} {
+		// The image is listed under each build it restores over, and comes back once.
+		got, err := parseFeed(data, device)
+		if err != nil || len(got) != 1 || got[0].Version+" "+got[0].Build+" "+got[0].URL != want {
+			t.Errorf("%s: %v (error %v), want %q", device, got, err, want)
+		}
+		// The current release is already the last one built in.
+		known := parseByDevice(iosText, device)
+		if len(known) == 0 || known[len(known)-1].URL != got[0].URL || len(withCurrent(known, got)) != len(known) {
+			t.Errorf("%s: the last of %d releases built in is not the feed's", device, len(known))
+		}
+	}
+}
+
+func TestIOSBuiltIn(t *testing.T) {
+	offline := func() ([]release, error) {
+		t.Fatal("a release built in was looked up")
+		return nil, nil
+	}
+	known := parseByDevice(iosText, "iPhone11,2")
+	got, _, err := selectReleases(known, nil, "15.7,18.0", offline, offline)
+	if err != nil || len(got) != 2 || got[0].Build != "19H12" || got[1].Build != "22A3354" || !strings.Contains(got[0].URL, "iPhone11,2") {
+		t.Errorf("15.7,18.0 on iPhone11,2: %v (error %v)", got, err)
+	}
+	for _, r := range parseByDevice(iosText, "") {
+		t.Errorf("a release for no device: %v", r)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(iosText), "\n")[1:] {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 4 || !onApple(fields[2]) || !supportedIOS(fields[0]) {
+			t.Errorf("ios.tsv: %q", line)
+		}
+	}
+}
+
 func TestSection(t *testing.T) {
 	first := outcome{name: "macOS 11.0.1 (20B29)", stdout: "zlib 1.2.11"}
 	for want, c := range map[string]struct {
@@ -458,11 +498,11 @@ func TestBetaSelectionOffline(t *testing.T) {
 		t.Fatal("beta selection attempted a network lookup")
 		return nil, nil
 	}
-	got, _, err := selectReleases(nil, parseBetas(betasText, "Macmini9,1"), "26c5047E", offline, offline)
+	got, _, err := selectReleases(nil, parseByDevice(betasText, "Macmini9,1"), "26c5047E", offline, offline)
 	if err != nil || len(got) != 1 || got[0].Build != "26C5047e" || !onApple(got[0].URL) {
 		t.Fatalf("beta selection returned %v, %v", got, err)
 	}
-	if _, _, err := selectReleases(nil, parseBetas(betasText, "unsupported"), "26C5047e", offline, offline); err == nil {
+	if _, _, err := selectReleases(nil, parseByDevice(betasText, "unsupported"), "26C5047e", offline, offline); err == nil {
 		t.Fatal("accepted a beta for an unsupported device")
 	}
 }
@@ -510,7 +550,7 @@ func TestLocalIPSWAndRangeSelection(t *testing.T) {
 	}
 
 	// Beta build range resolves offline.
-	betas := parseBetas(betasText, "Macmini9,1")
+	betas := parseByDevice(betasText, "Macmini9,1")
 	if len(betas) >= 3 {
 		bgot, _, err := selectReleases(known, betas, betas[0].Build+".."+betas[2].Build, offline, offline)
 		if err != nil || len(bgot) != 3 {

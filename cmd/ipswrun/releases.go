@@ -29,6 +29,14 @@ import (
 //go:embed releases.tsv
 var releasesText string
 
+// ios.tsv is the same for iOS and iPadOS from 14 on, for the iPhones from iPhone11,2 and iPads from
+// iPad8,1 on: a snapshot of AppleDB's, with the columns of betas.tsv. One image restores several
+// devices, and each device has its own images, so a release is kept for a --device only where
+// that device is among those its image restores.
+//
+//go:embed ios.tsv
+var iosText string
+
 // release is a restore image to run against. One given as a bare URL or local file path has no
 // version or build until its image has been opened.
 type release struct {
@@ -103,18 +111,6 @@ func splitSelector(selector string) []string {
 	return out
 }
 
-// needsIndex reports whether a selector names an iOS release by anything but its image, which
-// only the index can turn into one.
-func needsIndex(selector string) bool {
-	for _, part := range splitSelector(selector) {
-		if !strings.HasPrefix(part, "https://") && !strings.HasPrefix(part, "http://") && !strings.HasPrefix(part, "file://") &&
-			!strings.Contains(part, "/") && !strings.HasSuffix(part, ".ipsw") {
-			return true
-		}
-	}
-	return false
-}
-
 // parseReleases reads releases.tsv: a line of column names, then one release a line.
 func parseReleases(text string) []release {
 	var out []release
@@ -149,9 +145,14 @@ func sampled(known []release) []release {
 // current release only.
 const feedURL = "https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml"
 
-// indexURL is where the releases neither releases.tsv nor the feed names are looked up, which are
-// those of another --device and those that came and went after this ipswrun was built: ipsw.me's
-// list of every restore image Apple has published for a Mac. Apple publishes no such list itself.
+// iosFeedURL is the same for each iPhone and iPad, in the same form: the list Finder and iTunes
+// restore from.
+const iosFeedURL = "https://itunes.apple.com/WebObjects/MZStore.woa/wa/com.apple.jingle.appserver.client.MZITunesClientCheck/version"
+
+// indexURL is where the releases neither the releases built in nor the feed name are looked up,
+// which are those of another --device and those that came and went after this ipswrun was built:
+// ipsw.me's list of every restore image Apple has published for a device. Apple publishes no such
+// list itself.
 const indexURL = "https://api.ipsw.me/v4/device/%s?type=ipsw"
 
 // errSource is in the error of a name only the feed or the index could have resolved: a failed
@@ -171,14 +172,18 @@ func parseFeed(data []byte, device string) ([]release, error) {
 		return next
 	}
 	var out []release
+	seen := map[string]bool{}
 	for _, version := range dict(feed, "MobileDeviceSoftwareVersionsByVersion") {
 		for _, build := range dict(dict(version, "MobileDeviceSoftwareVersions"), device) {
-			restore := dict(build, "Restore") // absent under "Unknown", which repeats the builds
+			// Absent under "Unknown" and from a "SameAs", which repeat the builds. The iOS feed
+			// also lists the image once under each build it restores over.
+			restore := dict(build, "Restore")
 			r := release{}
 			r.Version, _ = restore["ProductVersion"].(string)
 			r.Build, _ = restore["BuildVersion"].(string)
 			r.URL, _ = restore["FirmwareURL"].(string)
-			if r.Version != "" && r.Build != "" && strings.HasPrefix(r.URL, "https://") {
+			if r.Version != "" && r.Build != "" && strings.HasPrefix(r.URL, "https://") && !seen[r.URL] {
+				seen[r.URL] = true
 				out = append(out, r)
 			}
 		}
@@ -253,7 +258,11 @@ func get(from string) ([]byte, error) {
 
 // fetchCurrent asks Apple which release device is currently offered.
 func fetchCurrent(device string) ([]release, error) {
-	data, err := get(feedURL)
+	from := feedURL
+	if osOf(device) == iOS {
+		from = iosFeedURL
+	}
+	data, err := get(from)
 	if err != nil {
 		return nil, err
 	}
@@ -275,8 +284,8 @@ func fetchIndex(device string) ([]release, error) {
 //go:embed betas.tsv
 var betasText string
 
-// parseBetas reads betas.tsv, keeping the betas there are for device.
-func parseBetas(text, device string) []release {
+// parseByDevice reads betas.tsv or ios.tsv, keeping the releases there are for device.
+func parseByDevice(text, device string) []release {
 	var out []release
 	for _, line := range strings.Split(text, "\n")[1:] {
 		if fields := strings.Split(line, "\t"); len(fields) == 4 && slices.Contains(strings.Fields(fields[3]), device) {
