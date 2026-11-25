@@ -210,6 +210,10 @@ type Config struct {
 	// and error as it writes it, and none of it is kept (Process.Stdout). What the other guests
 	// write is always kept.
 	Stdout, Stderr io.Writer
+	// Launch, if not nil, finds the build's own provider of a Mach service that is looked up and
+	// that no guest provides, for launchd to start: nil if the build has none. system says the
+	// one who asks is root, and sees only the daemons.
+	Launch func(service string, system bool) (*Guest, error)
 	// Program reads a program of the build for a guest to start, whatever of the system volume
 	// guests may read: nil for a path with no file, and true for a directory.
 	Program func(path string) (image []byte, dir bool, err error)

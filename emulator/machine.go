@@ -27,6 +27,7 @@ type Machine struct {
 	named    map[string]*sharedMemory       // those shm_open knows by a name
 	xattrs   map[hostFile]map[string][]byte // the extended attributes of the home's and mounts' files (see metadata.go)
 	ioMain   *port                          // what IOKit's searches are sent to, once a process has asked for it
+	asked    map[string]bool                // the services that were looked for among the build's own, once each
 	replaced []*Process                     // processes that are no longer among procs, to be closed with them
 	deferred []func()                       // what a system call left to be done between stretches of emulation (see spawn.go)
 	pipes    uint64                         // how many pipes were ever made: the next one's number
@@ -46,7 +47,12 @@ type Guest struct {
 	// keeps what is sent to them until it does.
 	Services []string
 	Root     bool // it runs as root, not as the guests' user
+	// Owner, if not nil, is the user and group it runs as instead: a daemon's own.
+	Owner *Owner
 }
+
+// Owner is a user and its group, by their numbers.
+type Owner struct{ UID, GID uint32 }
 
 // NewMachine makes a machine with no process yet.
 func NewMachine(cfg Config) (*Machine, error) {
@@ -65,17 +71,22 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, clock: newClock()}, nil
+	return &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, clock: newClock()}, nil
 }
 
 // Spawn makes a process of a guest, ready to run from dyld's entry point. Two guests may not
 // provide the same service.
 func (m *Machine) Spawn(g Guest) (p *Process, err error) {
 	for _, name := range g.Services {
-		if s := m.services[name]; s != nil {
+		if s := m.services[name]; s != nil && s.provider != nil {
 			return nil, fmt.Errorf("the service %s is provided by both %s and %s", name, s.provider.exePath, g.Executable)
 		}
 	}
+	return m.start(g)
+}
+
+// start makes the process of a guest, and makes it the provider of its services.
+func (m *Machine) start(g Guest) (p *Process, err error) {
 	image := g.Image
 	if image == nil {
 		if image, err = os.ReadFile(g.Executable); err != nil {
@@ -92,8 +103,15 @@ func (m *Machine) Spawn(g Guest) (p *Process, err error) {
 	if g.Root {
 		p.uid, p.gid = 0, 0
 	}
+	if g.Owner != nil {
+		p.uid, p.gid = g.Owner.UID, g.Owner.GID
+	}
 	for _, name := range g.Services {
-		m.services[name] = &service{provider: p}
+		if s := m.services[name]; s != nil { // looked up already, and waited for (see onDemand)
+			s.provider = p
+		} else {
+			m.services[name] = &service{provider: p}
+		}
 	}
 	defer guard(&err)
 	return p, p.load(append([]string{p.path}, g.Args...), g.Env)

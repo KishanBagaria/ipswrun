@@ -69,6 +69,9 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 		routine = r
 	}
 	reply := &xpcDictionary{}
+	if name := request.string("name"); m.services[name] == nil && (routine == routineLookUp || routine == routineLookUpLegacy) {
+		m.onDemand(p, name)
+	}
 	s := m.services[request.string("name")]
 	if s != nil && s.port == nil {
 		s.port = &port{m: m}
@@ -125,4 +128,35 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 	}
 	p.answer(msg, xpcReply, migReply{body: body, complex: len(rights) > 0}, launchdPID)
 	return true
+}
+
+// onDemand is launchd starting the build's own daemon or agent for a service that is looked up
+// and that no guest provides, if the machine was told to (Config.Launch): the one whose launchd
+// plist names the service. The service is there at once, as launchd has it, and what is sent to
+// it waits for the daemon to check in. The daemon is started between two stretches of
+// emulation (see spawn.go).
+func (m *Machine) onDemand(p *Process, name string) {
+	if m.cfg.Launch == nil || name == "" || m.asked[name] {
+		return
+	}
+	m.asked[name] = true
+	g, err := away(m.clock, func() (*Guest, error) { return m.cfg.Launch(name, p.uid == 0) })
+	if err != nil {
+		stopf("looking for the build's provider of %s: %v", name, err)
+	}
+	if g == nil {
+		return
+	}
+	for _, provided := range g.Services {
+		m.asked[provided] = true
+		if m.services[provided] == nil {
+			m.services[provided] = &service{}
+		}
+	}
+	p.note("  launchd starts %s for %s", g.Executable, name)
+	m.deferred = append(m.deferred, func() {
+		if _, err := m.start(*g); err != nil {
+			stopf("starting %s for the service %s: %v", g.Executable, name, err)
+		}
+	})
 }

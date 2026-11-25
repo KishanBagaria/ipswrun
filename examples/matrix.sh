@@ -132,12 +132,13 @@ for guest in ${guests//,/ }; do
 	[ "$guest" != client ] || options=(--agent com.example.ipswrun.echo,com.example.ipswrun.reverse=$bin/server)
 	# adi is run beside the release's adid, the daemon it asks.
 	[ "$guest" != adi ] || options=(--daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid)
-	# Two variables of ipswrun's keep CoreFoundation from asking for cfprefsd, and go. cfprefsd
-	# reads its sandbox profile, beside what every guest may read.
-	[ "$guest" != prefs ] || options=(--agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon'
-		--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME --system /System/Library/Sandbox/Profiles/
-		--system /System/Library/FeatureFlags/ --system /System/Library/CoreServices/SystemVersion.plist --system /usr/share/icu/
-		--system /usr/lib/libobjc-trampolines.dylib)
+	# Two variables of ipswrun's keep CoreFoundation from asking for cfprefsd, and go. On macOS
+	# cfprefsd is started when it is first looked up, in both of its roles, as its launchd plists
+	# say; on iOS, where the agent has no plist of its own, both are started by hand. cfprefsd
+	# reads its sandbox profile, which every guest may.
+	[ "$guest" != prefs ] || options=(--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME --on-demand 'com.apple.cfprefsd.*')
+	[ "$guest" != prefs ] || [ "$platform" != ios ] || options=(--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME
+		--agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon')
 
 	for release in ${releases[@]+"${releases[@]}"}; do
 		if [ ${#pids[@]} -ge "$jobs" ]; then

@@ -4,17 +4,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/KishanBagaria/ipswrun/dyldcache"
 	"github.com/KishanBagaria/ipswrun/rangefs"
+	"github.com/blacktop/go-plist"
 )
 
 // CacheName is the file name of the arm64e dyld shared cache; subcaches add a suffix.
@@ -66,7 +69,11 @@ type Run struct {
 	System  []string      // system-volume files and directory prefixes (ending in "/") the guest may read; DefaultSystem if empty
 	Timeout time.Duration // for the whole run
 	Trace   bool          // print every system call to stderr
-	Survey  bool          // answer calls nothing implements with an error instead of stopping (see Config.Survey)
+	// OnDemand are the Mach services, by name or by pattern (as path.Match has them: "*" is
+	// every one), that the build's own daemon or agent is started for when one is first looked
+	// up, from its launchd plist.
+	OnDemand []string
+	Survey   bool // answer calls nothing implements with an error instead of stopping (see Config.Survey)
 	// Stdout and Stderr, if not nil, are given the guest's output as it writes it (see Config).
 	Stdout, Stderr io.Writer
 	Notes          io.Writer // told about a cache location that could not be read, unless the release has none there; os.Stderr if nil
@@ -331,12 +338,6 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		return data, false, err
 	}
 
-	build := image.Build()
-	m, err := NewMachine(Config{Program: program, Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, Stdout: run.Stdout, Stderr: run.Stderr, System: system, Trace: run.Trace, Survey: run.Survey,
-		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device(), "board": image.Board()}})
-	if err != nil {
-		return nil, cache, err
-	}
 	env := BaseEnv(HomeOf(cache.Platform))
 	for _, change := range run.Env {
 		if name, _, set := strings.Cut(change, "="); set {
@@ -344,6 +345,25 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		} else {
 			env = slices.DeleteFunc(env, func(e string) bool { return strings.HasPrefix(e, name+"=") })
 		}
+	}
+	var launch func(string, bool) (*Guest, error)
+	if len(run.OnDemand) > 0 {
+		find := launcher(image, program, env)
+		launch = func(service string, system bool) (*Guest, error) {
+			for _, pattern := range run.OnDemand {
+				if ok, _ := pathpkg.Match(pattern, service); ok {
+					return find(service, system)
+				}
+			}
+			return nil, nil
+		}
+	}
+
+	build := image.Build()
+	m, err := NewMachine(Config{Program: program, Launch: launch, Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, Stdout: run.Stdout, Stderr: run.Stderr, System: system, Trace: run.Trace, Survey: run.Survey,
+		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device(), "board": image.Board()}})
+	if err != nil {
+		return nil, cache, err
 	}
 	guests := []Guest{{Executable: run.Executable, Args: run.Args, Env: env, Services: run.Services}}
 	for _, d := range run.Daemons {
@@ -372,4 +392,113 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		}
 	}
 	return m, cache, m.Run(run.Timeout)
+}
+
+// launchdJob is what a launchd plist says of a daemon or an agent, of what is read here.
+type launchdJob struct {
+	Label                string            `plist:"Label"`
+	Program              string            `plist:"Program"`
+	ProgramArguments     []string          `plist:"ProgramArguments"`
+	MachServices         map[string]any    `plist:"MachServices"`
+	EnvironmentVariables map[string]string `plist:"EnvironmentVariables"`
+	UserName             string            `plist:"UserName"`
+	Disabled             bool              `plist:"Disabled"`
+	agent                bool
+}
+
+// launcher finds the build's provider of a Mach service among its launchd plists, which are read
+// once, when the first service is asked for: the daemons, which run as root or as the user their
+// plist names, and the agents, which run as the guests' user. A daemon of a user the build's
+// password file does not know, or whose program the system volume does not have, is not started.
+func launcher(image *rangefs.Image, program func(string) ([]byte, bool, error), env []string) func(string, bool) (*Guest, error) {
+	var daemons, agents map[string]*launchdJob
+	users := map[string]Owner{}
+	read := func(dir string, agent bool) (map[string]*launchdJob, error) {
+		jobs := map[string]*launchdJob{}
+		names, err := image.ReadDir(rangefs.FileSystem, dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range names {
+			f, err := image.Open(rangefs.FileSystem, dir+"/"+name)
+			if err != nil || f == nil || !strings.HasSuffix(name, ".plist") {
+				continue
+			}
+			data, err := f.ReadAll()
+			if err != nil {
+				return nil, err
+			}
+			job := &launchdJob{agent: agent}
+			if _, err := plist.Unmarshal(data, job); err != nil || job.Disabled {
+				continue
+			}
+			for service := range job.MachServices {
+				if jobs[service] == nil { // the first by name, for a run to repeat
+					jobs[service] = job
+				}
+			}
+		}
+		return jobs, nil
+	}
+	return func(service string, system bool) (*Guest, error) {
+		if daemons == nil {
+			var err error
+			if daemons, err = read("/System/Library/LaunchDaemons", false); err != nil {
+				return nil, err
+			}
+			if agents, err = read("/System/Library/LaunchAgents", true); err != nil {
+				return nil, err
+			}
+			if f, err := image.Open(rangefs.FileSystem, "/private/etc/passwd"); err == nil && f != nil {
+				data, err := f.ReadAll()
+				if err != nil {
+					return nil, err
+				}
+				for _, line := range strings.Split(string(data), "\n") {
+					if fields := strings.Split(line, ":"); len(fields) >= 4 && !strings.HasPrefix(line, "#") {
+						uid, err1 := strconv.ParseUint(fields[2], 10, 32)
+						gid, err2 := strconv.ParseUint(fields[3], 10, 32)
+						if err1 == nil && err2 == nil {
+							users[fields[0]] = Owner{uint32(uid), uint32(gid)}
+						}
+					}
+				}
+			}
+		}
+		job := daemons[service]
+		if a := agents[service]; a != nil && !system {
+			job = a
+		}
+		if job == nil {
+			return nil, nil
+		}
+		args := job.ProgramArguments
+		path := job.Program
+		if path == "" && len(args) > 0 {
+			path = args[0]
+		}
+		if len(args) > 0 {
+			args = args[1:]
+		}
+		g := &Guest{Executable: path, Args: args, Root: !job.agent, Services: slices.Sorted(maps.Keys(job.MachServices))}
+		if job.UserName != "" && job.UserName != "root" {
+			owner, known := users[job.UserName]
+			if !known {
+				return nil, nil
+			}
+			g.Root, g.Owner = false, &owner
+		}
+		if path == "" {
+			return nil, nil
+		}
+		var err error
+		if g.Image, _, err = program(path); err != nil || g.Image == nil {
+			return nil, err
+		}
+		g.Env = slices.Clone(env)
+		for _, name := range slices.Sorted(maps.Keys(job.EnvironmentVariables)) {
+			g.Env = append(g.Env, name+"="+job.EnvironmentVariables[name])
+		}
+		return g, nil
+	}
 }

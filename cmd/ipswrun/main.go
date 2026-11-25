@@ -411,6 +411,7 @@ type runOptions struct {
 	Daemons                []emulator.Guest
 	Mounts                 []emulator.Mount // the host side may contain {build} and {version}
 	Stream, Trace, Missing bool
+	OnDemand               []string
 	Timeout                float64
 }
 
@@ -471,7 +472,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	}
 	status.set(label+out.name, stats, stream)
 	machine, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.Unicorn, Home: home, Mounts: mounts, Services: o.Services, Executable: o.Guest, Args: o.Args,
-		Daemons: o.Daemons, Env: o.Env, System: o.System, Timeout: time.Duration(o.Timeout * float64(time.Second)), Trace: o.Trace, Survey: o.Missing, Notes: status,
+		Daemons: o.Daemons, Env: o.Env, System: o.System, Timeout: time.Duration(o.Timeout * float64(time.Second)), Trace: o.Trace, Survey: o.Missing, OnDemand: o.OnDemand, Notes: status,
 		Stdout: live(status, o.liveStdout), Stderr: live(status, o.liveStderr)})
 	status.stop()
 	pages := 0
@@ -858,9 +859,10 @@ releases of iOS for it.`)
 		flag.PrintDefaults()
 	}
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+" ("+emulator.GuestHomeIOS+" on iOS); {build} and {version} in it become the release's (default: a temporary one)")
-	var env, system, mountValues, services, daemonValues, agentValues list
+	var env, system, mountValues, services, daemonValues, agentValues, onDemand list
 	flag.Var(&agentValues, "agent", "<service>[,<service>...]=<executable> [arguments]: another guest, started beside the first as the same user, that provides these Mach services to it; its executable may be a source file, as the first's may (repeatable)")
 	flag.Var(&daemonValues, "daemon", "like --agent, for a guest that runs as root, as a daemon of the system does (repeatable)")
+	flag.Var(&onDemand, "on-demand", "<service>: start the release's own daemon or agent for this Mach service when it is first looked up, as its launchd plist says to; a pattern names several (com.apple.cfprefsd.*), and * every one (repeatable)")
 	flag.Var(&services, "service", "name of a Mach service the guest provides, as a daemon does: it can check that name in, and look it up (repeatable)")
 	flag.Var(&mountValues, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
 	flag.Var(&env, "env", "KEY=VALUE added to the environment of every guest, or KEY alone taken out of it (repeatable)")
@@ -998,7 +1000,7 @@ releases of iOS for it.`)
 		}
 	}
 	o := &options{runOptions: runOptions{Unicorn: unicorn, Cache: *cache, Device: *device, Home: *home, Report: *reportPath, Guest: guest, Args: flag.Args()[2:],
-		Env: env, System: system, Mounts: mounts, Services: services, Daemons: daemons, Stream: *stream, Trace: *trace, Missing: *missing, Timeout: *timeout},
+		Env: env, System: system, Mounts: mounts, Services: services, Daemons: daemons, Stream: *stream, Trace: *trace, Missing: *missing, OnDemand: onDemand, Timeout: *timeout},
 		bisect: *bisect, jobs: *jobs, showStatus: showStatus}
 	return o.runAll(releases)
 }
