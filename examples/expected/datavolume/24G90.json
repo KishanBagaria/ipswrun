@@ -1,0 +1,7 @@
+{
+  "build": "24G90",
+  "cache_uuid": "4C1223E5-CACE-3982-A003-6110A7A8A25C",
+  "exit_code": 0,
+  "output": "/Library: a directory\n/Library/Preferences: a directory\n/Library/Preferences/Logging: a directory\n/Library/Preferences/com.apple.security.appsandbox.plist: a file\n/private/var/db: a directory\n/private/var/db/dslocal: a directory\n/private/var/tmp: a directory\n/var: a link\n/etc/localtime: a link\n/Users/Shared: a directory\n/usr/local: a directory\n/Library/No Such Thing: No such file or directory\n/var/db is really /private/var/db\nthe preferences file begins \"<?xml\"\na file made in /private/var/tmp: made; written: 4; read back by its other name: \"kept\"; removed: 0; then: No such file or directory\n",
+  "version": "15.6.1"
+}

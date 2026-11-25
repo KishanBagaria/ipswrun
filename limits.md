@@ -10,7 +10,7 @@ This list was made by reading the code, and then checked by one [survey](#survey
 
 | # | Limit | What it blocks | Where in the code | Fixable? |
 | --- | --- | --- | --- | --- |
-| 1 | The release's daemons are started only where asked for, and of the ones nearly everything asks only notifyd runs yet: `--on-demand` starts the daemon or agent of a service when it is looked up ([below](#daemons-on-demand)), and without it a Mach service exists only if it is named with `--service`, `--agent` or `--daemon` | Frameworks silently lose logd, opendirectoryd, distnoted, trustd, securityd, tccd and fontd; daemons that need other daemons | `emulator/launchd.go` (`onDemand`), `emulator/build.go` (`launcher`) | One daemon at a time: each needs what it asks of the kernel and of launchd |
+| 1 | The release's daemons are started only where asked for, and of the ones nearly everything asks notifyd and logd run, and opendirectoryd does not: `--on-demand` starts the daemon or agent of a service when it is looked up ([below](#daemons-on-demand)), and without it a Mach service exists only if it is named with `--service`, `--agent` or `--daemon` | Frameworks silently lose opendirectoryd, distnoted, trustd, securityd, tccd and fontd; daemons that need other daemons | `emulator/launchd.go` (`onDemand`), `emulator/build.go` (`launcher`) | One daemon at a time: each needs what it asks of the kernel and of launchd |
 | 2 | A thread takes a signal only as it comes back from the kernel, or when it faults: handlers are run ([below](#signals)), but no thread is ever taken off the CPU for one. The timers that count a process's own time on the CPU (`ITIMER_VIRTUAL`, `ITIMER_PROF`) cannot be started | A handler for a thread that spins without a system call (a `SIGALRM` timeout around a loop that computes), profilers, Mach exception ports | `emulator/signals.go` | Taking a thread off the CPU is limit 7 |
 | 3 | Descriptor I/O beyond files, pipes and pairs of sockets: no socket but those of a `socketpair` of stream sockets ([below](#pairs-of-sockets); `socket` answers EACCES). Pipes are there ([below](#pipes)), and such pairs, with `select`, `poll`, libdispatch's sources and a kqueue of the guest's own ([below](#a-kqueue-of-the-guests-own)), and a file can always be read and written, to `select` and `poll` alike. Of a terminal or any other descriptor `select` finds nothing ready, a `poll` that would wait for one stops as unimplemented, and a kqueue's `EVFILT_READ` and `EVFILT_WRITE` never happen, nor do `EVFILT_VNODE` and signals there: a `kevent` that would wait for one of those stops as unimplemented | Unix-socket clients (syslog, mDNSResponder), any network code, descriptors sent over a socket, `dispatch_io` on a file, programs that watch files or read a terminal as it is typed at | `emulator/pipes.go`, `emulator/kqueue.go`, `emulator/kevent.go` | Sockets with names in the file system, yes. A real network is a policy call, since it breaks reproducibility |
 | 4 | Accelerate's BLAS and LAPACK: every release's libBLAS runs `cblas_sgemm` and the like on Apple's matrix coprocessor (AMX), whatever chip the guest is told it has, and Unicorn has no AMX; the run stops at the first AMX instruction and names it | Linear algebra through Accelerate, and what is built on it (CoreML's and BNNS's CPU paths, likely vDSP's matrix calls) | `emulator/process.go` (`amx`, `interrupt`) | Yes, [below](#amx-emulation): emulate the coprocessor in the invalid-instruction hook |
@@ -26,7 +26,7 @@ This list was made by reading the code, and then checked by one [survey](#survey
 
 These two would unlock the most code for the least work, and each keeps to the rules above.
 
-1. **A data volume** ([below](#the-data-volume)), read through to the release's own template of one. logd stops for want of it, and after logd opendirectoryd is what nearly every program looks up next; until both run, `--on-demand '*'` does not get far, and is not the default.
+1. **opendirectoryd under `--on-demand`.** notifyd and logd run, the second on a data volume ([below](#the-data-volume)). opendirectoryd is what nearly every program looks up next, and it calls `reboot`; until it runs, `--on-demand '*'` does not get far, and is not the default.
 2. **Taking a thread off the CPU** (limit 7). Signals, their handlers, faults and timers are there, but a thread that spins takes no signal, and nothing else runs meanwhile.
 
 ## Stubs that answer success
@@ -135,7 +135,7 @@ Left as they were, still stopping or listed by name:
 
 It is not the default, and `'*'` does not get far: a daemon that makes a call that is not implemented stops the run and names it, as any guest does, and two that nearly every program looks up each do, on macOS 27.2.1:
 
-- **logd** (`com.apple.logd`) keeps its files on the data volume, which no run has: it makes `/private/var/db/diagnostics` and, in `/Library/Preferences`, `Logging`, and traps when it cannot. Given `/private/var/db` as a mount it gets as far as the second. On the way it needed, and now has: `fchmodat` and `fchownat`, a file's owner kept (it gives its directory to root and the group admin), `kern.boottime`, `kern.bootsessionuuid`, and the trap for exclaves (88), each [below](#what-logd-asked-for).
+- **logd** (`com.apple.logd`) runs, given a data volume to keep its files on ([below](#the-data-volume)) and the notifyd it asks: `--data <dir> --on-demand 'com.apple.logd*' --on-demand com.apple.system.notification_center`. [examples/oslog.c](examples/oslog.c) prints the same with it as natively on every macOS release in the matrix, and on macOS 15.6.1 and 27.2.1 what the guest logged was found in the `tracev3` file logd wrote. Three things it asks are not there, each named by `--missing`, and it goes on without them: two requests of the host's port (messages 225 and 425, the second for the kernel's extensions, which it says on its standard error it could not read) and a kqueue's watch of a file (`EVFILT_VNODE`). What it needed on the way: `fchmodat` and `fchownat`, a file's owner kept, `kern.boottime`, `kern.bootsessionuuid`, and the trap for exclaves (88), each [below](#what-logd-asked-for). Not on iOS, which has no data volume here.
 - **opendirectoryd** (`com.apple.system.opendirectoryd.libinfo`) calls `reboot`, which is how a daemon asks the kernel something of the boot here, and is not implemented.
 
 A daemon whose plist names a user the build's password file does not have, or whose program is not on the system volume, is not started, and its service is not there. The other keys of a plist (`LaunchEvents`, `Sockets`, `KeepAlive`, the session an agent is limited to, `RunAtLoad`) are not acted on: a daemon is started for a lookup of one of its Mach services and for nothing else.
@@ -149,7 +149,21 @@ A daemon whose plist names a user the build's password file does not have, or wh
 
 ### The data volume
 
-What logd, dirhelper, opendirectoryd and cfprefsd's daemon keep is on a device's data volume, and a run has none: `/private/var`, `/Library` and the like are a few names with nothing in them. A macOS release says what is on one: `/usr/share/firmlinks` lists the paths that are the data volume's (`/Library`, `/private`, `/Users`, `/usr/local` and 15 more on macOS 27.2.1), and `/System/Library/Templates/Data` is what a newly installed Mac's starts as, some 12,000 files in 5,800 directories, `private/var/db` and `Library/Preferences/Logging` among them. That is the next thing to build: a data volume that reads through to the release's template and keeps what is written to it in a directory of the host's, as the home is kept. It was not built here, as it changes how every path is resolved. For iOS the template was not looked for.
+What logd, dirhelper, opendirectoryd and cfprefsd's daemon keep is on a device's data volume, beside the sealed one the system is on. `--data <dir>` gives the machine one, in a directory of the host's, as a macOS release itself describes it:
+
+- **Which paths are the volume's** is in the release's `/usr/share/firmlinks`: `/Library`, `/private`, `/Users`, `/usr/local` and 15 more on macOS 27.2.1. Each whose directory a new volume has becomes a mount into the host directory. The home and any `--mount` are still their own.
+- **What a newly installed Mac's has in it** is the release's `/System/Library/Templates/Data`, some 12,000 files in 5,800 directories on macOS 27.2.1. A directory of the volume is given what the template has in it (its directories, its symbolic links, and its files with their permission bits) the first time a path leads into it, and never again: what a guest then makes, changes or removes stays so, in the next run too, as the host directory and the list of what was filled (`<dir>/filled`) are kept.
+
+[examples/datavolume.c](examples/datavolume.c) prints the same with it as natively on every macOS release in the matrix. With it came that `/etc`, `/tmp` and `/var` are the symbolic links into `/private` that every release has (they were directories, and `/var` and `/tmp` did not lead to `/private` at all), so `realpath("/var/db")` is `/private/var/db`.
+
+What is not as on a Mac:
+
+- **A new Mac's time zone.** The template's `/etc/localtime` is a link to `US/Pacific`, so with a data volume the time is Pacific time where without one it is GMT. That is what a new Mac says before anyone sets it up.
+- **Whose the template's files are, and the modes of its directories,** are not read from the image: the files are the guests' user's, as everything is, and the directories 755.
+- **The files of a directory are copied when it is first entered,** read or not. A directory whose files come to more than 64 MB stops the run and says so; none that was entered here does.
+- **A symbolic link that leads out of its mount** (an absolute one, as `/etc/localtime` is) can be read as a link but not followed: opening it is EACCES.
+- **iOS** has no `firmlinks` and no template: its data volume is `/private/var`, and what a new one has was not looked for. `--data` says so and stops.
+- **It is not the default.** Without `--data` there is no data volume, as before.
 
 ## Starting programs
 
@@ -279,5 +293,5 @@ These come from reading the code and are the ones most worth a run on a Mac.
 
 - **JavaScriptCore's JIT.** `MAP_JIT` and `pthread_jit_write_protect_np` use system registers that only Apple's cores have, which is probably an undefined instruction here. `JSC_useJIT=0` should still run JavaScriptCore as an interpreter.
 - **SQLite WAL and Core Data.** Core Data opens WAL stores and may hold two connections to one. With `-shm` mapped privately, each connection sees its own copy.
-- **os_log output.** Without logd, logs go nowhere. `--env OS_ACTIVITY_DT_MODE=1` may copy them to standard error, which would help when debugging daemons.
+- **os_log output.** Without logd, logs go nowhere; with it ([above](#daemons-on-demand)) they are in its files, which nothing here reads back. `os_log_type_enabled` says debug messages are logged, with logd or without, where a Mac says they are not; why was not looked for. `--env OS_ACTIVITY_DT_MODE=1` may copy them to standard error, which would help when debugging daemons.
 - **Speed.** Only one guest thread runs at a time, on one host core. A CPU-bound benchmark, such as 10 MB through CommonCrypto's SHA-256, would put a number on the slowdown against native.

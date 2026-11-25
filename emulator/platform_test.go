@@ -94,7 +94,7 @@ func TestUserByPlatform(t *testing.T) {
 		if st := statBuf(fileInfo{}, userOf(c.platform)); le.Uint32(st[16:]) != 501 || le.Uint32(st[20:]) != c.gid {
 			t.Errorf("%v: files owned by %d:%d", c.platform, le.Uint32(st[16:]), le.Uint32(st[20:]))
 		}
-		if err := CheckMounts([]Mount{{c.home, t.TempDir()}}, c.home); err == nil {
+		if err := CheckMounts([]Mount{{Guest: c.home, Host: t.TempDir()}}, c.home); err == nil {
 			t.Errorf("%v: a mount at the home is taken", c.platform)
 		}
 	}

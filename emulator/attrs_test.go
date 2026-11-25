@@ -130,7 +130,7 @@ func TestOnlyTheHomeCanBeChanged(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("not run"), 0o666); err != nil {
 		t.Fatal(err)
 	}
-	p := testMountsProcess(t, exe, []Mount{{GuestHome, t.TempDir()}})
+	p := testMountsProcess(t, exe, []Mount{{Guest: GuestHome, Host: t.TempDir()}})
 	if n := p.doOpen(GuestHome+"/file", 0x201, 0o644); n != 3 { // O_WRONLY|O_CREAT
 		t.Fatalf("creating a file under the home: %d", n)
 	}
@@ -159,7 +159,7 @@ func TestOnlyTheHomeCanBeChanged(t *testing.T) {
 // A mount is a second place the guest can change, and the directories on the way to it exist.
 func TestMounts(t *testing.T) {
 	host := t.TempDir()
-	p := testMountsProcess(t, "", []Mount{{"/var/db/fpsd", host}, {GuestHome, t.TempDir()}})
+	p := testMountsProcess(t, "", []Mount{{Guest: "/var/db/fpsd", Host: host}, {Guest: GuestHome, Host: t.TempDir()}})
 	if errno := p.doMkdir("/var/db/fpsd/adi", 0o700); errno != 0 {
 		t.Fatalf("mkdir under the mount: %d", errno)
 	}
@@ -172,12 +172,12 @@ func TestMounts(t *testing.T) {
 	if above, ok := p.resolve("/var/db"); !ok || above.kind != dirFD || above.root != nil {
 		t.Errorf("the directory above the mount resolved to %+v, %v", above, ok)
 	}
-	for _, bad := range [][]Mount{{{"/", host}}, {{"var/db", host}}, {{GuestHome + "/", host}}, {{"/var/db", host}, {"/var/./db", host}}} {
+	for _, bad := range [][]Mount{{{Guest: "/", Host: host}}, {{Guest: "var/db", Host: host}}, {{Guest: GuestHome + "/", Host: host}}, {{Guest: "/var/db", Host: host}, {Guest: "/var/./db", Host: host}}} {
 		if CheckMounts(bad, GuestHome) == nil {
 			t.Errorf("mounts %v were accepted", bad)
 		}
 	}
-	if err := CheckMounts([]Mount{{"/Users", host}, {"/var/db", host}}, GuestHome); err != nil {
+	if err := CheckMounts([]Mount{{Guest: "/Users", Host: host}, {Guest: "/var/db", Host: host}}, GuestHome); err != nil {
 		t.Errorf("a mount above the home, and another: %v", err)
 	}
 	for name, errno := range map[string]int64{
@@ -214,7 +214,7 @@ func TestSymlinkContainment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := testMountsProcess(t, "", []Mount{{GuestHome, home}})
+	p := testMountsProcess(t, "", []Mount{{Guest: GuestHome, Host: home}})
 	for _, bad := range []string{GuestHome + "/rel-escape", GuestHome + "/abs-escape"} {
 		if n := p.doOpen(bad, 0, 0); n >= 0 {
 			t.Errorf("open(%s) succeeded with fd %d, want error", bad, n)
@@ -240,7 +240,7 @@ func TestSymlinkContainment(t *testing.T) {
 
 // Allowed system directories list their entries instead of appearing empty.
 func TestSystemDirListing(t *testing.T) {
-	p := testMountsProcess(t, "", []Mount{{GuestHome, t.TempDir()}})
+	p := testMountsProcess(t, "", []Mount{{Guest: GuestHome, Host: t.TempDir()}})
 	p.system = func(path string) (SystemFile, error) {
 		switch path {
 		case "/System/Library/FeatureFlags":
@@ -308,4 +308,64 @@ func TestSystemLinkToCacheDirectory(t *testing.T) {
 			t.Errorf("readlink of the directory: %d, want EINVAL", n)
 		}
 	})
+}
+
+// A path of the data volume is read through to the release's template: a directory is given
+// what the template has in it once, and what a guest then removes stays removed, for the next
+// run too.
+func TestDataVolume(t *testing.T) {
+	template := map[string]TemplateEntry{
+		".":                   {Dir: true, Names: []string{"Preferences", "zone"}},
+		"Preferences":         {Dir: true, Names: []string{"Logging", "a.plist"}},
+		"Preferences/Logging": {Dir: true},
+		"Preferences/a.plist": {Size: 5, Mode: 0o640, Read: func() ([]byte, error) { return []byte("plist"), nil }},
+		"zone":                {Link: "Preferences/Logging"},
+	}
+	asked := 0
+	host, record := t.TempDir(), filepath.Join(t.TempDir(), "filled")
+	mount := Mount{Guest: "/Library", Host: host, Record: record, Template: func(rel string) (TemplateEntry, error) {
+		asked++
+		return template[rel], nil
+	}}
+	p := testMountsProcess(t, "", []Mount{mount, {Guest: GuestHome, Host: t.TempDir()}})
+	if _, err := os.Lstat(filepath.Join(host, "Preferences")); err == nil {
+		t.Fatal("the template was copied before any path led into the volume")
+	}
+	p.resolve("/Library/Preferences/a.plist")
+	if data, err := os.ReadFile(filepath.Join(host, "Preferences", "a.plist")); err != nil || string(data) != "plist" {
+		t.Errorf("the template's file: %q, %v", data, err)
+	}
+	if st, err := os.Stat(filepath.Join(host, "Preferences", "a.plist")); err != nil || st.Mode().Perm() != 0o640 {
+		t.Errorf("the template's file has mode %v (%v)", st.Mode(), err)
+	}
+	if link, err := os.Readlink(filepath.Join(host, "zone")); err != nil || link != "Preferences/Logging" {
+		t.Errorf("the template's link: %q, %v", link, err)
+	}
+	if st, err := os.Stat(filepath.Join(host, "Preferences", "Logging")); err != nil || !st.IsDir() {
+		t.Errorf("the template's directory: %v", err)
+	}
+	// Removed, a file of the template's does not come back, and nothing is asked twice.
+	if errno := p.doUnlink("/Library/Preferences/a.plist", false); errno != 0 {
+		t.Fatalf("unlink: %d", errno)
+	}
+	before := asked
+	if n := p.doOpen("/Library/Preferences/a.plist", 0, 0); n != -eNOENT {
+		t.Errorf("opening what was removed: %d", n)
+	}
+	if asked != before {
+		t.Errorf("the template was asked %d more times about directories it had filled", asked-before)
+	}
+	// Nor in a run after this one, which reads what was filled.
+	again := testMountsProcess(t, "", []Mount{mount, {Guest: GuestHome, Host: t.TempDir()}})
+	before = asked
+	if n := again.doOpen("/Library/Preferences/a.plist", 0, 0); n != -eNOENT || asked != before {
+		t.Errorf("in the next run: open %d, the template asked %d times", n, asked-before)
+	}
+	// The root's links to /private are links, and lead there.
+	if _, info, errno := p.describePath("lstat", "/var", false); errno != 0 || info.mode != modeLink {
+		t.Errorf("lstat /var: mode %o errno %d", info.mode, errno)
+	}
+	if got := p.absolute("/var/db/x"); got != "/private/var/db/x" {
+		t.Errorf("/var/db/x is %s", got)
+	}
 }

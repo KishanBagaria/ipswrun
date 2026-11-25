@@ -404,7 +404,7 @@ type options struct {
 // runOptions is what one release is run with: all a worker is sent.
 type runOptions struct {
 	Unicorn, Cache, Device string
-	Home, Report           string // may contain {build} and {version}
+	Home, Report, Data     string // may contain {build} and {version}
 	Guest                  string
 	Args, Env, System      []string
 	Services               []string
@@ -459,6 +459,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		}
 		defer os.RemoveAll(home)
 	}
+	data := perRelease.Replace(o.Data)
 	mounts := slices.Clone(o.Mounts)
 	for i := range mounts {
 		mounts[i].Host = perRelease.Replace(mounts[i].Host)
@@ -471,7 +472,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		stats, stream = image.Stats, image.StreamProgress
 	}
 	status.set(label+out.name, stats, stream)
-	machine, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.Unicorn, Home: home, Mounts: mounts, Services: o.Services, Executable: o.Guest, Args: o.Args,
+	machine, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.Unicorn, Home: home, Data: data, Mounts: mounts, Services: o.Services, Executable: o.Guest, Args: o.Args,
 		Daemons: o.Daemons, Env: o.Env, System: o.System, Timeout: time.Duration(o.Timeout * float64(time.Second)), Trace: o.Trace, Survey: o.Missing, OnDemand: o.OnDemand, Notes: status,
 		Stdout: live(status, o.liveStdout), Stderr: live(status, o.liveStderr)})
 	status.stop()
@@ -864,6 +865,7 @@ several of these separated by commas. With an iPhone or iPad --device (iPhone11,
 releases of iOS for it.`)
 		flag.PrintDefaults()
 	}
+	data := flag.String("data", "", "host directory to be the machine's data volume, where a device keeps what changes (/Library, /private/var, /Users and the rest a macOS release names): what the release has for a new one, and then what the guests make of it, kept for the next run; {build} and {version} in it become the release's (default: none)")
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+" ("+emulator.GuestHomeIOS+" on iOS); {build} and {version} in it become the release's (default: a temporary one)")
 	var env, system, mountValues, services, daemonValues, agentValues, onDemand list
 	flag.Var(&agentValues, "agent", "<service>[,<service>...]=<executable> [arguments]: another guest, started beside the first as the same user, that provides these Mach services to it; its executable may be a source file, as the first's may (repeatable)")
@@ -949,7 +951,7 @@ releases of iOS for it.`)
 				err = fmt.Errorf("--bisect needs at least 2 releases, got %d", len(releases))
 			}
 			if err == nil {
-				err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath))
+				err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "data", *data), checkPerRelease(len(releases), "report", *reportPath))
 			}
 			if err == nil {
 				mounts, err = parseMounts(len(releases), mountValues, emulator.HomeOf(platformOf(guestOS)))
@@ -1005,7 +1007,7 @@ releases of iOS for it.`)
 			return 0, err
 		}
 	}
-	o := &options{runOptions: runOptions{Unicorn: unicorn, Cache: *cache, Device: *device, Home: *home, Report: *reportPath, Guest: guest, Args: flag.Args()[2:],
+	o := &options{runOptions: runOptions{Unicorn: unicorn, Cache: *cache, Device: *device, Home: *home, Data: *data, Report: *reportPath, Guest: guest, Args: flag.Args()[2:],
 		Env: env, System: system, Mounts: mounts, Services: services, Daemons: daemons, Stream: *stream, Trace: *trace, Missing: *missing, OnDemand: onDemand, Timeout: *timeout},
 		bisect: *bisect, jobs: *jobs, showStatus: showStatus}
 	return o.runAll(releases)

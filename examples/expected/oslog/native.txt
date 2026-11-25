@@ -1,0 +1,2 @@
+a log of its own; logged at all: 1, errors: 1, faults: 1
+logged

@@ -58,6 +58,7 @@ type Run struct {
 	Unicorn    string   // path of the verified libunicorn (see EnsureUnicorn)
 	Home       string   // host directory behind the guest's home (see HomeOf)
 	Mounts     []Mount  // more host directories the guests may change (see CheckMounts)
+	Data       string   // host directory that is the machine's data volume, if it has one (see data.go)
 	Services   []string // the Mach services the guest provides: the names it may check in with launchd
 	Executable string   // host path of the guest Mach-O (arm64, linked against the cache), or with SystemPrefix its path in the build
 	Args       []string // guest arguments after argv[0]
@@ -346,6 +347,14 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 			env = slices.DeleteFunc(env, func(e string) bool { return strings.HasPrefix(e, name+"=") })
 		}
 	}
+	mounts := run.Mounts
+	if run.Data != "" {
+		volume, err := dataVolume(image, run.Data)
+		if err != nil {
+			return nil, cache, err
+		}
+		mounts = append(slices.Clone(mounts), volume...)
+	}
 	var launch func(string, bool) (*Guest, error)
 	if len(run.OnDemand) > 0 {
 		find := launcher(image, program, env)
@@ -360,7 +369,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 	}
 
 	build := image.Build()
-	m, err := NewMachine(Config{Program: program, Launch: launch, Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, Stdout: run.Stdout, Stderr: run.Stderr, System: system, Trace: run.Trace, Survey: run.Survey,
+	m, err := NewMachine(Config{Program: program, Launch: launch, Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, Stdout: run.Stdout, Stderr: run.Stderr, System: system, Trace: run.Trace, Survey: run.Survey,
 		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device(), "board": image.Board()}})
 	if err != nil {
 		return nil, cache, err
@@ -392,6 +401,64 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		}
 	}
 	return m, cache, m.Run(run.Timeout)
+}
+
+// The data volume, as a release has it: the list of the paths that are that volume's, each
+// with where on the volume it is, and what a newly installed Mac's volume has in it.
+const (
+	firmlinks    = "/usr/share/firmlinks"
+	dataTemplate = "/System/Library/Templates/Data"
+)
+
+// dataVolume is the mounts that make a host directory the machine's data volume: one for each
+// path the release says is that volume's and whose directory its template has, read through to
+// the template.
+func dataVolume(image *rangefs.Image, host string) ([]Mount, error) {
+	f, err := image.Open(rangefs.FileSystem, firmlinks)
+	if err == nil && f == nil {
+		err = fmt.Errorf("the release has no %s to say which paths are its data volume's, as a macOS release has", firmlinks)
+	}
+	var list []byte
+	if err == nil {
+		list, err = f.ReadAll()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("a data volume: %w", err)
+	}
+	var mounts []Mount
+	for _, line := range strings.Split(string(list), "\n") {
+		guest, rel, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		at := dataTemplate + "/" + rel
+		if entry, err := image.Stat(rangefs.FileSystem, at); err != nil {
+			return nil, fmt.Errorf("a data volume: %w", err)
+		} else if entry.Kind != rangefs.Directory {
+			continue // a path of the volume that a new one does not have
+		}
+		dir := filepath.Join(host, "volume", filepath.FromSlash(rel))
+		if err := os.MkdirAll(dir, 0o777); err != nil {
+			return nil, err
+		}
+		mounts = append(mounts, Mount{Guest: guest, Host: dir, Record: filepath.Join(host, "filled"), Template: func(sub string) (TemplateEntry, error) {
+			path := pathpkg.Join(at, sub)
+			entry, err := image.Stat(rangefs.FileSystem, path)
+			switch {
+			case err != nil:
+				return TemplateEntry{}, err
+			case entry.Kind == rangefs.Directory:
+				names, err := image.ReadDir(rangefs.FileSystem, path)
+				return TemplateEntry{Dir: true, Names: names}, err
+			case entry.Kind == rangefs.Symlink:
+				return TemplateEntry{Link: entry.Target}, nil
+			case entry.Kind == rangefs.Regular:
+				return TemplateEntry{Size: entry.File.Size(), Read: entry.File.ReadAll, Mode: entry.File.Mode()}, nil
+			}
+			return TemplateEntry{}, nil
+		}})
+	}
+	return mounts, nil
 }
 
 // launchdJob is what a launchd plist says of a daemon or an agent, of what is read here.

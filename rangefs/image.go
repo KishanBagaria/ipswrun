@@ -416,6 +416,9 @@ func (m *Image) ReadDir(vol, path string) ([]string, error) {
 	return names, nil
 }
 
+// Mode is the file's permission bits.
+func (f *File) Mode() uint32 { return uint32(f.file.Mode.Perm()) }
+
 // Size is the file's length in bytes.
 func (f *File) Size() int64 { return f.file.Size }
 

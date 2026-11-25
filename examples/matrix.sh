@@ -115,6 +115,8 @@ for guest in ${guests//,/ }; do
 	[ "$platform" != ios ] || [ "$guest" != adi ] || continue
 	# shell runs /bin/sh and /bin/echo, which iOS has not.
 	[ "$platform" != ios ] || [ "$guest" != shell ] || continue
+	# datavolume and oslog need a data volume, which only a macOS release says how to make.
+	[ "$platform" != ios ] || { [ "$guest" != datavolume ] && [ "$guest" != oslog ]; } || continue
 	if [ "$(uname)" = Darwin ]; then
 		make -s -C examples PLATFORM=$platform "${bin#examples/}/$guest" || exit
 	elif [ ! -x "$bin/$guest" ]; then
@@ -137,6 +139,10 @@ for guest in ${guests//,/ }; do
 	# say; on iOS, where the agent has no plist of its own, both are started by hand. cfprefsd
 	# reads its sandbox profile, which every guest may.
 	# notify asks the release's own notifyd, started when it is first looked up.
+	# datavolume is given a new data volume, and oslog one for the release's own logd to keep
+	# its files on, with the notifyd logd asks.
+	[ "$guest" != datavolume ] || options=(--data "$out/data-{build}")
+	[ "$guest" != oslog ] || options=(--data "$out/data-{build}" --on-demand 'com.apple.logd*' --on-demand com.apple.system.notification_center)
 	[ "$guest" != notify ] || options=(--on-demand com.apple.system.notification_center)
 	[ "$guest" != prefs ] || options=(--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME --on-demand 'com.apple.cfprefsd.*')
 	[ "$guest" != prefs ] || [ "$platform" != ios ] || options=(--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME
@@ -155,7 +161,7 @@ wait
 
 failed=0
 for guest in ${guests//,/ }; do
-	if [ "$platform" = ios ] && { [ "$guest" = adi ] || [ "$guest" = shell ]; }; then
+	if [ "$platform" = ios ] && { [ "$guest" = adi ] || [ "$guest" = shell ] || [ "$guest" = datavolume ] || [ "$guest" = oslog ]; }; then
 		echo "== $guest: not run on iOS"
 		continue
 	fi

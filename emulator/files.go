@@ -149,6 +149,11 @@ func hostErrno(err error) int64 {
 type mounted struct {
 	guest string
 	root  *os.Root
+	// Of a path of the data volume (see data.go): what the release's template has there, the
+	// directories that have been given it, and the file that is kept of which.
+	template  func(rel string) (TemplateEntry, error)
+	populated map[string]bool
+	record    *os.File
 }
 
 func openMounts(mounts []Mount) ([]mounted, error) {
@@ -164,7 +169,13 @@ func openMounts(mounts []Mount) ([]mounted, error) {
 			closeMounts(out)
 			return nil, err
 		}
-		out = append(out, mounted{guest: canonical(m.Guest), root: root})
+		mt := mounted{guest: canonical(m.Guest), root: root, template: m.Template}
+		if err := mt.openRecord(m.Record); err != nil {
+			root.Close()
+			closeMounts(out)
+			return nil, err
+		}
+		out = append(out, mt)
 	}
 	slices.SortStableFunc(out, func(a, b mounted) int { return len(b.guest) - len(a.guest) })
 	return out, nil
@@ -174,6 +185,9 @@ func closeMounts(mounts []mounted) {
 	for _, m := range mounts {
 		if m.root != nil {
 			m.root.Close()
+		}
+		if m.record != nil {
+			m.record.Close()
 		}
 	}
 }
@@ -238,7 +252,7 @@ func canonical(path string) string {
 	switch {
 	case under(path, cryptexLink):
 		path = cryptex + path[len(cryptexLink):]
-	case under(path, "/etc"):
+	case under(path, "/etc"), under(path, "/var"), under(path, "/tmp"): // links to the same under /private
 		path = "/private" + path
 	}
 	return path
@@ -263,19 +277,25 @@ func passwd(u user, master bool) string {
 func crcInode(path string) uint64 { return uint64(crc32.ChecksumIEEE([]byte(path)) & 0xFFFFFF) }
 
 // Mount is a host directory the guest sees, and may change, at a guest directory. The home is one.
-type Mount struct{ Guest, Host string }
+type Mount struct {
+	Guest, Host string
+	// Template, of a path of the data volume, is what the release's template of one has at a
+	// path under it, and Record the host file kept of the directories given that (see data.go).
+	Template func(rel string) (TemplateEntry, error)
+	Record   string
+}
 
 // CheckMounts says what is wrong with the mounts a guest is given besides its home (GuestHome or
 // GuestHomeIOS): each is at an absolute guest directory of its own, and neither the root nor the
 // home.
 func CheckMounts(mounts []Mount, home string) error {
-	seen := map[string]bool{home: true}
+	seen := map[string]bool{canonical(home): true}
 	for _, m := range mounts {
 		guest := canonical(m.Guest)
 		switch {
 		case !strings.HasPrefix(m.Guest, "/") || guest == "/":
 			return fmt.Errorf("a mount at %q: it has to be at an absolute guest directory other than the root", m.Guest)
-		case guest == home:
+		case guest == canonical(home):
 			return fmt.Errorf("a mount at %s: that is the guest's home, which is given as the home", guest)
 		case seen[guest]:
 			return fmt.Errorf("two mounts at %s", guest)
@@ -302,6 +322,21 @@ func (p *Process) resolve(path string) (target, bool) {
 	return t, ok
 }
 
+// rootLinks are the names in the root directory that every release has as symbolic links to
+// the same under /private, which canonical follows.
+var rootLinks = map[string]string{"/etc": "private/etc", "/tmp": "private/tmp", "/var": "private/var"}
+
+// rootLink is the text of the link a path names, if it names one of those itself.
+func (p *Process) rootLink(path string) string {
+	if path == "" {
+		return ""
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = p.workingDirectory() + "/" + path
+	}
+	return rootLinks[pathpkg.Clean(path)]
+}
+
 // absolute is the canonical form of a guest path, relative to the working directory or not.
 func (p *Process) absolute(path string) string {
 	if !strings.HasPrefix(path, "/") {
@@ -326,9 +361,10 @@ func (p *Process) lookup(path string) (target, bool) {
 	if f, ok := p.cachePaths[path]; ok {
 		return target{kind: cacheFD, cache: f}, true
 	}
-	for _, m := range p.mounts {
+	for i, m := range p.mounts {
 		switch {
 		case under(path, m.guest):
+			p.m.populate(&p.mounts[i], m.rel(path))
 			return target{kind: hostFD, root: m.root, rel: m.rel(path)}, true
 		case under(m.guest, path): // on the way to it
 			return target{kind: dirFD}, true
@@ -1073,6 +1109,9 @@ func sysTruncate(p *Process, a []uint64) int64 {
 func (p *Process) doReadlink(path string, buf, size uint64) int64 {
 	t, ok := p.resolve(path)
 	link := t.link // one of the system volume's
+	if root := p.rootLink(path); root != "" {
+		t, link = target{}, root
+	}
 	switch {
 	case t.root != nil:
 		var err error

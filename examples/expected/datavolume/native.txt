@@ -1,0 +1,15 @@
+/Library: a directory
+/Library/Preferences: a directory
+/Library/Preferences/Logging: a directory
+/Library/Preferences/com.apple.security.appsandbox.plist: a file
+/private/var/db: a directory
+/private/var/db/dslocal: a directory
+/private/var/tmp: a directory
+/var: a link
+/etc/localtime: a link
+/Users/Shared: a directory
+/usr/local: a directory
+/Library/No Such Thing: No such file or directory
+/var/db is really /private/var/db
+the preferences file begins "<?xml"
+a file made in /private/var/tmp: made; written: 4; read back by its other name: "kept"; removed: 0; then: No such file or directory

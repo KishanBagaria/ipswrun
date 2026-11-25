@@ -71,7 +71,7 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err := CheckMounts(cfg.Mounts, u.home); err != nil {
 		return nil, err
 	}
-	mounts, err := openMounts(append([]Mount{{u.home, cfg.Home}}, cfg.Mounts...))
+	mounts, err := openMounts(append([]Mount{{Guest: u.home, Host: cfg.Home}}, cfg.Mounts...))
 	if err != nil {
 		return nil, err
 	}
