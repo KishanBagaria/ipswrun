@@ -551,6 +551,43 @@ const (
 	osVariantIOS = 0x70010000FBAAAAAA
 )
 
+// cpuFamilies is the CPUFAMILY_ARM_* of mach/machine.h of the chip in each iPhone and iPad an iOS
+// release of 14 or later runs on, by the product type's generation (iPhone14) or, where one
+// generation has two chips, by the product type itself.
+var cpuFamilies = map[string]uint64{
+	"iPhone11":   0x07d34b9f, // A12 (Vortex and Tempest)
+	"iPhone12":   0x462504d2, // A13 (Lightning and Thunder)
+	"iPhone13":   0x1b588bb3, // A14 (Firestorm and Icestorm)
+	"iPhone14":   0xda33d83d, // A15 (Avalanche and Blizzard)
+	"iPhone15":   0x8765edea, // A16 (Everest and Sawtooth)
+	"iPhone16":   0x2876f5b5, // A17 Pro (Coll)
+	"iPhone17":   0x204526d0, // A18 (Tupai)
+	"iPhone17,1": 0x75d4acb9, // A18 Pro (Tahiti)
+	"iPhone17,2": 0x75d4acb9,
+	"iPad8":      0x07d34b9f, // A12X and A12Z
+	"iPad11":     0x07d34b9f, // A12
+	"iPad12":     0x462504d2, // A13
+	"iPad13":     0x1b588bb3, // A14 and M1
+	"iPad14":     0xda33d83d, // A15 and M2
+	"iPad15":     0xfa33415e, // M3 (Ibiza)
+	"iPad15,7":   0x8765edea, // A16
+	"iPad15,8":   0x8765edea,
+	"iPad16":     0x6f5129ac, // M4 (Donan)
+	"iPad16,1":   0x2876f5b5, // A17 Pro
+	"iPad16,2":   0x2876f5b5,
+}
+
+// chipFamily is the hw.cpufamily of the device of a product type (iPhone11,2); false for one
+// cpuFamilies does not know.
+func chipFamily(product string) (uint64, bool) {
+	if family, ok := cpuFamilies[product]; ok {
+		return family, true
+	}
+	generation, _, _ := strings.Cut(product, ",")
+	family, ok := cpuFamilies[generation]
+	return family, ok
+}
+
 // sysctlValue is a uint64 or a string.
 func (p *Process) sysctlValue(name string) (any, bool) {
 	if p.sysctls == nil {
@@ -588,6 +625,12 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			p.sysctls["hw.machine"], p.sysctls["hw.model"] = os("model", "iPhone"), board
 			p.sysctls["hw.targettype"] = strings.TrimSuffix(board, "AP")
 			p.sysctls["kern.osvariant_status"] = n(osVariantIOS)
+			// Its processor is the device's chip, not the Mac's M1. The kernel has no
+			// hw.cpubrand (a Mac's brand is machdep.cpu.brand_string), so an iPhone says none.
+			if family, ok := chipFamily(os("model", "")); ok {
+				p.sysctls["hw.cpufamily"] = n(family)
+			}
+			delete(p.sysctls, "hw.cpubrand")
 			// What a Mac says of the macOS version it reports to old programs (10.16) and of the
 			// iOS its Catalyst apps see: an iPhone has neither.
 			delete(p.sysctls, "kern.osproductversioncompat")

@@ -33,6 +33,36 @@ func TestSysctlsByPlatform(t *testing.T) {
 	}
 }
 
+// An iPhone or iPad is told the family of its own chip, the one its generation has unless the
+// device is one of the few with another, and has no hw.cpubrand; a device not known, and a Mac,
+// keep the M1's.
+func TestCPUFamilyByDevice(t *testing.T) {
+	for _, c := range []struct {
+		platform dyldcache.Platform
+		model    string
+		family   uint64
+	}{
+		{dyldcache.IOS, "iPhone11,2", 0x07d34b9f},
+		{dyldcache.IOS, "iPhone12,8", 0x462504d2},
+		{dyldcache.IOS, "iPhone17,3", 0x204526d0},
+		{dyldcache.IOS, "iPhone17,1", 0x75d4acb9},
+		{dyldcache.IOS, "iPad15,7", 0x8765edea},
+		{dyldcache.IOS, "iPad15,3", 0xfa33415e},
+		{dyldcache.IOS, "iPad16,1", 0x2876f5b5},
+		{dyldcache.IOS, "iPad16,3", 0x6f5129ac},
+		{dyldcache.IOS, "iPhone99,1", 0x1b588bb3},
+		{dyldcache.MacOS, "Macmini9,1", 0x1b588bb3},
+	} {
+		p := &Process{cache: &dyldcache.Cache{Platform: c.platform}, os: map[string]string{"model": c.model}}
+		if got, _ := p.sysctlValue("hw.cpufamily"); got != c.family {
+			t.Errorf("%s: hw.cpufamily = %#x, want %#x", c.model, got, c.family)
+		}
+		if _, ok := p.sysctlValue("hw.cpubrand"); ok != (c.platform == dyldcache.MacOS) {
+			t.Errorf("%s: hw.cpubrand is there: %v", c.model, ok)
+		}
+	}
+}
+
 // iOS's Objective-C runtime keeps a class's data pointer in 39 bits: what it allocates must be
 // below 512 GB, and above the largest shared region (at most 0x180000000 from 0x180000000).
 func TestHeapByPlatform(t *testing.T) {
