@@ -846,7 +846,8 @@ func (p *Process) setupCommpage() {
 			// The chip is the guest's, as hw.cpufamily says, not the host's: libraries that pick
 			// their kernels by chip (libBLAS) read it here.
 			family, _ := p.sysctlValue("hw.cpufamily")
-			le.PutUint32(page[0x80:], uint32(family.(uint64))) // _COMM_PAGE_CPUFAMILY
+			n, _ := family.(uint64)              // none, CPUFAMILY_UNKNOWN, for a product of unknown chip
+			le.PutUint32(page[0x80:], uint32(n)) // _COMM_PAGE_CPUFAMILY
 		}
 		p.uc.memMap(base, pageSize, protAll)
 		p.uc.memWrite(base, page)

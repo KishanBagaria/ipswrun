@@ -669,39 +669,40 @@ const (
 	osVariantIOS = 0x70010000FBAAAAAA
 )
 
-// cpuFamilyFirestorm is CPUFAMILY_ARM_FIRESTORM_ICESTORM, of the A14 and the M1: a Mac's here.
+// cpuFamilyFirestorm is CPUFAMILY_ARM_FIRESTORM_ICESTORM, of the A14 and of every M1.
 const cpuFamilyFirestorm = 0x1b588bb3
 
-// The hw.cpusubfamily of a phone's chip (CPUSUBFAMILY_ARM_HP) and of an M1 (CPUSUBFAMILY_ARM_HG).
-const (
-	cpuSubfamilyHP = 1
-	cpuSubfamilyHG = 2
-)
-
 // cpuFamilies is the CPUFAMILY_ARM_* of mach/machine.h of the chip in each iPhone and iPad an iOS
-// release of 14 or later runs on, by the product type's generation (iPhone14) or, where one
-// generation has two chips, by the product type itself.
+// release of 14 or later runs on, and in the Macs with an M1, by the product type's generation
+// (iPhone14) or, where one generation has two chips, by the product type itself. A product it
+// does not know has no hw.cpufamily, rather than another chip's.
 var cpuFamilies = map[string]uint64{
-	"iPhone11":   0x07d34b9f,         // A12 (Vortex and Tempest)
-	"iPhone12":   0x462504d2,         // A13 (Lightning and Thunder)
-	"iPhone13":   cpuFamilyFirestorm, // A14 (Firestorm and Icestorm)
-	"iPhone14":   0xda33d83d,         // A15 (Avalanche and Blizzard)
-	"iPhone15":   0x8765edea,         // A16 (Everest and Sawtooth)
-	"iPhone16":   0x2876f5b5,         // A17 Pro (Coll)
-	"iPhone17":   0x204526d0,         // A18 (Tupai)
-	"iPhone17,1": 0x75d4acb9,         // A18 Pro (Tahiti)
-	"iPhone17,2": 0x75d4acb9,
-	"iPad8":      0x07d34b9f,         // A12X and A12Z
-	"iPad11":     0x07d34b9f,         // A12
-	"iPad12":     0x462504d2,         // A13
-	"iPad13":     cpuFamilyFirestorm, // A14 and M1
-	"iPad14":     0xda33d83d,         // A15 and M2
-	"iPad15":     0xfa33415e,         // M3 (Ibiza)
-	"iPad15,7":   0x8765edea,         // A16
-	"iPad15,8":   0x8765edea,
-	"iPad16":     0x6f5129ac, // M4 (Donan)
-	"iPad16,1":   0x2876f5b5, // A17 Pro
-	"iPad16,2":   0x2876f5b5,
+	"Macmini9":     cpuFamilyFirestorm, // M1
+	"MacBookAir10": cpuFamilyFirestorm,
+	"MacBookPro17": cpuFamilyFirestorm,
+	"iMac21":       cpuFamilyFirestorm,
+	"MacBookPro18": cpuFamilyFirestorm, // M1 Pro and M1 Max
+	"Mac13":        cpuFamilyFirestorm, // M1 Max and M1 Ultra (Mac Studio)
+	"iPhone11":     0x07d34b9f,         // A12 (Vortex and Tempest)
+	"iPhone12":     0x462504d2,         // A13 (Lightning and Thunder)
+	"iPhone13":     cpuFamilyFirestorm, // A14 (Firestorm and Icestorm)
+	"iPhone14":     0xda33d83d,         // A15 (Avalanche and Blizzard)
+	"iPhone15":     0x8765edea,         // A16 (Everest and Sawtooth)
+	"iPhone16":     0x2876f5b5,         // A17 Pro (Coll)
+	"iPhone17":     0x204526d0,         // A18 (Tupai)
+	"iPhone17,1":   0x75d4acb9,         // A18 Pro (Tahiti)
+	"iPhone17,2":   0x75d4acb9,
+	"iPad8":        0x07d34b9f,         // A12X and A12Z
+	"iPad11":       0x07d34b9f,         // A12
+	"iPad12":       0x462504d2,         // A13
+	"iPad13":       cpuFamilyFirestorm, // A14 and M1
+	"iPad14":       0xda33d83d,         // A15 and M2
+	"iPad15":       0xfa33415e,         // M3 (Ibiza)
+	"iPad15,7":     0x8765edea,         // A16
+	"iPad15,8":     0x8765edea,
+	"iPad16":       0x6f5129ac, // M4 (Donan)
+	"iPad16,1":     0x2876f5b5, // A17 Pro
+	"iPad16,2":     0x2876f5b5,
 }
 
 // chipFamily is the hw.cpufamily of the device of a product type (iPhone11,2), or fallback for
@@ -731,39 +732,38 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			"hw.pagesize": n(16384), "hw.pagesize32": n(16384), "vm.pagesize": n(16384), "hw.ncpu": n(1), "hw.activecpu": n(1),
 			"hw.physicalcpu": n(1), "hw.physicalcpu_max": n(1), "hw.logicalcpu": n(1), "hw.logicalcpu_max": n(1),
 			"hw.memsize": n(guestMemory), "hw.physmem": n(guestMemory), "hw.byteorder": n(1234), "hw.cputype": n(cpuARM64),
-			"hw.cpusubtype": n(cpuSubtypeARM64E), "hw.cpufamily": n(cpuFamilyFirestorm), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128),
-			"hw.l1dcachesize": n(65536), "hw.l1icachesize": n(131072), "hw.l2cachesize": n(4 << 20), "hw.packages": n(1),
+			"hw.cpusubtype": n(cpuSubtypeARM64E), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128), "hw.packages": n(1),
 			"hw.nperflevels": n(1), "hw.perflevel0.logicalcpu": n(1), "hw.perflevel0.physicalcpu": n(1),
-			"hw.perflevel0.logicalcpu_max": n(1), "hw.perflevel0.physicalcpu_max": n(1), "hw.perflevel0.name": "Performance",
-			"hw.perflevel0.l2cachesize": n(4 << 20), "hw.perflevel0.cpusperl2": n(1), "hw.cpusubfamily": n(cpuSubfamilyHG), "hw.machine": "arm64", "hw.model": os("model", "Macmini9,1"), "hw.targettype": "J274",
-			"hw.cpubrand": "Apple M1", "kern.ostype": "Darwin", "kern.hostname": "emu.local", "kern.argmax": n(1 << 20),
-			"kern.usrstack64": n(stackTop), "kern.safeboot": n(0), "kern.ngroups": n(16), "kern.maxfilesperproc": n(10240),
+			"hw.perflevel0.logicalcpu_max": n(1), "hw.machine": "arm64", "hw.model": os("model", "Macmini9,1"),
+			"kern.ostype": "Darwin", "kern.hostname": "emu.local", "kern.argmax": n(1 << 20),
+			"kern.usrstack64": n(stackTop), "kern.safeboot": n(0), "kern.ngroups": n(16),
 			"kern.secure_kernel": n(0), "kern.bootargs": "", "kern.osvariant_status": n(osVariantMac), "kern.willshutdown": n(0),
 			"kern.hv_vmm_present": n(0), "sysctl.proc_translated": n(0), "kern.osrelease": os("release", "22.1.0"),
 			"kern.osversion": os("build", "22A400"), "kern.osproductversion": os("version", "13.0.1"),
-			"kern.version": "Darwin Kernel Version (emulated)", "kern.osproductversioncompat": "10.16",
-			"kern.iossupportversion": "16.1", "hw.optional.arm64": n(1), "hw.optional.floatingpoint": n(1),
+			"hw.optional.arm64": n(1), "hw.optional.floatingpoint": n(1),
 			"hw.optional.neon": n(1), "hw.optional.armv8_1_atomics": n(1), "hw.optional.armv8_crc32": n(1),
 			"hw.optional.arm.FEAT_LSE": n(1), "hw.optional.arm.FEAT_CRC32": n(1), "hw.optional.AdvSIMD": n(1),
 			"hw.optional.arm.AdvSIMD": n(1), "security.mac.lockdown_mode_state": n(0), "kern.development": n(0),
-			"vm.vm_page_free_target": n(4000), "kern.memorystatus_level": n(50),
+			"vm.vm_page_free_target": n(4000), "kern.memorystatus_level": n(50), // half free, as host_statistics says
+		}
+		// The board, as the restore image's build manifest names it (J274AP), less its suffix.
+		board := os("board", "")
+		if board != "" {
+			p.sysctls["hw.targettype"] = strings.TrimSuffix(board, "AP")
 		}
 		if p.cache.Platform == dyldcache.IOS {
 			// An iPhone names its product where a Mac says arm64, and its board where a Mac
 			// names its product.
-			board := os("board", "")
 			p.sysctls["hw.machine"], p.sysctls["hw.model"] = os("model", "iPhone"), board
-			p.sysctls["hw.targettype"] = strings.TrimSuffix(board, "AP")
 			p.sysctls["kern.osvariant_status"] = n(osVariantIOS)
-			// Its processor is the device's chip, not the Mac's M1.
-			p.sysctls["hw.cpufamily"] = n(chipFamily(os("model", ""), cpuFamilyFirestorm))
-			p.sysctls["hw.cpusubfamily"] = n(cpuSubfamilyHP)
-			// What a Mac says of the macOS version it reports to old programs (10.16) and of the
-			// iOS its Catalyst apps see: an iPhone has neither. Nor has it hw.cpubrand, which no
-			// kernel has (a Mac's brand is machdep.cpu.brand_string).
-			delete(p.sysctls, "kern.osproductversioncompat")
-			delete(p.sysctls, "kern.iossupportversion")
-			delete(p.sysctls, "hw.cpubrand")
+		}
+		family := chipFamily(os("model", "Macmini9,1"), 0)
+		if family != 0 {
+			p.sysctls["hw.cpufamily"] = n(family)
+		}
+		if family == cpuFamilyFirestorm && p.cache.Platform != dyldcache.IOS {
+			// What every M1 Mac reports: the efficiency cores' caches.
+			p.sysctls["hw.l1icachesize"], p.sysctls["hw.l1dcachesize"], p.sysctls["hw.l2cachesize"] = n(128<<10), n(64<<10), n(4<<20)
 		}
 	}
 	if v, ok := p.sysctls[name]; ok {

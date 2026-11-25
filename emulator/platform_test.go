@@ -13,37 +13,49 @@ import (
 func TestSysctlsByPlatform(t *testing.T) {
 	for _, c := range []struct {
 		platform              dyldcache.Platform
-		machine, model, board string
+		product, board        string
+		machine, model, type_ string
 		variant               uint64
 	}{
-		{dyldcache.MacOS, "arm64", "Macmini9,1", "J274", osVariantMac},
-		{dyldcache.IOS, "iPhone11,2", "D321AP", "D321", osVariantIOS},
+		{dyldcache.MacOS, "Macmini9,1", "J274AP", "arm64", "Macmini9,1", "J274", osVariantMac},
+		{dyldcache.IOS, "iPhone11,2", "D321AP", "iPhone11,2", "D321AP", "D321", osVariantIOS},
 	} {
-		p := &Process{cache: &dyldcache.Cache{Platform: c.platform}, os: map[string]string{"model": map[dyldcache.Platform]string{dyldcache.MacOS: "Macmini9,1", dyldcache.IOS: "iPhone11,2"}[c.platform], "board": "D321AP"}}
-		for name, want := range map[string]any{"hw.machine": c.machine, "hw.model": c.model, "hw.targettype": c.board, "kern.osvariant_status": c.variant} {
+		p := &Process{cache: &dyldcache.Cache{Platform: c.platform}, os: map[string]string{"model": c.product, "board": c.board}}
+		for name, want := range map[string]any{"hw.machine": c.machine, "hw.model": c.model, "hw.targettype": c.type_, "kern.osvariant_status": c.variant} {
 			if got, _ := p.sysctlValue(name); got != want {
 				t.Errorf("%v: %s = %v, want %v", c.platform, name, got, want)
 			}
 		}
-		for _, name := range []string{"kern.osproductversioncompat", "kern.iossupportversion", "hw.cpubrand"} {
-			if _, ok := p.sysctlValue(name); ok != (c.platform == dyldcache.MacOS) {
-				t.Errorf("%v: %s is there: %v", c.platform, name, ok)
+		// Values that differ by release or by chip, and are not known for sure, are left out;
+		// hw.cpubrand is no kernel's.
+		for _, name := range []string{"kern.osproductversioncompat", "kern.iossupportversion", "hw.cpubrand", "kern.version",
+			"kern.maxfilesperproc", "hw.cpusubfamily", "hw.perflevel0.l2cachesize"} {
+			if _, ok := p.sysctlValue(name); ok {
+				t.Errorf("%v: %s is there", c.platform, name)
 			}
+		}
+		_, caches := p.sysctlValue("hw.l2cachesize")
+		if caches != (c.platform == dyldcache.MacOS) {
+			t.Errorf("%v: hw.l2cachesize is there: %v; only an M1's are known", c.platform, caches)
 		}
 	}
 }
 
-// An iPhone or iPad is told the family of its own chip, the one its generation has unless the
-// device is one of the few with another; a device not known keeps the M1's.
+// A device is told the family of its own chip, the one its generation has unless the device is
+// one of the few with another; a device not known has none.
 func TestCPUFamilyByDevice(t *testing.T) {
-	for model, family := range map[string]uint64{
-		"iPhone11,2": 0x07d34b9f, "iPhone12,8": 0x462504d2, "iPhone17,3": 0x204526d0, "iPhone17,1": 0x75d4acb9,
-		"iPad15,7": 0x8765edea, "iPad15,3": 0xfa33415e, "iPad16,1": 0x2876f5b5, "iPad16,3": 0x6f5129ac,
-		"iPhone99,1": cpuFamilyFirestorm,
+	for model, family := range map[string]any{
+		"iPhone11,2": uint64(0x07d34b9f), "iPhone12,8": uint64(0x462504d2), "iPhone17,3": uint64(0x204526d0), "iPhone17,1": uint64(0x75d4acb9),
+		"iPad15,7": uint64(0x8765edea), "iPad15,3": uint64(0xfa33415e), "iPad16,1": uint64(0x2876f5b5), "iPad16,3": uint64(0x6f5129ac),
+		"iPhone99,1": nil, "Macmini9,1": uint64(cpuFamilyFirestorm), "Mac13,2": uint64(cpuFamilyFirestorm), "Mac14,3": nil,
 	} {
-		p := &Process{cache: &dyldcache.Cache{Platform: dyldcache.IOS}, os: map[string]string{"model": model}}
+		platform := dyldcache.IOS
+		if !strings.HasPrefix(model, "iP") {
+			platform = dyldcache.MacOS
+		}
+		p := &Process{cache: &dyldcache.Cache{Platform: platform}, os: map[string]string{"model": model}}
 		if got, _ := p.sysctlValue("hw.cpufamily"); got != family {
-			t.Errorf("%s: hw.cpufamily = %#x, want %#x", model, got, family)
+			t.Errorf("%s: hw.cpufamily = %#v, want %#v", model, got, family)
 		}
 	}
 }
