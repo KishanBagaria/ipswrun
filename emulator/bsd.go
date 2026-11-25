@@ -41,7 +41,7 @@ func init() {
 		"setattrlist": {5, sysSetattrlist}, "fsetattrlist": {5, sysFsetattrlist}, "flock": {2, sysFlock},
 		"getxattr": {6, sysGetxattr}, "fgetxattr": {6, sysFgetxattr}, "setxattr": {6, sysSetxattr}, "fsetxattr": {6, sysFsetxattr},
 		"listxattr": {4, sysListxattr}, "flistxattr": {4, sysFlistxattr}, "removexattr": {3, sysRemovexattr}, "fremovexattr": {3, sysFremovexattr},
-		"ioctl": {3, constant(-eNOTTY)}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
+		"ioctl": {3, sysIoctl}, "pipe": {0, sysPipe}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
 		"getattrlist": {5, sysGetattrlist}, "getattrlistat": {6, sysGetattrlistat}, "fgetattrlist": {5, sysFgetattrlist},
 		"getattrlistbulk": {5, sysGetattrlistbulk}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen}, "shm_unlink": {1, sysShmUnlink},
 		"getfsstat64": {3, constant(0)}, "pathconf": {2, sysPathconf}, "fpathconf": {2, sysPathconf}, "getdirentries64": {4, sysGetdirentries64},
@@ -528,6 +528,9 @@ func sysKqueue(p *Process, a []uint64) int64 {
 // selectNothing is select on descriptors nothing ever happens to: none is ready, once the time
 // the caller would wait has passed. It never passes for a caller that set none.
 func (p *Process) selectNothing(a []uint64, nanoseconds uint64) int64 {
+	if r, ok := p.selectPipes(a, nanoseconds); ok {
+		return r
+	}
 	for _, set := range a[1:4] {
 		if set != 0 {
 			p.write(set, make([]byte, align(a[0], 32)/8))

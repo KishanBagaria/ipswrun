@@ -1,0 +1,31 @@
+pipe: 0, its ends one after the other: 1
+the reading end: mode 10660, 0 links, size 0, 0 blocks of 16384, device 0, mine 1, born 0, flags 0, 0 to read
+the writing end: mode 10660, 0 links, size 0, 0 blocks of 16384, device 0, mine 1, born 0, flags 0x1, 0 to read
+write 5: 5
+the reading end, with 5 in it: mode 10660, 0 links, size 5, 1 blocks of 16384, device 0, mine 1, born 0, flags 0, 5 to read
+the writing end, written to: mode 10660, 0 links, size 5, 1 blocks of 16384, device 0, mine 1, born 0, flags 0x10001, 0 to read
+read 3: 3 "hel"; read 10: 2 "lo"; read none of nothing: 0
+the wrong way round: the writing end can be read: 0; the reading end can be written: 1
+lseek: -1 (Illegal seek); pread: -1 (Illegal seek); pwrite: -1 (Illegal seek)
+reading the writing end: -1 (Bad file descriptor); writing the reading end: -1 (Bad file descriptor)
+no waiting on the reading end: 0, its flags 0x4; read: -1 (Resource temporarily unavailable)
+no waiting on the writing end, by ioctl: 0, its flags 0x10005
+write 100000: 65536; one more: -1 (Resource temporarily unavailable); can be written: 0, read: 1
+read 100: 100; can be written: 0; write 512: -1 (Resource temporarily unavailable); write 600: 100
+read 600: 600; can be written: 1; write 512: 512
+read the rest: 65448; can be read: 0, written: 1
+waiting again: 0 and 0, flags 0 and 0x10001
+the writing end twice: closing one 0, write through the other: 2; closing it: 0; can be read: 1
+read what is left: 2, then the end: 0, and again: 0; can be read: 1
+the reading end, its writer gone: mode 10660, 0 links, size 0, 0 blocks of 65536, device 0, mine 1, born 0, flags 0, 0 to read
+write with no reader: -1 (Broken pipe); can be written: 1, and read: 1
+no signal for this descriptor: was 0, set 0, is 1
+write with no reader, and no signal: -1 (Broken pipe)
+a reader that waited: 5; its writer: 5
+a writer of 200000 waits with 65536 in the pipe; can be written: 0
+read in all: 200000; the writer: 200000
+a reader whose writer goes while it waits: 0
+a writer of 200000 whose reader goes while it waits: -1 (Broken pipe)
+select on an empty pipe, for a while: 0
+select with a writer on its way: 1, the pipe is in the set: 1
+select for reading and writing both ends: 3; to read: 1; to write: the reading end 1, the writing end 1

@@ -528,3 +528,39 @@ func TestGuestOutput(t *testing.T) {
 		}
 	})
 }
+
+// A pipe's two ends, in the calls of one thread; examples/pipes.c has the rest, against a Mac.
+func TestPipe(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		const buf = dataAddr + 0x100
+		r := uint64(p.result(t, "pipe"))
+		w := p.x(1)
+		if w != r+1 || p.fds[r] == nil || p.fds[w] == nil {
+			t.Fatalf("pipe: %d and %d", r, w)
+		}
+		p.write(buf, []byte("hello"))
+		if wrote, read := p.result(t, "write", w, buf, 5), p.result(t, "read", r, buf+16, 3); wrote != 5 || read != 3 || string(p.read(buf+16, 3)) != "hel" {
+			t.Errorf("wrote %d and read %d: %q", wrote, read, p.read(buf+16, 3))
+		}
+		if wrong, seek := p.result(t, "read", w, buf, 1), p.result(t, "lseek", r, 0, 0); wrong != -eBADF || seek != -eSPIPE {
+			t.Errorf("reading the writing end %d, seeking %d", wrong, seek)
+		}
+		if tty, closed := p.result(t, "ioctl", r, 0x40087468, buf), p.result(t, "ioctl", 99, ioctlAvailable, buf); tty != -eNOTTY || closed != -eBADF {
+			t.Errorf("a terminal's request of a pipe %d, and any of no descriptor %d", tty, closed)
+		}
+		if p.result(t, "ioctl", r, ioctlAvailable, buf); p.u32(buf) != 2 {
+			t.Errorf("%d to read", p.u32(buf))
+		}
+		// The writing end twice: the pipe ends for its reader when both are closed.
+		again := uint64(p.result(t, "dup", w))
+		p.result(t, "close", w)
+		if p.fds[r].pipe.writers != 1 {
+			t.Errorf("writers with a duplicate open: %d", p.fds[r].pipe.writers)
+		}
+		p.result(t, "close", again)
+		if left, end := p.result(t, "read", r, buf, 16), p.result(t, "read", r, buf, 16); left != 2 || end != 0 {
+			t.Errorf("what was left %d, then %d", left, end)
+		}
+	})
+}

@@ -35,6 +35,7 @@ const (
 	eSPIPE    = 29
 	eRANGE    = 34
 	eAGAIN    = 35
+	ePIPE     = 32
 	eNOTSUP   = 45
 	eTIMEDOUT = 60
 	eNOSYS    = 78
@@ -49,6 +50,7 @@ const (
 	dirFD                 // a directory that exists only as a name, or on the system volume
 	dataFD                // read-only bytes, or shm_open shared memory
 	cacheFD               // a file of the build read by range: of the dyld shared cache or the system volume
+	pipeFD                // one end of a pipe (see pipes.go)
 )
 
 type fd struct {
@@ -62,6 +64,11 @@ type fd struct {
 	names   []string // of a directory being listed, read on the first getdirentries
 	// shared, of a descriptor from shm_open, is the memory it names; data is then what it holds.
 	shared *sharedMemory
+	// Of an end of a pipe: the pipe, the flags fcntl reads of it, the writing end's among them,
+	// and whether a write with nobody to read it is to raise no signal.
+	pipe      *pipe
+	flags     uint32
+	noSigpipe bool
 }
 
 func (f *fd) size() int64 {
@@ -400,6 +407,10 @@ func sysFstat64(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
+	if f.kind == pipeFD {
+		p.write(a[1], p.pipeStat(f))
+		return 0
+	}
 	info, errno := p.describeFD(f)
 	return p.putStat(a[1], info, errno)
 }
@@ -588,6 +599,9 @@ func (p *Process) closeFD(n uint64) int64 {
 	if f.shared != nil {
 		f.shared.release()
 	}
+	if f.kind == pipeFD {
+		p.pipeClosed(f)
+	}
 	return 0
 }
 
@@ -603,6 +617,8 @@ func sysRead(p *Process, a []uint64) int64 {
 	}
 	var data []byte
 	switch {
+	case f.kind == pipeFD:
+		return p.pipeRead(f, a[1], a[2])
 	case f.kind == hostFD || (f.kind == stdioFD && f.host == 0): // the host keeps the position
 		data = hostBuffer(a[2])
 		n, err := syscall.Read(f.host, data)
@@ -628,7 +644,7 @@ func sysPread(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	if f.kind == stdioFD {
+	if f.kind == stdioFD || f.kind == pipeFD {
 		return -eSPIPE
 	}
 	data, errno := p.pread(f, a[3], a[2])
@@ -647,6 +663,9 @@ func sysWrite(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
 	if f == nil {
 		return -eBADF
+	}
+	if f.kind == pipeFD {
+		return p.pipeWrite(f, p.read(a[1], a[2]))
 	}
 	if f.kind == stdioFD {
 		if f.host != 1 && f.host != 2 {
@@ -690,6 +709,13 @@ func sysWritev(p *Process, a []uint64) int64 {
 	if a[2] > 1024 {
 		return -eINVAL
 	}
+	if f := p.fds[a[0]]; f != nil && f.kind == pipeFD { // one write, which may wait
+		var all []byte
+		for i := uint64(0); i < a[2]; i++ {
+			all = append(all, p.read(p.u64(a[1]+16*i), p.u64(a[1]+16*i+8))...)
+		}
+		return p.pipeWrite(f, all)
+	}
 	var written int64
 	for i := uint64(0); i < a[2]; i++ {
 		base, length := p.u64(a[1]+16*i), p.u64(a[1]+16*i+8)
@@ -709,6 +735,9 @@ func sysWritev(p *Process, a []uint64) int64 {
 
 func sysPwrite(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
+	if f != nil && f.kind == pipeFD {
+		return -eSPIPE
+	}
 	if f == nil || f.kind != hostFD {
 		return -eBADF
 	}
@@ -1086,6 +1115,11 @@ func sysFcntl(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
 	if f == nil {
 		return -eBADF
+	}
+	if f.kind == pipeFD {
+		if r, ok := p.pipeFcntl(f, a[1], a[2]); ok {
+			return r
+		}
 	}
 	switch cmd, arg := a[1], a[2]; cmd {
 	case 50: // F_GETPATH

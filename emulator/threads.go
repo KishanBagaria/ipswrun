@@ -36,9 +36,11 @@ const (
 	waitRWLock
 	waitPort
 	waitLock
+	waitPipe
+	waitSelect
 )
 
-var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message", "a file lock"}
+var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message", "a file lock", "a pipe", "a descriptor to be ready"}
 
 // thread is one guest thread. Its registers are in ctx whenever it is not the one running.
 type thread struct {
@@ -61,8 +63,10 @@ type thread struct {
 	// relaunched says the registers in ctx are a new start, not where the thread left off.
 	relaunched bool
 
-	reply     uint32   // the port it waits on for the answer to a synchronous message, once it asked for one
-	receiving *message // of a thread waiting for a Mach message: where it wants it
+	reply     uint32     // the port it waits on for the answer to a synchronous message, once it asked for one
+	receiving *message   // of a thread waiting for a Mach message: where it wants it
+	pipeOp    *pipeOp    // of a thread waiting on a pipe: what it is in the middle of
+	selecting *selecting // of a thread waiting in select: what it asked about
 
 	sigmask  uint32    // the signals it blocks
 	altstack [2]uint64 // its alternate signal stack, if it has one: where, and its size

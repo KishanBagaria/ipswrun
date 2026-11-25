@@ -125,7 +125,7 @@ func TestSystemCallNumbersMatchSDK(t *testing.T) {
 
 func TestConstantHandlers(t *testing.T) {
 	// These answer without looking at the process or the arguments.
-	for name, want := range map[string]int64{"getppid": 1, "issetugid": 0, "ioctl": -eNOTTY, "csrctl": -ePERM} {
+	for name, want := range map[string]int64{"getppid": 1, "issetugid": 0, "csrctl": -ePERM} {
 		if got := bsdHandlers[name].fn(nil, nil); got != want {
 			t.Errorf("%s() = %d, want %d", name, got, want)
 		}
