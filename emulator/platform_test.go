@@ -39,7 +39,7 @@ func TestCPUFamilyByDevice(t *testing.T) {
 	for model, family := range map[string]uint64{
 		"iPhone11,2": 0x07d34b9f, "iPhone12,8": 0x462504d2, "iPhone17,3": 0x204526d0, "iPhone17,1": 0x75d4acb9,
 		"iPad15,7": 0x8765edea, "iPad15,3": 0xfa33415e, "iPad16,1": 0x2876f5b5, "iPad16,3": 0x6f5129ac,
-		"iPhone99,1": 0x1b588bb3,
+		"iPhone99,1": cpuFamilyFirestorm,
 	} {
 		p := &Process{cache: &dyldcache.Cache{Platform: dyldcache.IOS}, os: map[string]string{"model": model}}
 		if got, _ := p.sysctlValue("hw.cpufamily"); got != family {
