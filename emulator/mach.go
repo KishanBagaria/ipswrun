@@ -281,6 +281,12 @@ func (p *Process) send(m message) int64 {
 	if m.remote == bootstrapPort && p.m.launchd(p, m, body) {
 		return 0
 	}
+	if m.remote == 0 {
+		// To no port at all, as a program sends when what it looked up was not there: a Mac's
+		// kernel refuses it the same way, whatever the message is.
+		p.note("  mach_msg id %d to no port", m.id)
+		return sendInvalidDest
+	}
 	routine := migRoutines[m.id]
 	unhandled := ""
 	if routine == nil {
