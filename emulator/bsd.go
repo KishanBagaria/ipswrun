@@ -577,15 +577,17 @@ var cpuFamilies = map[string]uint64{
 	"iPad16,2":   0x2876f5b5,
 }
 
-// chipFamily is the hw.cpufamily of the device of a product type (iPhone11,2); false for one
-// cpuFamilies does not know.
-func chipFamily(product string) (uint64, bool) {
+// chipFamily is the hw.cpufamily of the device of a product type (iPhone11,2), or fallback for
+// one cpuFamilies does not know.
+func chipFamily(product string, fallback uint64) uint64 {
 	if family, ok := cpuFamilies[product]; ok {
-		return family, true
+		return family
 	}
 	generation, _, _ := strings.Cut(product, ",")
-	family, ok := cpuFamilies[generation]
-	return family, ok
+	if family, ok := cpuFamilies[generation]; ok {
+		return family
+	}
+	return fallback
 }
 
 // sysctlValue is a uint64 or a string.
@@ -625,16 +627,14 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			p.sysctls["hw.machine"], p.sysctls["hw.model"] = os("model", "iPhone"), board
 			p.sysctls["hw.targettype"] = strings.TrimSuffix(board, "AP")
 			p.sysctls["kern.osvariant_status"] = n(osVariantIOS)
-			// Its processor is the device's chip, not the Mac's M1. The kernel has no
-			// hw.cpubrand (a Mac's brand is machdep.cpu.brand_string), so an iPhone says none.
-			if family, ok := chipFamily(os("model", "")); ok {
-				p.sysctls["hw.cpufamily"] = n(family)
-			}
-			delete(p.sysctls, "hw.cpubrand")
+			// Its processor is the device's chip, not the Mac's M1.
+			p.sysctls["hw.cpufamily"] = n(chipFamily(os("model", ""), p.sysctls["hw.cpufamily"].(uint64)))
 			// What a Mac says of the macOS version it reports to old programs (10.16) and of the
-			// iOS its Catalyst apps see: an iPhone has neither.
+			// iOS its Catalyst apps see: an iPhone has neither. Nor has it hw.cpubrand, which no
+			// kernel has (a Mac's brand is machdep.cpu.brand_string).
 			delete(p.sysctls, "kern.osproductversioncompat")
 			delete(p.sysctls, "kern.iossupportversion")
+			delete(p.sysctls, "hw.cpubrand")
 		}
 	}
 	if v, ok := p.sysctls[name]; ok {

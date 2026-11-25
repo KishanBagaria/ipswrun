@@ -25,7 +25,7 @@ func TestSysctlsByPlatform(t *testing.T) {
 				t.Errorf("%v: %s = %v, want %v", c.platform, name, got, want)
 			}
 		}
-		for _, name := range []string{"kern.osproductversioncompat", "kern.iossupportversion"} {
+		for _, name := range []string{"kern.osproductversioncompat", "kern.iossupportversion", "hw.cpubrand"} {
 			if _, ok := p.sysctlValue(name); ok != (c.platform == dyldcache.MacOS) {
 				t.Errorf("%v: %s is there: %v", c.platform, name, ok)
 			}
@@ -34,31 +34,16 @@ func TestSysctlsByPlatform(t *testing.T) {
 }
 
 // An iPhone or iPad is told the family of its own chip, the one its generation has unless the
-// device is one of the few with another, and has no hw.cpubrand; a device not known, and a Mac,
-// keep the M1's.
+// device is one of the few with another; a device not known keeps the M1's.
 func TestCPUFamilyByDevice(t *testing.T) {
-	for _, c := range []struct {
-		platform dyldcache.Platform
-		model    string
-		family   uint64
-	}{
-		{dyldcache.IOS, "iPhone11,2", 0x07d34b9f},
-		{dyldcache.IOS, "iPhone12,8", 0x462504d2},
-		{dyldcache.IOS, "iPhone17,3", 0x204526d0},
-		{dyldcache.IOS, "iPhone17,1", 0x75d4acb9},
-		{dyldcache.IOS, "iPad15,7", 0x8765edea},
-		{dyldcache.IOS, "iPad15,3", 0xfa33415e},
-		{dyldcache.IOS, "iPad16,1", 0x2876f5b5},
-		{dyldcache.IOS, "iPad16,3", 0x6f5129ac},
-		{dyldcache.IOS, "iPhone99,1", 0x1b588bb3},
-		{dyldcache.MacOS, "Macmini9,1", 0x1b588bb3},
+	for model, family := range map[string]uint64{
+		"iPhone11,2": 0x07d34b9f, "iPhone12,8": 0x462504d2, "iPhone17,3": 0x204526d0, "iPhone17,1": 0x75d4acb9,
+		"iPad15,7": 0x8765edea, "iPad15,3": 0xfa33415e, "iPad16,1": 0x2876f5b5, "iPad16,3": 0x6f5129ac,
+		"iPhone99,1": 0x1b588bb3,
 	} {
-		p := &Process{cache: &dyldcache.Cache{Platform: c.platform}, os: map[string]string{"model": c.model}}
-		if got, _ := p.sysctlValue("hw.cpufamily"); got != c.family {
-			t.Errorf("%s: hw.cpufamily = %#x, want %#x", c.model, got, c.family)
-		}
-		if _, ok := p.sysctlValue("hw.cpubrand"); ok != (c.platform == dyldcache.MacOS) {
-			t.Errorf("%s: hw.cpubrand is there: %v", c.model, ok)
+		p := &Process{cache: &dyldcache.Cache{Platform: dyldcache.IOS}, os: map[string]string{"model": model}}
+		if got, _ := p.sysctlValue("hw.cpufamily"); got != family {
+			t.Errorf("%s: hw.cpufamily = %#x, want %#x", model, got, family)
 		}
 	}
 }
