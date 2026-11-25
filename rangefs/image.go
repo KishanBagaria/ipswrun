@@ -14,8 +14,6 @@ import (
 	"github.com/blacktop/go-apfs/pkg/disk/dmg"
 	"github.com/blacktop/go-apfs/pkg/disk/gpt"
 	"github.com/blacktop/go-apfs/types"
-	"github.com/blacktop/ipsw/pkg/aea"
-	"github.com/blacktop/ipsw/pkg/info"
 )
 
 // Volumes of a restore image.
@@ -26,20 +24,21 @@ const (
 
 // ErrNoSystemOS is in the error of a SystemOS read on a restore image that has no SystemOS cryptex:
 // every release before macOS 13, which keeps everything in the system volume.
-var ErrNoSystemOS = info.ErrorCryptexNotFound
+var ErrNoSystemOS = errors.New("cryptex not found")
 
 // Image is a remote or local restore image whose volumes are opened on first use.
 type Image struct {
-	remote    *rangeReader // nil for a local file
-	source    io.ReaderAt
-	file      *os.File // local restore image, closed by Close
-	cacheDir  string
-	archive   *zip.Reader
-	info      *info.Info
-	device    string
-	streaming bool // see AllowStreaming
-	volumes   map[string]*apfs.Reader
-	opened    []*os.File // inflated members, closed by Close
+	remote     *rangeReader // nil for a local file
+	source     io.ReaderAt
+	file       *os.File // local restore image, closed by Close
+	cacheDir   string
+	archive    *zip.Reader
+	manifest   *buildManifest
+	device     string
+	identities []buildIdentity // cached device-filtered identities
+	streaming  bool            // see AllowStreaming
+	volumes    map[string]*apfs.Reader
+	opened     []*os.File // inflated members, closed by Close
 }
 
 // Open reads the ZIP directory and build manifest of the restore image at location, which may be
@@ -54,12 +53,12 @@ func Open(location, cacheDir, device string) (*Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	archive, parsed, err := openArchive(remote, remote.size)
+	archive, manifest, err := openArchive(remote, remote.size)
 	if err != nil {
 		remote.Close()
 		return nil, err
 	}
-	return &Image{remote: remote, source: remote, cacheDir: cacheDir, archive: archive, info: parsed, device: device, volumes: map[string]*apfs.Reader{}}, nil
+	return &Image{remote: remote, source: remote, cacheDir: cacheDir, archive: archive, manifest: manifest, device: device, volumes: map[string]*apfs.Reader{}}, nil
 }
 
 // IsRemote reports whether Open fetches location over HTTP(S), rather than reading a local file.
@@ -83,28 +82,25 @@ func OpenFile(path, cacheDir, device string) (*Image, error) {
 		f.Close()
 		return nil, fmt.Errorf("%s is a directory", path)
 	}
-	archive, parsed, err := openArchive(f, st.Size())
+	archive, manifest, err := openArchive(f, st.Size())
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
-	return &Image{source: f, file: f, cacheDir: cacheDir, archive: archive, info: parsed, device: device, streaming: true, volumes: map[string]*apfs.Reader{}}, nil
+	return &Image{source: f, file: f, cacheDir: cacheDir, archive: archive, manifest: manifest, device: device, streaming: true, volumes: map[string]*apfs.Reader{}}, nil
 }
 
 // openArchive reads a restore image's ZIP directory and build manifest.
-func openArchive(source io.ReaderAt, size int64) (*zip.Reader, *info.Info, error) {
+func openArchive(source io.ReaderAt, size int64) (*zip.Reader, *buildManifest, error) {
 	archive, err := zip.NewReader(source, size)
 	if err != nil {
 		return nil, nil, err
 	}
-	parsed, err := info.ParseZipFiles(archive.File)
+	manifest, err := parseBuildManifest(archive.File)
 	if err != nil {
 		return nil, nil, err
 	}
-	if parsed.Plists == nil || parsed.Plists.BuildManifest == nil {
-		return nil, nil, errors.New("restore image has no BuildManifest.plist")
-	}
-	return archive, parsed, nil
+	return archive, manifest, nil
 }
 
 // Close releases any local image file, disk cache file, and inflated member files opened for this image.
@@ -125,10 +121,10 @@ func (m *Image) Close() error {
 }
 
 // Version is the product version in the build manifest, e.g. "15.6.1".
-func (m *Image) Version() string { return m.info.Plists.BuildManifest.ProductVersion }
+func (m *Image) Version() string { return m.manifest.ProductVersion }
 
 // Build is the product build version in the build manifest, e.g. "24G90".
-func (m *Image) Build() string { return m.info.Plists.BuildManifest.ProductBuildVersion }
+func (m *Image) Build() string { return m.manifest.ProductBuildVersion }
 
 // Device is the BuildManifest product type or device class used to pick disk images.
 func (m *Image) Device() string { return m.device }
@@ -173,16 +169,16 @@ func (m *Image) image(name string) (*apfs.Reader, error) {
 	if _, err := source.ReadAt(magic, 0); err != nil {
 		return nil, err
 	}
-	if string(magic) == aea.Magic {
-		metadata, err := aea.ReadMetadata(source, size)
+	if string(magic) == aeaMagic {
+		metadata, err := readAEAMetadata(source, size)
 		if err != nil {
 			return nil, err
 		}
-		key, err := metadata.SymmetricKey(nil, "", "", false)
+		key, err := resolveAEAKey(metadata, m.cacheDir)
 		if err != nil {
 			return nil, fmt.Errorf("resolve AEA key: %w", err)
 		}
-		reader, err := aea.NewReader(source, size, key)
+		reader, err := openAEA(source, size, key)
 		if err != nil {
 			return nil, err
 		}
@@ -249,16 +245,20 @@ func (m *Image) volume(kind string) (*apfs.Reader, error) {
 	if v, ok := m.volumes[kind]; ok {
 		return v, nil
 	}
-	selected, err := m.info.ForDevice(m.device)
-	if err != nil {
-		return nil, err
+	if m.identities == nil {
+		ids, err := m.manifest.forDevice(m.device, m.archive.File)
+		if err != nil {
+			return nil, err
+		}
+		m.identities = ids
 	}
 	var name string
+	var err error
 	switch kind {
 	case FileSystem:
-		name, err = selected.GetFileSystemOsDmg()
+		name, err = fileSystemDmg(m.identities)
 	case SystemOS:
-		name, err = selected.GetSystemOsDmg()
+		name, err = systemOsDmg(m.identities)
 	default:
 		err = fmt.Errorf("unknown volume %q", kind)
 	}
