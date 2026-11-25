@@ -23,7 +23,7 @@ const (
 )
 
 // ErrNoSystemOS is in the error of a SystemOS read on a restore image that has no SystemOS cryptex:
-// every release before macOS 13, which keeps everything in the system volume.
+// every release before macOS 13 and iOS 16, which keep everything in the system volume.
 var ErrNoSystemOS = errors.New("cryptex not found")
 
 // Image is a remote or local restore image whose volumes are opened on first use.
@@ -128,6 +128,21 @@ func (m *Image) Build() string { return m.manifest.ProductBuildVersion }
 
 // Device is the BuildManifest product type or device class used to pick disk images.
 func (m *Image) Device() string { return m.device }
+
+// Board is the device class of the build identity Device picks, as the system reports it in
+// hw.model: "D321AP" for an iPhone11,2. Empty when the manifest names none.
+func (m *Image) Board() string {
+	identities, err := m.deviceIdentities()
+	if err != nil {
+		return ""
+	}
+	for _, identity := range identities {
+		if class := identity.Info.DeviceClass; class != "" {
+			return strings.ToUpper(class)
+		}
+	}
+	return ""
+}
 
 // Stats reports the range requests made so far and the bytes they returned.
 func (m *Image) Stats() (requests, bytes int64) {
@@ -241,10 +256,8 @@ func apfsPartition(source io.ReaderAt, size int64) (io.ReaderAt, int64, error) {
 	return nil, 0, errors.New("no APFS partition in GPT")
 }
 
-func (m *Image) volume(kind string) (*apfs.Reader, error) {
-	if v, ok := m.volumes[kind]; ok {
-		return v, nil
-	}
+// deviceIdentities is the build manifest's identities for Device, read once.
+func (m *Image) deviceIdentities() ([]buildIdentity, error) {
 	if m.identities == nil {
 		ids, err := m.manifest.forDevice(m.device, m.archive.File)
 		if err != nil {
@@ -252,13 +265,23 @@ func (m *Image) volume(kind string) (*apfs.Reader, error) {
 		}
 		m.identities = ids
 	}
+	return m.identities, nil
+}
+
+func (m *Image) volume(kind string) (*apfs.Reader, error) {
+	if v, ok := m.volumes[kind]; ok {
+		return v, nil
+	}
+	identities, err := m.deviceIdentities()
+	if err != nil {
+		return nil, err
+	}
 	var name string
-	var err error
 	switch kind {
 	case FileSystem:
-		name, err = fileSystemDmg(m.identities)
+		name, err = fileSystemDmg(identities)
 	case SystemOS:
-		name, err = systemOsDmg(m.identities)
+		name, err = systemOsDmg(identities)
 	default:
 		err = fmt.Errorf("unknown volume %q", kind)
 	}

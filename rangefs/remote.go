@@ -1,4 +1,5 @@
-// Package rangefs reads files inside the disk images of a remote macOS restore image (IPSW).
+// Package rangefs reads files inside the disk images of a macOS or iOS restore image (IPSW),
+// remote or on disk.
 // Nothing is downloaded whole: the ZIP directory, the image containers (AEA, UDIF, GPT), APFS
 // metadata and file contents are all read through HTTP range requests.
 package rangefs

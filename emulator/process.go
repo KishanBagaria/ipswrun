@@ -1,7 +1,9 @@
 // Package emulator is a minimal user-mode Darwin "kernel" for arm64e on Unicorn.
 //
-// It starts a macOS build's own /usr/lib/dyld the way XNU would, lets it map that build's dyld
-// shared cache, and pages cache contents in on first touch. System calls and Mach traps are
+// It starts a macOS or iOS build's own /usr/lib/dyld the way XNU would, lets it map that build's
+// dyld shared cache, and pages cache contents in on first touch. What differs between the two
+// (where anonymous memory goes, what the system says of itself) follows the platform the cache
+// was built for. System calls and Mach traps are
 // implemented just far enough for libSystem, CoreFoundation, Foundation, the Objective-C and
 // Swift runtimes, Security, SQLite, libdispatch and XPC to run, as one process or as several that
 // send each other Mach messages (see Machine); anything unimplemented stops the run with a
@@ -11,6 +13,7 @@ package emulator
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -39,11 +42,17 @@ const (
 	stackSize  = 8 << 20
 	exeBase    = 0x100000000
 	dyldBase   = 0x120000000
-	heapBase   = 0x20000000000 // anonymous mappings grow up from 2 TB, clear of anything the guest places itself
-	deviceID   = 0x1000004
+	// Anonymous mappings grow up from here, clear of anything the guest places itself: from 2 TB
+	// on macOS, and on iOS from 16 GB, above the largest shared region, as iOS's Objective-C
+	// runtime keeps a class's data pointer in 39 bits.
+	heapBase    = 0x20000000000
+	heapBaseIOS = 0x400000000
+	deviceID    = 0x1000004
 
-	// GuestHome is the emulated user's home directory; it is backed by Config.Home on the host.
-	GuestHome = "/Users/emu"
+	// GuestHome is the emulated user's home directory on macOS, and GuestHomeIOS on iOS, as
+	// HomeOf says; it is backed by Config.Home on the host.
+	GuestHome    = "/Users/emu"
+	GuestHomeIOS = "/var/mobile"
 	// GuestExe is the path a guest executable of the host's has inside the guest. One of the
 	// build's own is at its path there.
 	GuestExe    = "/emu/guest"
@@ -127,7 +136,13 @@ type region struct {
 	shared     *sharedMemory
 	off        uint64
 	name       string
+	deny       uint32 // what of protAll its pages may not be accessed for (mprotect)
 }
+
+func (r *region) prot() uint32 { return protAll &^ r.deny }
+
+// denied is what a protection does not allow, as a region keeps it.
+func denied(prot uint32) uint32 { return protAll &^ (prot & protAll) }
 
 // stop is the panic value that ends a run: the guest did something the emulator cannot carry on
 // from. fault is the panic value for a system call touching unmapped guest memory, which the
@@ -176,6 +191,9 @@ type SystemFile struct {
 	Real string
 	// ReadDir lists the directory's entries when Dir is true and the volume backs it.
 	ReadDir func() ([]string, error)
+	// Link, of a directory the path's last part only links to, is that symbolic link's text: what
+	// lstat and readlink see.
+	Link string
 }
 
 // Config describes the machine the guests run on.
@@ -183,7 +201,7 @@ type Config struct {
 	Unicorn  string           // path of the verified libunicorn (see EnsureUnicorn)
 	Cache    *dyldcache.Cache // the build's dyld shared cache
 	CacheDir string           // guest directory the cache files appear in
-	Home     string           // host directory behind GuestHome
+	Home     string           // host directory behind the guest's home (see HomeOf)
 	Mounts   []Mount          // more host directories the guests may change (see CheckMounts)
 	Dyld     []byte           // the build's /usr/lib/dyld
 	Drivers  []Driver         // the kernel's services, which guests reach through IOKit: none unless given
@@ -249,7 +267,13 @@ type Process struct {
 	named       map[*port]uint32  // the name it has for a port it can receive from or send to
 	eventData   uint64            // where a kevent says a message it did not deliver is
 	ignored     map[int]int       // kevent filters nothing emulates, and how many changes each was sent
-	threadStart uint64            // libpthread's entry points, and what it said of a pthread
+	sigactions  [numSignals]sigAction
+	rlimits     map[uint64][2]uint64 // what setrlimit changed, by resource: {soft, hard}
+	cmask       uint32               // umask, once changed (cmaskSet)
+	cmaskSet    bool
+	nice        int64                // setpriority's, of the process
+	iopolicies  map[[2]uint32]uint32 // iopolicysys's, by {scope, type}
+	threadStart uint64               // libpthread's entry points, and what it said of a pthread
 	wqThread    uint64
 	pthreadSize uint64
 	tsdOffset   uint64
@@ -337,13 +361,44 @@ func guard(err *error) {
 	}
 }
 
+// user is who every guest that is not root's runs as, and owns every file of the home and the
+// mounts: on macOS the user emu, of the group staff, and on iOS mobile, as on an iPhone.
+type user struct {
+	name, home, shell string
+	uid, gid          uint32
+}
+
+var (
+	macUser = user{name: "emu", home: GuestHome, shell: "/bin/zsh", uid: guestUID, gid: guestGID}
+	iosUser = user{name: "mobile", home: GuestHomeIOS, shell: "/bin/sh", uid: guestUID, gid: guestUID}
+)
+
+// userOf is the user of a platform's builds.
+func userOf(platform dyldcache.Platform) user {
+	if platform == dyldcache.IOS {
+		return iosUser
+	}
+	return macUser
+}
+
+// HomeOf is the guest's home directory on a platform: GuestHome, or GuestHomeIOS.
+func HomeOf(platform dyldcache.Platform) string { return userOf(platform).home }
+
+// heapStart is where anonymous mappings start for a process of the platform's.
+func heapStart(platform dyldcache.Platform) uint64 {
+	if platform == dyldcache.IOS {
+		return heapBaseIOS
+	}
+	return heapBase
+}
+
 // newProcess gives the machine a process with a stack, the commpage and the MMU set up, ready for
 // load.
 func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Process, err error) {
 	cfg := m.cfg
-	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: guestUID, gid: guestGID, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cwd: "/", cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
+	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: m.user.uid, gid: m.user.gid, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cwd: "/", cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
 		system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
-		mapped: map[uint64]struct{}{}, brk: heapBase, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
+		mapped: map[uint64]struct{}{}, brk: heapStart(cfg.Cache.Platform), nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},
 		fds:      map[uint64]*fd{0: {kind: stdioFD, host: 0}, 1: {kind: stdioFD, host: 1}, 2: {kind: stdioFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{path: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
@@ -504,7 +559,8 @@ type allocation struct {
 	shared    *sharedMemory  // instead of either: the mapping is this memory, from off
 	off       uint64
 	name      string
-	keepOther bool // a fixed request fails instead of replacing what is there
+	keepOther bool   // a fixed request fails instead of replacing what is there
+	deny      uint32 // see region
 }
 
 // alloc reserves guest address space; false when a fixed request cannot be honored.
@@ -524,8 +580,48 @@ func (p *Process) alloc(size uint64, a allocation) (uint64, bool) {
 		start = align(p.brk, max(a.mask+1, pageSize))
 		p.brk = start + size + pageSize
 	}
-	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, file: a.file, shared: a.shared, off: a.off, name: a.name})
+	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, file: a.file, shared: a.shared, off: a.off, name: a.name, deny: a.deny})
 	return start, true
+}
+
+// split makes at, if it is inside a region, the start of one.
+func (p *Process) split(at uint64) {
+	if r := p.findRegion(at); r != nil && r.start < at {
+		tail := *r
+		tail.start, tail.off = at, r.off+(at-r.start)
+		r.end = at
+		p.addRegion(&tail)
+	}
+}
+
+// protect gives the pages of [start, end) the protection prot (of protAll), as mprotect does;
+// false if any of them is not mapped. Pages Unicorn has get it now, the others when touched.
+func (p *Process) protect(start, end uint64, prot uint32) bool {
+	for a := start; a < end; {
+		r := p.findRegion(a)
+		if r == nil {
+			return false
+		}
+		a = r.end
+	}
+	p.split(start)
+	p.split(end)
+	for _, r := range p.overlaps(start, end) {
+		r.deny = denied(prot)
+	}
+	for a := start; a < end; {
+		if !p.isMapped(a) {
+			a += pageSize
+			continue
+		}
+		b := a
+		for b < end && p.isMapped(b) {
+			b += pageSize
+		}
+		p.uc.memProtect(a, b-a, prot)
+		a = b
+	}
+	return true
 }
 
 // materialize gives Unicorn the 16-page block around addr, filled from the region's backing.
@@ -547,11 +643,11 @@ func (p *Process) materialize(addr uint64) bool {
 		}
 		if r.kind == sharedRegion {
 			o := r.off + (a - r.start)
-			p.uc.memMapHost(a, r.shared.data[o:o+(b-a)])
+			p.uc.memMapHost(a, r.shared.data[o:o+(b-a)], r.prot())
 			a = b
 			continue
 		}
-		p.uc.memMap(a, b-a)
+		p.uc.memMap(a, b-a, r.prot())
 		switch r.kind {
 		case cacheRegion:
 			data, err := away(p.m.clock, func() ([]byte, error) { return p.cache.Page(a-p.slide, b-a, p.slide) })
@@ -586,6 +682,15 @@ func (p *Process) unmapped(addr uint64, size int) (ok bool) {
 		p.fault = fmt.Sprintf("unmapped access %#x size %d", addr, size)
 	}
 	return ok
+}
+
+// protected is an access the page's protection does not allow: the end of the run, as a fault
+// would be the end of the process with no handler for its signal.
+func (p *Process) protected(kind int32, addr uint64, size int) bool {
+	defer p.hookGuard(nil)
+	what := map[int32]string{22: "write to", 23: "read of", 24: "instruction fetch from"}[kind]
+	p.fault = fmt.Sprintf("%s protected memory %#x size %d (%s)", what, addr, size, p.where(addr))
+	return false
 }
 
 func (p *Process) invalid() bool {
@@ -683,7 +788,7 @@ func (p *Process) u64(addr uint64) uint64 { return le.Uint64(p.read(addr, 8)) }
 func (p *Process) setupMMU() error {
 	const l0, n = uint64(pageTables), uint64(vaLimit >> 39)
 	size := align((n+2)*4096, pageSize)
-	p.uc.memMap(l0, size)
+	p.uc.memMap(l0, size, protAll)
 	p.addRegion(&region{start: l0, end: l0 + size, name: "pagetables"})
 	for a := l0; a < l0+size; a += pageSize {
 		p.mapped[a/pageSize] = struct{}{}
@@ -724,6 +829,11 @@ func (p *Process) setupMMU() error {
 	return nil
 }
 
+// amx says whether an instruction is one of Apple's matrix coprocessor (AMX), which every Apple
+// chip of a supported release has and Unicorn does not: 0x00201000, its operation in bits 5 to 9
+// and its operand register or immediate in bits 0 to 4.
+func amx(instruction uint32) bool { return instruction&^0x3FF == 0x00201000 }
+
 func (p *Process) setupCommpage() {
 	for _, base := range []uint64{commPage, commPageRO} {
 		page := hostPage(base, pageSize)
@@ -739,14 +849,21 @@ func (p *Process) setupCommpage() {
 			page[0x90] = 0         // USER_TIMEBASE_NONE: mach_absolute_time is a trap, not the counter
 			page[0x91] = 0         // nor does the counter keep mach_continuous_time
 			page[0x10C] = 0        // no TPRO: dyld falls back to mprotect
-			// Hide CPU features the emulated core lacks (DIT, SHA3, SHA512, SPECRES) and report one CPU.
+			// Hide CPU features the emulated core lacks (DIT, SHA3, SHA512, SPECRES) and report one CPU,
+			// in one cluster: malloc sizes its per-cluster tables by _COMM_PAGE_CPU_CLUSTERS, and the
+			// host's count with one CPU makes them overlap (cfprefsd faulted in xzone malloc on 26B131).
 			caps := le.Uint64(page[0x10:]) &^ (0x0200000000000000 | 0x100000000 | 0x80000000 | 0x0000100000000000)
 			caps = caps&^0x00FF0000 | 0x00010000
 			le.PutUint64(page[0x10:], caps)
 			le.PutUint32(page[0x20:], uint32(caps))
-			page[0x22], page[0x34], page[0x35], page[0x36] = 1, 1, 1, 1
+			page[0x22], page[0x2F], page[0x34], page[0x35], page[0x36] = 1, 1, 1, 1, 1
+			// The chip is the guest's, as hw.cpufamily says, not the host's: libraries that pick
+			// their kernels by chip (libBLAS) read it here.
+			family, _ := p.sysctlValue("hw.cpufamily")
+			n, _ := family.(uint64)              // none, CPUFAMILY_UNKNOWN, for a product of unknown chip
+			le.PutUint32(page[0x80:], uint32(n)) // _COMM_PAGE_CPUFAMILY
 		}
-		p.uc.memMap(base, pageSize)
+		p.uc.memMap(base, pageSize, protAll)
 		p.uc.memWrite(base, page)
 		p.mapped[base/pageSize] = struct{}{}
 		p.addRegion(&region{start: base, end: base + pageSize, name: "commpage"})
@@ -907,10 +1024,20 @@ func (p *Process) load(argv, env []string) error {
 	if err != nil {
 		return fmt.Errorf("guest executable: %w", err)
 	}
+	cdhash := ""
 	if image, _, _ := p.loadMachO(exe, "guest", 0); image.CodeSignature() != nil {
 		signed := image.CodeSignature()
+		rank := -1
 		for _, directory := range signed.CodeDirectories {
 			p.identity = directory.ID
+			// The kernel's hash of the executable is that of its code directory of the strongest
+			// hash it knows, cut to 20 bytes. dyld checks it against the launch closures the
+			// shared cache has for the system's own executables, and uses one only if it matches.
+			if r := slices.Index([]uint8{1, 3, 2, 4}, uint8(directory.Header.HashType)); r > rank && len(directory.CDHash) >= 40 {
+				if _, err := hex.DecodeString(directory.CDHash); err == nil {
+					rank, cdhash = r, directory.CDHash[:40]
+				}
+			}
 		}
 		p.entitlements, p.entitlementsDER = signed.Entitlements, signed.EntitlementsDER
 	}
@@ -918,8 +1045,11 @@ func (p *Process) load(argv, env []string) error {
 		fmt.Sprintf("main_stack=%#x,%#x,%#x,%#x", uint64(stackTop), uint64(stackSize), uint64(stackTop), uint64(stackSize)),
 		fmt.Sprintf("executable_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(exeInode)),
 		fmt.Sprintf("dyld_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(dyldInode)),
-		"executable_cdhash=" + strings.Repeat("11", 20), "executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", fmt.Sprintf("th_port=%#x", mainThreadPort),
+		"executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", fmt.Sprintf("th_port=%#x", mainThreadPort),
 		"ptrauth_disabled=1", "dyld_flags=0x0", "stack_guard=0x5a17c0de5a17c000", "malloc_entropy=0x1122334455667788,0x8877665544332211"}
+	if cdhash != "" { // an executable with no code signature has none
+		apple = append(apple, "executable_cdhash="+cdhash)
+	}
 	var text []byte
 	var offsets [][]uint64
 	for _, group := range [][]string{argv, env, apple} {
@@ -1006,13 +1136,19 @@ func (p *Process) interrupt(number uint32) {
 	}
 	if number != 2 {
 		pc := p.uc.reg(regPC)
-		words := "?"
+		words, instruction := "?", uint32(0)
 		func() {
 			defer func() { recover() }()
+			instruction = p.u32(pc)
 			w := p.read(pc-8, 16)
 			words = fmt.Sprintf("%08x %08x %08x %08x", le.Uint32(w), le.Uint32(w[4:]), le.Uint32(w[8:]), le.Uint32(w[12:]))
 		}()
 		p.fault = fmt.Sprintf("CPU exception %d at %s (code around pc: %s)", number, p.where(pc), words)
+		if number == 1 && amx(instruction) {
+			p.fault = fmt.Sprintf("AMX instruction %08x at %s: Accelerate's BLAS and LAPACK need Apple's matrix coprocessor, which is not emulated",
+				instruction, p.where(pc))
+			p.faultKind = StopUnimplemented
+		}
 		p.uc.stop()
 		return
 	}

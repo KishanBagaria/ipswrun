@@ -35,9 +35,10 @@ const (
 	waitSignal
 	waitRWLock
 	waitPort
+	waitLock
 )
 
-var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message"}
+var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message", "a file lock"}
 
 // thread is one guest thread. Its registers are in ctx whenever it is not the one running.
 type thread struct {
@@ -62,6 +63,9 @@ type thread struct {
 
 	reply     uint32   // the port it waits on for the answer to a synchronous message, once it asked for one
 	receiving *message // of a thread waiting for a Mach message: where it wants it
+
+	sigmask  uint32    // the signals it blocks
+	altstack [2]uint64 // its alternate signal stack, if it has one: where, and its size
 
 	pthread uint64  // of a work queue thread: its pthread, which sits on top of its stack
 	serving *kqueue // of a work queue thread: whose events it was started for, if any
@@ -268,6 +272,7 @@ func sysBsdthreadCreate(p *Process, a []uint64) int64 {
 	if t == nil {
 		return -eAGAIN
 	}
+	t.sigmask = p.current.sigmask // a new thread blocks what the one that made it does
 	p.adopt(t, pthread)
 	p.launch(t, p.threadStart, stack&^15, pthread, uint64(t.port), function, arg, 0, flags|pthreadStartTSDSet)
 	p.note("  thread %d created: function %s", t.id, p.where(function))

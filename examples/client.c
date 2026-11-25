@@ -3,11 +3,11 @@
 // do not exist.
 #include <dispatch/dispatch.h>
 #include <mach/mach.h>
-#include <servers/bootstrap.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
+#include "darwin.h"
 #include "service.h"
 #include "xpc_request.h"
 

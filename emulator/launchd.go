@@ -33,6 +33,9 @@ const (
 	routineCheckInMach  = 206 // a check-in as bootstrap_check_in asks it: how a daemon that is not an XPC listener gets its port
 	routineEventStream  = 403 // a daemon asking for the events launchd keeps for it (xpc_set_event_stream_handler)
 	routineJobValue     = 301 // a process asking for one of the values launchd keeps about its job, by number
+	routineStarted      = 802 // libxpc of iOS 14 to 16.0 telling launchd of the process as it starts: its environment, where it is from
+	routineUncork       = 803 // and then that launchd may start the services the process declares (_xpc_uncork_domain)
+	routineImages       = 800 // and, as it loads more (dlopen), the paths of those images, as 802 gives those it started with
 
 	// The values a process asks for.
 	jobManagerUID  = 3 // the user of the launchd domain the process is in
@@ -75,6 +78,9 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 	case routine == routineEventStream:
 		// What launchd has for a daemon on one of its streams of events, by name: nothing.
 		reply.set("events", []any{})
+	case routine == routineStarted, routine == routineUncork, routine == routineImages:
+		// An answer is all the process waits for, and it reads nothing in it. Without one it
+		// stops, or, unanswered after it started, finds no service at all.
 	case routine == routineJobValue:
 		// Which of launchd's domains the process is in: the system's, or the one of a user who is
 		// logged in at the screen. A program that serves both takes from it which it is to be.

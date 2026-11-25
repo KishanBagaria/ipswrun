@@ -29,10 +29,19 @@ import (
 //go:embed releases.tsv
 var releasesText string
 
+// ios.tsv is the same for iOS and iPadOS from 14 on, for the iPhones from iPhone11,2 and iPads from
+// iPad8,1 on: a snapshot of AppleDB's, with the columns of betas.tsv. One image restores several
+// devices, and each device has its own images, so a release is kept for a --device only where
+// that device is among those its image restores.
+//
+//go:embed ios.tsv
+var iosText string
+
 // release is a restore image to run against. One given as a bare URL or local file path has no
 // version or build until its image has been opened.
 type release struct {
 	Version, Build, URL string
+	OS                  string `json:",omitempty"` // "iOS", or empty for macOS
 }
 
 func (r release) local() bool {
@@ -43,13 +52,63 @@ func (r release) name() string {
 	if r.Build == "" {
 		return r.URL
 	}
-	return fmt.Sprintf("macOS %s (%s)", r.Version, r.Build)
+	return fmt.Sprintf("%s %s (%s)", cmp.Or(r.OS, "macOS"), r.Version, r.Build)
 }
 
 // compressed reports whether the release keeps its shared cache in a deflated ZIP member, which
-// only --stream-compressed can read: macOS 13 and 14.
+// only --stream-compressed can read: macOS 13 and 14, and iOS 16 and 17.
 func (r release) compressed() bool {
+	if r.OS == iOS {
+		return strings.HasPrefix(r.Version, "16.") || strings.HasPrefix(r.Version, "17.")
+	}
 	return strings.HasPrefix(r.Version, "13.") || strings.HasPrefix(r.Version, "14.")
+}
+
+// iOS is the OS of a release for an iPhone, iPad or iPod touch.
+const iOS = "iOS"
+
+// osOf is the OS of the releases for a --device: iOS for an iPhone, iPad or iPod touch, and
+// otherwise macOS, written as empty.
+func osOf(device string) string {
+	for _, prefix := range []string{"iPhone", "iPad", "iPod"} {
+		if strings.HasPrefix(device, prefix) {
+			return iOS
+		}
+	}
+	return ""
+}
+
+// oldestIOS is the first major version of iOS that ipswrun runs. The system volume of iOS 12 and
+// 13 cannot be read by range (its root directory ends early), so they are left out of the
+// releases of the index.
+const oldestIOS = 14
+
+// supportedIOS reports whether ipswrun runs an iOS version.
+func supportedIOS(version string) bool {
+	first, _, _ := strings.Cut(version, ".")
+	major, err := strconv.Atoi(first)
+	return err != nil || major >= oldestIOS
+}
+
+// splitSelector is the comma-separated parts of a release selector. The URL or path of an iOS
+// image has commas of its own (iPhone11,2,iPhone11,4_18.7_22H20_Restore.ipsw): a part that is
+// one runs on to the next that ends in .ipsw, if one does.
+func splitSelector(selector string) []string {
+	parts := strings.Split(selector, ",")
+	var out []string
+	for i := 0; i < len(parts); i++ {
+		part := parts[i]
+		if image := strings.Contains(part, "/") || strings.HasPrefix(part, "file:"); image && !strings.HasSuffix(part, ".ipsw") {
+			for j := i + 1; j < len(parts); j++ {
+				if strings.HasSuffix(parts[j], ".ipsw") {
+					part, i = strings.Join(parts[i:j+1], ","), j
+					break
+				}
+			}
+		}
+		out = append(out, part)
+	}
+	return out
 }
 
 // parseReleases reads releases.tsv: a line of column names, then one release a line.
@@ -57,7 +116,7 @@ func parseReleases(text string) []release {
 	var out []release
 	for _, line := range strings.Split(text, "\n")[1:] {
 		if fields := strings.Split(line, "\t"); len(fields) == 3 {
-			out = append(out, release{fields[0], fields[1], fields[2]})
+			out = append(out, release{Version: fields[0], Build: fields[1], URL: fields[2]})
 		}
 	}
 	return out
@@ -86,9 +145,14 @@ func sampled(known []release) []release {
 // current release only.
 const feedURL = "https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml"
 
-// indexURL is where the releases neither releases.tsv nor the feed names are looked up, which are
-// those of another --device and those that came and went after this ipswrun was built: ipsw.me's
-// list of every restore image Apple has published for a Mac. Apple publishes no such list itself.
+// iosFeedURL is the same for each iPhone and iPad, in the same form: the list Finder and iTunes
+// restore from.
+const iosFeedURL = "https://itunes.apple.com/WebObjects/MZStore.woa/wa/com.apple.jingle.appserver.client.MZITunesClientCheck/version"
+
+// indexURL is where the releases neither the releases built in nor the feed name are looked up,
+// which are those of another --device and those that came and went after this ipswrun was built:
+// ipsw.me's list of every restore image Apple has published for a device. Apple publishes no such
+// list itself.
 const indexURL = "https://api.ipsw.me/v4/device/%s?type=ipsw"
 
 // errSource is in the error of a name only the feed or the index could have resolved: a failed
@@ -108,14 +172,18 @@ func parseFeed(data []byte, device string) ([]release, error) {
 		return next
 	}
 	var out []release
+	seen := map[string]bool{}
 	for _, version := range dict(feed, "MobileDeviceSoftwareVersionsByVersion") {
 		for _, build := range dict(dict(version, "MobileDeviceSoftwareVersions"), device) {
-			restore := dict(build, "Restore") // absent under "Unknown", which repeats the builds
+			// Absent under "Unknown" and from a "SameAs", which repeat the builds. The iOS feed
+			// also lists the image once under each build it restores over.
+			restore := dict(build, "Restore")
 			r := release{}
 			r.Version, _ = restore["ProductVersion"].(string)
 			r.Build, _ = restore["BuildVersion"].(string)
 			r.URL, _ = restore["FirmwareURL"].(string)
-			if r.Version != "" && r.Build != "" && strings.HasPrefix(r.URL, "https://") {
+			if r.Version != "" && r.Build != "" && strings.HasPrefix(r.URL, "https://") && !seen[r.URL] {
+				seen[r.URL] = true
 				out = append(out, r)
 			}
 		}
@@ -142,7 +210,7 @@ func parseIndex(data []byte) ([]release, error) {
 	var out []release
 	for _, f := range reply.Firmwares {
 		if f.Version != "" && f.Build != "" && f.URL != "" {
-			out = append(out, release{f.Version, f.Build, f.URL})
+			out = append(out, release{Version: f.Version, Build: f.Build, URL: f.URL})
 		}
 	}
 	if len(out) == 0 {
@@ -190,7 +258,11 @@ func get(from string) ([]byte, error) {
 
 // fetchCurrent asks Apple which release device is currently offered.
 func fetchCurrent(device string) ([]release, error) {
-	data, err := get(feedURL)
+	from := feedURL
+	if osOf(device) == iOS {
+		from = iosFeedURL
+	}
+	data, err := get(from)
 	if err != nil {
 		return nil, err
 	}
@@ -212,12 +284,12 @@ func fetchIndex(device string) ([]release, error) {
 //go:embed betas.tsv
 var betasText string
 
-// parseBetas reads betas.tsv, keeping the betas there are for device.
-func parseBetas(text, device string) []release {
+// parseByDevice reads betas.tsv or ios.tsv, keeping the releases there are for device.
+func parseByDevice(text, device string) []release {
 	var out []release
 	for _, line := range strings.Split(text, "\n")[1:] {
 		if fields := strings.Split(line, "\t"); len(fields) == 4 && slices.Contains(strings.Fields(fields[3]), device) {
-			out = append(out, release{fields[0], fields[1], fields[2]})
+			out = append(out, release{Version: fields[0], Build: fields[1], URL: fields[2]})
 		}
 	}
 	return out
@@ -261,7 +333,7 @@ func filter(pool []release, keep func(release) bool) []release {
 func selectReleases(known, betas []release, selector string, current, index func() ([]release, error)) (out []release, note error, err error) {
 	current, index = sync.OnceValues(current), sync.OnceValues(index)
 	seen := map[string]bool{}
-	for _, part := range strings.Split(selector, ",") {
+	for _, part := range splitSelector(selector) {
 		exactly := named(part)
 		under := func(r release) bool { return strings.HasPrefix(r.Version, part+".") }
 		var feedErr error
@@ -314,7 +386,7 @@ func selectReleases(known, betas []release, selector string, current, index func
 			matched = filter(pool, func(r release) bool { return strings.HasPrefix(r.Version, prefix) })
 			note = cmp.Or(note, feedErr)
 			if len(matched) == 0 {
-				return nil, nil, noRelease("the releases built in")
+				return nil, nil, noRelease("the releases known for this --device")
 			}
 		case part == "latest":
 			if matched = offered(); feedErr != nil {

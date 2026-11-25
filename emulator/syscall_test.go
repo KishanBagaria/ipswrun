@@ -343,6 +343,14 @@ func TestBugFixes(t *testing.T) {
 			t.Errorf("hw.model = %q, want Mac16,1", got)
 		}
 
+		// open_dprotected_np creates a file as open does, whatever the protection class.
+		p.write(dataAddr, str(GuestHome+"/protected"))
+		if fd, carry, stopped := p.trap(number(t, "open_dprotected_np"), dataAddr, 0x201, 4, 0, 0o600); stopped != "" || carry || fd < 3 {
+			t.Errorf("open_dprotected_np: fd=%d carry=%v stopped=%q", fd, carry, stopped)
+		} else {
+			p.trap(number(t, "close"), fd)
+		}
+
 		// chdir, fchdir, relative paths, AT_FDCWD, and F_GETPATH (getcwd).
 		p.write(dataAddr, str(GuestHome+"/sub"))
 		if x0, carry, _ := p.trap(number(t, "mkdir"), dataAddr, 0o755); carry || x0 != 0 {
@@ -421,4 +429,25 @@ func TestBugFixes(t *testing.T) {
 			t.Errorf("captured stdout=%q stderr=%q", p.Stdout(), p.Stderr())
 		}
 	})
+}
+
+// An AMX instruction stops the run as unimplemented and says what it is, rather than as an
+// unexplained CPU exception.
+func TestAMXStops(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		p.fault, p.faultKind = "", StopOther
+		p.write(codeAddr, le32(0x00201220)) // AMX set
+		if err := p.uc.start(codeAddr, codeAddr+4, 1000); err != nil && p.fault == "" {
+			p.fault = err.Error()
+		}
+		if !strings.HasPrefix(p.fault, "AMX instruction 00201220") || p.faultKind != StopUnimplemented {
+			t.Errorf("an AMX instruction stopped with %q, kind %d", p.fault, p.faultKind)
+		}
+	})
+	for instruction, want := range map[uint32]bool{0x00201000: true, 0x002013ff: true, 0x00201400: false, 0xd503201f: false} {
+		if amx(instruction) != want {
+			t.Errorf("amx(%08x) = %v", instruction, !want)
+		}
+	}
 }

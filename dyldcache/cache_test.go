@@ -360,3 +360,14 @@ func TestImage(t *testing.T) {
 		}
 	}
 }
+
+func TestPlatform(t *testing.T) {
+	for _, want := range []Platform{MacOS, IOS} {
+		main := cacheFile(1, 0x188, testMapping{address: testBase, pages: pages(1)})
+		// The platform is the low byte of a bitfield whose other bits say more of the cache.
+		le.PutUint32(main[0xD8:], uint32(want)|1<<8)
+		if got := open(t, map[string]blob{"": main}).Platform; got != want {
+			t.Errorf("platform %v read as %v", want, got)
+		}
+	}
+}

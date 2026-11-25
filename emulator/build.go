@@ -20,11 +20,22 @@ import (
 // CacheName is the file name of the arm64e dyld shared cache; subcaches add a suffix.
 const CacheName = "dyld_shared_cache_arm64e"
 
+// cacheLocations are where a restore image may keep its dyld shared cache, in the order they are
+// looked in: macOS 13 and later and iOS 16 and later have it in the SystemOS cryptex, earlier
+// releases on the system volume. macOS keeps it in /System/Library/dyld, iOS in the directory
+// macOS used before 11.
+var cacheLocations = []struct{ volume, dir string }{
+	{rangefs.SystemOS, "/System/Library/dyld"}, {rangefs.SystemOS, "/System/Library/Caches/com.apple.dyld"},
+	{rangefs.FileSystem, "/System/Library/dyld"}, {rangefs.FileSystem, "/System/Library/Caches/com.apple.dyld"},
+}
+
 // BaseEnv is the environment every guest gets: no preference daemon, no allocator features that
-// need address space or kernel support the emulator lacks, and the emulated home. A run that
-// has what one of these stands in for takes it out again (see Run.Env).
-var BaseEnv = []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "MallocDeferredReclaim=0", "HOME=" + GuestHome,
-	"CFFIXED_USER_HOME=" + GuestHome, "TMPDIR=" + GuestHome + "/tmp/"}
+// need address space or kernel support the emulator lacks, and the emulated home (see HomeOf). A
+// run that has what one of these stands in for takes it out again (see Run.Env).
+func BaseEnv(home string) []string {
+	return []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "MallocDeferredReclaim=0", "HOME=" + home,
+		"CFFIXED_USER_HOME=" + home, "TMPDIR=" + home + "/tmp/"}
+}
 
 // DefaultSystem is what a guest may read from the build's system volume unless told otherwise:
 // the feature flags, the system version, ICU's data (locales, calendars, time zones) and the
@@ -39,7 +50,7 @@ const SystemPrefix = "system:"
 // Run describes one guest execution against a build.
 type Run struct {
 	Unicorn    string   // path of the verified libunicorn (see EnsureUnicorn)
-	Home       string   // host directory behind GuestHome
+	Home       string   // host directory behind the guest's home (see HomeOf)
 	Mounts     []Mount  // more host directories the guests may change (see CheckMounts)
 	Services   []string // the Mach services the guest provides: the names it may check in with launchd
 	Executable string   // host path of the guest Mach-O (arm64, linked against the cache), or with SystemPrefix its path in the build
@@ -58,8 +69,16 @@ type Run struct {
 
 var leadingDigits = regexp.MustCompile(`^\d+`)
 
-// nestedFramework matches the directory of a framework that is inside another.
-var nestedFramework = regexp.MustCompile(`^/System/Library/(Private)?Frameworks/.+\.framework/.+\.framework$`)
+// inCacheDir says whether path is one of dirs or below one, other than / itself: whether it, or
+// a symbolic link on its way, could lead into one.
+func inCacheDir(dirs map[string]bool, path string) bool {
+	for d := path; d != "/" && d != "."; d = pathpkg.Dir(d) {
+		if dirs[d] {
+			return true
+		}
+	}
+	return false
+}
 
 // realDirectory is the path of a directory of the system volume with every symbolic link on the
 // way to it followed; empty if there is no such directory.
@@ -92,8 +111,26 @@ func realDirectory(image *rangefs.Image, path string) (string, error) {
 	return real, nil
 }
 
+// visibleEntries lists a directory of the volume with only the entries visible says may be seen.
+func visibleEntries(image *rangefs.Image, vol, dir string, visible func(string) bool) func() ([]string, error) {
+	return sync.OnceValues(func() ([]string, error) { // the image does not change
+		entries, err := image.ReadDir(vol, dir)
+		if err != nil {
+			return nil, err
+		}
+		var shown []string
+		for _, name := range entries {
+			if visible(pathpkg.Join(dir, name)) {
+				shown = append(shown, name)
+			}
+		}
+		return shown, nil
+	})
+}
+
 // RunBuild starts the guest, and the daemons beside it, inside the userland of the build in image
-// and runs them until the guest exits. The machine is returned even when the run fails, for its
+// and runs them until the guest exits. The build may be of macOS or of iOS: which one is the
+// returned cache's Platform. The machine is returned even when the run fails, for its
 // diagnostics; the caller closes it.
 func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error) {
 	if err := os.MkdirAll(filepath.Join(run.Home, "tmp"), 0o777); err != nil { // BaseEnv's TMPDIR
@@ -108,20 +145,24 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		notes = os.Stderr
 	}
 	var main *rangefs.File
-	var volume, guestDir string
+	var volume, dir, guestDir string
 	var skipped []error
-	for _, candidate := range [][2]string{{rangefs.SystemOS, cryptex + "/System/Library/dyld"}, {rangefs.FileSystem, "/System/Library/dyld"}} {
-		f, err := image.Open(candidate[0], "/System/Library/dyld/"+CacheName)
+	for _, candidate := range cacheLocations {
+		f, err := image.Open(candidate.volume, candidate.dir+"/"+CacheName)
 		if err != nil {
-			// A release from before the cryptex has nothing to say about lacking one.
-			if candidate[0] != rangefs.SystemOS || !errors.Is(err, rangefs.ErrNoSystemOS) {
+			// A release from before the cryptex has nothing to say about lacking one, and one
+			// volume's failure is said once, not for each directory looked in there.
+			if !errors.Is(err, rangefs.ErrNoSystemOS) && !slices.ContainsFunc(skipped, func(e error) bool { return e.Error() == err.Error() }) {
 				fmt.Fprintf(notes, "note: %v\n", err)
 			}
 			skipped = append(skipped, err)
 			continue
 		}
 		if f != nil {
-			main, volume, guestDir = f, candidate[0], candidate[1]
+			main, volume, dir, guestDir = f, candidate.volume, candidate.dir, candidate.dir
+			if volume == rangefs.SystemOS {
+				guestDir = cryptex + dir
+			}
 			break
 		}
 	}
@@ -133,9 +174,9 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		if suffix == "" {
 			return main, nil
 		}
-		f, err := image.Open(volume, "/System/Library/dyld/"+CacheName+suffix)
+		f, err := image.Open(volume, dir+"/"+CacheName+suffix)
 		if err == nil && f == nil {
-			err = fmt.Errorf("%s:/System/Library/dyld/%s%s is missing", volume, CacheName, suffix)
+			err = fmt.Errorf("%s:%s/%s%s is missing", volume, dir, CacheName, suffix)
 		}
 		if err != nil {
 			return nil, err
@@ -165,50 +206,98 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		}
 		return false
 	}
+	// cacheDirs are the directories on the way to the shared cache's images, by their install
+	// names, without symbolic links.
+	cacheDirs := sync.OnceValues(func() (map[string]bool, error) {
+		paths, err := cache.ImagePaths()
+		if err != nil {
+			return nil, err
+		}
+		dirs := map[string]bool{}
+		for _, p := range paths {
+			for d := pathpkg.Dir(p); d != "/" && d != "." && !dirs[d]; d = pathpkg.Dir(d) {
+				dirs[d] = true
+			}
+		}
+		return dirs, nil
+	})
+	reals := map[string]string{} // realDirectory, once for each path: walks share their directories
+	realDir := func(path string) (string, error) {
+		if real, ok := reals[path]; ok {
+			return real, nil
+		}
+		real, err := realDirectory(image, path)
+		if err == nil {
+			reals[path] = real
+		}
+		return real, err
+	}
 	known := map[string]SystemFile{}
 	system := func(path string) (SystemFile, error) {
 		if f, ok := known[path]; ok {
 			return f, nil
 		}
-		if !isAllowed(path) {
-			// A framework inside another is reached through a symbolic link (Frameworks, for
-			// Versions/Current/Frameworks). Its code is in the shared cache under its real path,
-			// which dyld finds by opening the framework's directory: that much of it exists.
-			if !nestedFramework.MatchString(path) {
+		// What the SystemOS cryptex has is under its mount point, as dyld looks for it there when
+		// it is not on the system volume (libobjc-trampolines.dylib from iOS 16). The same
+		// paths of it are allowed as of the system volume.
+		vol, rel := rangefs.FileSystem, path
+		if inCryptex, ok := strings.CutPrefix(path, cryptex+"/"); ok {
+			vol, rel = rangefs.SystemOS, "/"+inCryptex
+		}
+		if !isAllowed(rel) {
+			// A sealed system volume has the directories on the way to every image of the shared
+			// cache, although the images' code is only in the cache, and dyld looks at them: it
+			// finds a framework by its directory, and dlopen walks the path it is given, through
+			// symbolic links (a framework inside another is reached through Frameworks, for
+			// Versions/Current/Frameworks). Those directories are there, as the volume has them,
+			// listing only what is allowed or leads to the cache; nothing else is.
+			if vol != rangefs.FileSystem {
 				return SystemFile{}, nil
 			}
-			real, err := realDirectory(image, path)
+			dirs, err := cacheDirs()
 			if err != nil {
 				return SystemFile{}, err
 			}
+			real := ""
+			if inCacheDir(dirs, path) {
+				if real, err = realDir(path); err != nil {
+					return SystemFile{}, err
+				}
+			}
 			var f SystemFile
-			if real != "" && real != path {
-				f = SystemFile{Dir: true, Real: real}
+			if dirs[real] {
+				f = SystemFile{Dir: true, ReadDir: visibleEntries(image, vol, real, func(p string) bool { return dirs[p] || isAllowed(p) })}
+				if real != path {
+					// Its last part may be a link itself, which those who walk the path see.
+					parent, err := realDir(pathpkg.Dir(path))
+					if err != nil {
+						return SystemFile{}, err
+					}
+					entry, err := image.Stat(vol, pathpkg.Join(parent, pathpkg.Base(path)))
+					if err != nil {
+						return SystemFile{}, err
+					}
+					f.Real = real
+					if entry.Kind == rangefs.Symlink {
+						f.Link = entry.Target
+					}
+				}
 			}
 			known[path] = f
 			return f, nil
 		}
-		entry, err := image.Stat(rangefs.FileSystem, path)
+		entry, err := image.Stat(vol, rel)
+		if errors.Is(err, rangefs.ErrNoSystemOS) { // a release with no cryptex has nothing there
+			known[path] = SystemFile{}
+			return SystemFile{}, nil
+		}
 		if err != nil {
 			return SystemFile{}, err
 		}
 		var f SystemFile
 		switch entry.Kind {
 		case rangefs.Directory:
-			dirPath := path
-			f = SystemFile{Dir: true, ReadDir: sync.OnceValues(func() ([]string, error) { // the image does not change
-				entries, err := image.ReadDir(rangefs.FileSystem, dirPath)
-				if err != nil {
-					return nil, err
-				}
-				var visible []string
-				for _, name := range entries {
-					if isAllowed(pathpkg.Join(dirPath, name)) {
-						visible = append(visible, name)
-					}
-				}
-				return visible, nil
-			})}
+			f = SystemFile{Dir: true, ReadDir: visibleEntries(image, vol, rel, isAllowed)}
 		case rangefs.Regular:
 			f = SystemFile{File: entry.File}
 		}
@@ -218,11 +307,11 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 
 	build := image.Build()
 	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, System: system, Trace: run.Trace, Survey: run.Survey,
-		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device()}})
+		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device(), "board": image.Board()}})
 	if err != nil {
 		return nil, cache, err
 	}
-	env := slices.Clone(BaseEnv)
+	env := BaseEnv(HomeOf(cache.Platform))
 	for _, change := range run.Env {
 		if name, _, set := strings.Cut(change, "="); set {
 			env = append(env, change)

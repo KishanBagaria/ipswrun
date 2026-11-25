@@ -13,11 +13,11 @@
 #include <dispatch/dispatch.h>
 #include <libkern/OSByteOrder.h>
 #include <mach/mach.h>
-#include <servers/bootstrap.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "darwin.h"
 #include "xpc_request.h"
 
 #define WAIT 20000 // milliseconds a wait may take before it is given up: a daemon takes its time to start, the more so emulated

@@ -26,6 +26,7 @@ const (
 	eACCES    = 13
 	eFAULT    = 14
 	eEXIST    = 17
+	eMFILE    = 24
 	eXDEV     = 18
 	eNOTDIR   = 20
 	eISDIR    = 21
@@ -112,6 +113,7 @@ type target struct {
 	data    []byte
 	cache   dyldcache.File
 	readDir func() ([]string, error)
+	link    string // of a symbolic link on the system volume to the directory it is (see SystemFile.Link)
 }
 
 // fd is the descriptor for a target that is not a host file.
@@ -238,27 +240,30 @@ const (
 	masterPasswdFile = "/private/etc/master.passwd"
 )
 
-var (
-	userID       = strconv.Itoa(guestUID) + ":" + strconv.Itoa(guestGID)
-	passwd       = "root:*:0:0:System Administrator:/var/root:/bin/sh\nemu:*:" + userID + ":emu:" + GuestHome + ":/bin/zsh\n"
-	masterPasswd = "root:*:0:0::0:0:System Administrator:/var/root:/bin/sh\nemu:*:" + userID + "::0:0:emu:" + GuestHome + ":/bin/zsh\n"
-)
+func passwd(u user, master bool) string {
+	id := strconv.Itoa(int(u.uid)) + ":" + strconv.Itoa(int(u.gid))
+	if master {
+		return "root:*:0:0::0:0:System Administrator:/var/root:/bin/sh\n" + u.name + ":*:" + id + "::0:0:" + u.name + ":" + u.home + ":" + u.shell + "\n"
+	}
+	return "root:*:0:0:System Administrator:/var/root:/bin/sh\n" + u.name + ":*:" + id + ":" + u.name + ":" + u.home + ":" + u.shell + "\n"
+}
 
 func crcInode(path string) uint64 { return uint64(crc32.ChecksumIEEE([]byte(path)) & 0xFFFFFF) }
 
 // Mount is a host directory the guest sees, and may change, at a guest directory. The home is one.
 type Mount struct{ Guest, Host string }
 
-// CheckMounts says what is wrong with the mounts a guest is given besides its home: each is at
-// an absolute guest directory of its own, and neither the root nor the home.
-func CheckMounts(mounts []Mount) error {
-	seen := map[string]bool{GuestHome: true}
+// CheckMounts says what is wrong with the mounts a guest is given besides its home (GuestHome or
+// GuestHomeIOS): each is at an absolute guest directory of its own, and neither the root nor the
+// home.
+func CheckMounts(mounts []Mount, home string) error {
+	seen := map[string]bool{home: true}
 	for _, m := range mounts {
 		guest := canonical(m.Guest)
 		switch {
 		case !strings.HasPrefix(m.Guest, "/") || guest == "/":
 			return fmt.Errorf("a mount at %q: it has to be at an absolute guest directory other than the root", m.Guest)
-		case guest == GuestHome:
+		case guest == home:
 			return fmt.Errorf("a mount at %s: that is the guest's home, which is given as the home", guest)
 		case seen[guest]:
 			return fmt.Errorf("two mounts at %s", guest)
@@ -277,15 +282,20 @@ func (p *Process) resolve(path string) (target, bool) {
 	if path == "" {
 		return target{}, false
 	}
-	if !strings.HasPrefix(path, "/") {
-		path = p.cwd + "/" + path
-	}
-	path = canonical(path)
+	path = p.absolute(path)
 	t, ok := p.lookup(path)
 	if t.path == "" {
 		t.path = path
 	}
 	return t, ok
+}
+
+// absolute is the canonical form of a guest path, relative to the working directory or not.
+func (p *Process) absolute(path string) string {
+	if !strings.HasPrefix(path, "/") {
+		path = p.cwd + "/" + path
+	}
+	return canonical(path)
 }
 
 func (p *Process) lookup(path string) (target, bool) {
@@ -297,9 +307,9 @@ func (p *Process) lookup(path string) (target, bool) {
 	case path == guestDyld:
 		return target{kind: dataFD, data: p.dyld}, true
 	case path == passwdFile:
-		return target{kind: dataFD, data: []byte(passwd)}, true
+		return target{kind: dataFD, data: []byte(passwd(p.m.user, false))}, true
 	case path == masterPasswdFile:
-		return target{kind: dataFD, data: []byte(masterPasswd)}, true
+		return target{kind: dataFD, data: []byte(passwd(p.m.user, true))}, true
 	}
 	if f, ok := p.cachePaths[path]; ok {
 		return target{kind: cacheFD, cache: f}, true
@@ -328,7 +338,7 @@ func (p *Process) lookup(path string) (target, bool) {
 			stopf("%v", err)
 		}
 		if f.Dir {
-			return target{kind: dirFD, path: f.Real, readDir: f.ReadDir}, true
+			return target{kind: dirFD, path: f.Real, readDir: f.ReadDir, link: f.Link}, true
 		}
 		if f.File != nil {
 			return target{kind: cacheFD, cache: f.File}, true
@@ -340,15 +350,15 @@ func (p *Process) lookup(path string) (target, bool) {
 	return target{}, false
 }
 
-// statBuf is a struct stat64.
-func statBuf(i fileInfo) []byte {
+// statBuf is a struct stat64 of a file the user owns.
+func statBuf(i fileInfo, owner user) []byte {
 	b := make([]byte, 144)
 	le.PutUint32(b[0:], i.dev)
 	le.PutUint16(b[4:], i.mode)
 	le.PutUint16(b[6:], 1)
 	le.PutUint64(b[8:], i.ino)
-	le.PutUint32(b[16:], guestUID)
-	le.PutUint32(b[20:], guestGID)
+	le.PutUint32(b[16:], owner.uid)
+	le.PutUint32(b[20:], owner.gid)
 	for at := 32; at < 96; at += 16 { // access, modification, change and birth times
 		le.PutUint64(b[at:], uint64(i.mtime))
 	}
@@ -362,12 +372,13 @@ const (
 	fixedMtime = 1700000000
 	modeDir    = syscall.S_IFDIR | 0o755
 	modeFile   = syscall.S_IFREG | 0o755
+	modeLink   = syscall.S_IFLNK | 0o755
 )
 
 // putStat writes the struct stat64 of a file that was described without an error.
 func (p *Process) putStat(buf uint64, info fileInfo, errno int64) int64 {
 	if errno == 0 {
-		p.write(buf, statBuf(info))
+		p.write(buf, statBuf(info, p.m.user))
 	}
 	return errno
 }
@@ -394,6 +405,9 @@ func sysFstat64(p *Process, a []uint64) int64 {
 }
 
 func (p *Process) doOpen(path string, flags, mode uint64) int64 {
+	if p.full() {
+		return -eMFILE
+	}
 	t, ok := p.resolve(path)
 	if !ok {
 		p.note("  ENOENT open %s", path)
@@ -419,7 +433,15 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 			err error
 		)
 		if t.root != nil {
+			// A file it creates has the mode asked for less the guest's umask, not the host's.
+			var st syscall.Stat_t
+			created := flags&0x200 != 0 && statInRoot(t.root, t.rel, false, &st) != nil
 			h, err = openInRoot(t.root, t.rel, hostFlags, uint32(mode&0o777))
+			if err == nil && created {
+				if err = syscall.Fchmod(h, uint32(mode&0o777)&^p.umask()); err != nil {
+					syscall.Close(h)
+				}
+			}
 		} else {
 			h, err = syscall.Open(t.host, hostFlags|syscall.O_CLOEXEC, uint32(mode&0o777))
 		}
@@ -435,6 +457,52 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 }
 
 const maxFD = 10240
+
+// umask is the process's file mode creation mask: 022, as launchd gives, until it changes it.
+func (p *Process) umask() uint32 {
+	if !p.cmaskSet {
+		return 0o22
+	}
+	return p.cmask
+}
+
+func sysUmask(p *Process, a []uint64) int64 {
+	old := p.umask()
+	p.cmask, p.cmaskSet = uint32(a[0])&0o777, true
+	return int64(old)
+}
+
+// sysFsync writes a host file's data out, through the host's fsync, which also answers for the
+// standard descriptors (EINVAL for a pipe, as here). What is read from the system volume has
+// nothing to write. Of shared memory and kqueues, what a kernel answers is not known here.
+func sysFsync(p *Process, a []uint64) int64 {
+	f := p.fds[a[0]]
+	switch {
+	case f == nil:
+		return -eBADF
+	case f.kind == hostFD || f.kind == stdioFD:
+		if err := syscall.Fsync(f.host); err != nil {
+			return hostErrno(err)
+		}
+		return 0
+	case f.shared == nil && f.path != "":
+		return 0
+	}
+	p.unimplemented("fsync of shared memory or a kqueue", a)
+	return -eNOSYS
+}
+
+// sysSync flushes what the guests wrote, which is the host's to write: through the host's sync.
+func sysSync(p *Process, a []uint64) int64 {
+	syscall.Sync()
+	return 0
+}
+
+// fdLimit is the first descriptor number a process may not have: RLIMIT_NOFILE's soft limit.
+func (p *Process) fdLimit() uint64 { return min(p.rlimit(rlimitNofile)[0], maxFD) }
+
+// full says whether the process has as many descriptors as its limit lets it (EMFILE).
+func (p *Process) full() bool { return p.allocFD(0) >= p.fdLimit() }
 
 // allocFD returns the lowest unused file descriptor number at or above minFD.
 func (p *Process) allocFD(minFD uint64) uint64 {
@@ -496,6 +564,11 @@ func sysOpenat(p *Process, a []uint64) int64 {
 
 func sysGuardedOpen(p *Process, a []uint64) int64 { return p.doOpen(p.cstr(a[0]), a[3], a[4]) }
 
+// sysOpenDprotected (open_dprotected_np) opens a file with a data protection class, which only a
+// device with a passcode enforces: here it is an open. dyld of iOS 15 to 17.0 creates files this
+// way. Its arguments are the path, the flags, the class, flags of its own and the mode.
+func sysOpenDprotected(p *Process, a []uint64) int64 { return p.doOpen(p.cstr(a[0]), a[1], a[4]) }
+
 func sysGuardedClose(p *Process, a []uint64) int64 { return sysClose(p, a[:1]) }
 func sysGuardedWrite(p *Process, a []uint64) int64 { return sysWrite(p, []uint64{a[0], a[2], a[3]}) }
 func sysGuardedPwrite(p *Process, a []uint64) int64 {
@@ -510,6 +583,7 @@ func (p *Process) closeFD(n uint64) int64 {
 	delete(p.fds, n)
 	if f.kind == hostFD {
 		closeHost(f.host)
+		p.m.retryLocks() // its locks went with it, if it was the last descriptor of its file
 	}
 	if f.shared != nil {
 		f.shared.release()
@@ -755,6 +829,7 @@ func (p *Process) doUnlink(path string, dir bool) int64 {
 	case !dir && fi.IsDir():
 		return -ePERM
 	}
+	p.forgetFile(t)
 	return hostCall(t.root.Remove(t.rel))
 }
 
@@ -769,7 +844,10 @@ func (p *Process) doMkdir(path string, mode uint64) int64 {
 	if !ok {
 		return -eACCES
 	}
-	return hostCall(t.root.Mkdir(t.rel, os.FileMode(mode&0o777)))
+	if err := t.root.Mkdir(t.rel, os.FileMode(mode&0o777)); err != nil {
+		return hostErrno(err)
+	}
+	return hostCall(t.root.Chmod(t.rel, os.FileMode(uint32(mode&0o777)&^p.umask())))
 }
 
 func sysMkdir(p *Process, a []uint64) int64 { return p.doMkdir(p.cstr(a[0]), a[1]) }
@@ -786,6 +864,7 @@ func (p *Process) doRename(from, to string) int64 {
 	if t1.root != t2.root {
 		return -eXDEV
 	}
+	p.forgetFile(t2) // what it replaces, if anything
 	return hostCall(t1.root.Rename(t1.rel, t2.rel))
 }
 
@@ -826,13 +905,16 @@ func sysTruncate(p *Process, a []uint64) int64 {
 
 // doReadlink serves the links a guest makes under its home or a mount; nothing else is a symbolic link.
 func (p *Process) doReadlink(path string, buf, size uint64) int64 {
-	t, ok := p.writableTarget(path)
-	if !ok {
+	t, ok := p.resolve(path)
+	link := t.link // one of the system volume's
+	switch {
+	case t.root != nil:
+		var err error
+		if link, err = t.root.Readlink(t.rel); err != nil {
+			return hostErrno(err)
+		}
+	case !ok || link == "":
 		return -eINVAL
-	}
-	link, err := t.root.Readlink(t.rel)
-	if err != nil {
-		return hostErrno(err)
 	}
 	n := min(uint64(len(link)), size)
 	p.write(buf, []byte(link)[:n])
@@ -948,7 +1030,7 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	if int64(minFD) < 0 || minFD >= maxFD {
+	if int64(minFD) < 0 || minFD >= p.fdLimit() {
 		if exact {
 			return -eBADF
 		}
@@ -976,8 +1058,11 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 	n := minFD
 	if exact {
 		p.closeFD(n) // if open
-	} else {
-		n = p.allocFD(minFD)
+	} else if n = p.allocFD(minFD); n >= p.fdLimit() {
+		if dup.kind == hostFD {
+			syscall.Close(dup.host)
+		}
+		return -eMFILE
 	}
 	p.fds[n] = dup
 	return int64(n)

@@ -1,0 +1,7 @@
+{
+  "build": "19G82",
+  "cache_uuid": "E21ED098-697D-3D64-86C1-4713CDB10217",
+  "exit_code": 0,
+  "output": "ping     reply 200 \"PING FROM THE MAIN THREAD\" on the reply port 1, server saw its port 1 and a reply port 1\ntimeout  empty port: MACH_RCV_TIMED_OUT 1 after 10 ms 1\nportset  2 members 1: message to the second came to it 1, to the first 1, then empty 1\nlarge    sent 1, 64-byte buffer: MACH_RCV_TOO_LARGE 1 needs 1048, retry got 1048 bytes 1 intact 1\ncomplex  complex 1 descriptors 2: 65536 bytes out of line at another address 1 intact 1 freed 1, send right 1 carried a message 1\nmk_timer created 1 armed 1 fired 1 after 5 ms 1 destroyed 1\nsource   sent 1, handler received 1 message id 700 timed out 0\nsource   cancelled 1 timed out 0\nrunloop  timer every 10 ms fired 3 times, run stopped\nrunloop  CFMachPort sent 1, callback ran 1 time with message 800 \"to a CFMachPort\", run handled a source\nrunloop  nothing to do for 50 ms 1, run timed out\nxpc      sync reply: text \"hello over xpc\" number 42 data 102400 bytes intact 1\nxpc      async reply: a dictionary number -7 timed out 0\nxpc      listener got 1 connection and 2 requests, client no events 1\nxpc      cancelled client got XPC_ERROR_CONNECTION_INVALID timed out 0\nxpc      its peer in the listener got XPC_ERROR_CONNECTION_INVALID timed out 0\nxpc      no such service: reply XPC_ERROR_CONNECTION_INVALID, handler got XPC_ERROR_CONNECTION_INVALID timed out 0\n",
+  "version": "15.6.1"
+}

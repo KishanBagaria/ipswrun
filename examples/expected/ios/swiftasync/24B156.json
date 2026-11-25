@@ -1,0 +1,7 @@
+{
+  "build": "24B156",
+  "cache_uuid": "151C628E-9A73-3F69-BD30-3FA1FAF475D8",
+  "exit_code": 0,
+  "output": "group    100 tasks: squares 338350 actor 5050\nlet      884\nsleep    at least 50 ms true, under 5 s true\nresume   7\ndetached 81\ncancel   true\n",
+  "version": "27.2.1"
+}

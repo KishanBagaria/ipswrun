@@ -11,7 +11,7 @@ import (
 	"sort"
 )
 
-// PageSize is the arm64 macOS page size.
+// PageSize is the page size of arm64 macOS and iOS.
 const PageSize = 0x4000
 
 var le = binary.LittleEndian
@@ -22,6 +22,24 @@ type File interface {
 	// Pread returns up to n bytes at off; fewer only at the end of the file. The bytes are the
 	// caller's to change.
 	Pread(off, n int64) ([]byte, error)
+}
+
+// Platform is the system a cache was built for, as the LC_BUILD_VERSION of a Mach-O names it.
+type Platform uint8
+
+const (
+	MacOS Platform = 1
+	IOS   Platform = 2
+)
+
+func (p Platform) String() string {
+	switch p {
+	case MacOS:
+		return "macOS"
+	case IOS:
+		return "iOS"
+	}
+	return fmt.Sprintf("platform %d", uint8(p))
 }
 
 // Mapping is one region of the cache's address space and the file range behind it.
@@ -50,6 +68,7 @@ type Cache struct {
 	Files    map[string]File // by file name suffix; "" is the main file
 	UUID     [16]byte
 	Base     uint64
+	Platform Platform // of the system the cache was built for
 
 	textsOff, textsCount uint64
 	texts                []imageText // sorted by address; read on first use
@@ -77,6 +96,7 @@ func Open(opener func(suffix string) (File, error)) (*Cache, error) {
 	c := &Cache{Files: map[string]File{"": main}, textsOff: le.Uint64(h[0x88:]), textsCount: le.Uint64(h[0x90:])}
 	headerSize := le.Uint32(h[0x10:])
 	copy(c.UUID[:], h[0x58:0x68])
+	c.Platform = Platform(h[0xD8]) // the low 8 bits of the header's platform bitfield
 	if err := c.add(main, h); err != nil {
 		return nil, err
 	}
@@ -169,16 +189,8 @@ func (c *Cache) Mapping(addr uint64) *Mapping {
 // it; path is empty when no image's text does.
 func (c *Cache) Image(addr uint64) (path string, offset uint64, err error) {
 	main := c.Files[""]
-	if c.texts == nil {
-		t, err := main.Pread(int64(c.textsOff), int64(c.textsCount)*32)
-		if err != nil {
-			return "", 0, err
-		}
-		c.texts = []imageText{}
-		for ; len(t) >= 32; t = t[32:] {
-			c.texts = append(c.texts, imageText{le.Uint64(t[16:]), le.Uint32(t[24:]), le.Uint32(t[28:])})
-		}
-		sort.Slice(c.texts, func(i, j int) bool { return c.texts[i].address < c.texts[j].address })
+	if err := c.readTexts(); err != nil {
+		return "", 0, err
 	}
 	i := sort.Search(len(c.texts), func(i int) bool { return c.texts[i].address > addr }) - 1
 	if i < 0 || addr >= c.texts[i].address+uint64(c.texts[i].size) {
@@ -189,6 +201,48 @@ func (c *Cache) Image(addr uint64) (path string, offset uint64, err error) {
 		return "", 0, err
 	}
 	return cstring(name), addr - c.texts[i].address, nil
+}
+
+// readTexts reads the table of the images' text segments, once.
+func (c *Cache) readTexts() error {
+	if c.texts != nil {
+		return nil
+	}
+	t, err := c.Files[""].Pread(int64(c.textsOff), int64(c.textsCount)*32)
+	if err != nil {
+		return err
+	}
+	c.texts = []imageText{}
+	for ; len(t) >= 32; t = t[32:] {
+		c.texts = append(c.texts, imageText{le.Uint64(t[16:]), le.Uint32(t[24:]), le.Uint32(t[28:])})
+	}
+	sort.Slice(c.texts, func(i, j int) bool { return c.texts[i].address < c.texts[j].address })
+	return nil
+}
+
+// ImagePaths are the install names of the images in the cache.
+func (c *Cache) ImagePaths() ([]string, error) {
+	if err := c.readTexts(); err != nil {
+		return nil, err
+	}
+	if len(c.texts) == 0 {
+		return nil, nil
+	}
+	first, last := c.texts[0].path, c.texts[0].path
+	for _, t := range c.texts {
+		first, last = min(first, t.path), max(last, t.path)
+	}
+	names, err := c.Files[""].Pread(int64(first), int64(last-first)+1024) // the paths are together, in one read
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(c.texts))
+	for _, t := range c.texts {
+		if off := int(t.path - first); off < len(names) {
+			paths = append(paths, cstring(names[off:]))
+		}
+	}
+	return paths, nil
 }
 
 func (m *Mapping) slideInfo() (*slideInfo, error) {

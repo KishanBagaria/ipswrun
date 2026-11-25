@@ -1,0 +1,7 @@
+{
+  "build": "20A362",
+  "cache_uuid": "D3709648-CA48-3851-A382-5C1018B102DE",
+  "exit_code": 0,
+  "output": "request 1 answered \"HELLO, SERVICE\", the service's request 1\nrequest 2 answered \"AND AGAIN\", the service's request 2\nthe service had 1 connection, from this process 1, and 2 requests\n",
+  "version": "16.0"
+}

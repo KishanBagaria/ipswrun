@@ -1,0 +1,7 @@
+{
+  "build": "18H17",
+  "cache_uuid": "3C01FCEA-4C63-3553-8C06-31731FDB76A7",
+  "exit_code": 0,
+  "output": "request 1 answered \"HELLO, SERVICE\", the service's request 1\nrequest 2 answered \"AND AGAIN\", the service's request 2\nthe service had 1 connection, from this process 1, and 2 requests\n",
+  "version": "14.8"
+}

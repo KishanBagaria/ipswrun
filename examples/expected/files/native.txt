@@ -1,0 +1,9 @@
+chmod    0, mode 600; fchmod 0, mode 640
+chown    to its owner 0; to root -1 errno Operation not permitted
+utimes   0, modified 1234567890; setattrlist 0, modified 1500000000
+xattr    set 0, read 4 "blue"; again with XATTR_CREATE -1 File exists; names com.example.colour,com.example.size
+xattr    removed 0, then read -1 Attribute not found; of a system file -1 Attribute not found
+system   chmod -1 Operation not permitted; utimes -1 Operation not permitted; setxattr -1 Operation not permitted
+flock    exclusive 0; another's -1 Resource temporarily unavailable; a thread waited 1, then got it 1 (0)
+signals  handler kept 1, mask 1, flags 0x2; blocked 1; alternate stack 1
+mprotect read-only 0, still reads 'x'; no access 0; unaligned -1 Invalid argument

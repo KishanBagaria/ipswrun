@@ -115,6 +115,8 @@ func sysShmOpen(p *Process, a []uint64) int64 {
 	s := p.m.named[name]
 	p.note("  shm_open %s", name)
 	switch {
+	case p.full():
+		return -eMFILE
 	case s == nil && a[1]&oCreate == 0:
 		return -eNOENT
 	case s == nil:
@@ -138,12 +140,12 @@ func sysShmUnlink(p *Process, a []uint64) int64 {
 	return 0
 }
 
-// mapShared is mmap of shared memory, shared: the mapping is the memory itself.
-func (p *Process) mapShared(s *sharedMemory, addr, length, off uint64, fixed bool) int64 {
+// mapShared is mmap of shared memory, shared: the mapping is the memory itself, denied deny.
+func (p *Process) mapShared(s *sharedMemory, addr, length, off uint64, fixed bool, deny uint32) int64 {
 	if !s.window(off, length) {
 		return -eINVAL
 	}
-	start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, kind: sharedRegion, shared: s, off: off, name: "shared memory"})
+	start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, kind: sharedRegion, shared: s, off: off, name: "shared memory", deny: deny})
 	if !ok {
 		return -eNOMEM
 	}
