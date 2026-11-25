@@ -16,28 +16,31 @@ import (
 )
 
 const (
-	indexMagic      = "IRFC\x00\x00\x00\x01"
+	indexMagic      = "IRFC\x00\x00\x00\x02"
 	indexHeaderSize = 16
-	indexRecordSize = 16
+	indexRecordSize = 24
 	compactSlack    = 16 // rewrite index when at least this many redundant records accumulate
 )
 
-// diskCache stores fetched remote extents for one image in a single sparse file ("data") plus a
-// small append-only binary index ("index"). All index reads and writes coordinate across
-// concurrent processes via an exclusive flock on the data file. While open, it holds a shared
-// flock on "lock" so PruneCache leaves the directory alone.
+// diskCache stores fetched remote extents for one image packed sequentially in an append-only
+// "data" file plus a compact binary "index" mapping remote offsets to file offsets. All data
+// appends and index updates coordinate across concurrent processes via an exclusive flock on the
+// data file. While open, it holds a shared flock on "lock" so PruneCache leaves the directory
+// alone.
 type diskCache struct {
 	dir       string
 	size      int64
 	lockFile  *os.File
 	dataFile  *os.File
 	indexPath string
-	spans     []span // coalesced intervals present in the data file
+	index     os.FileInfo // the index file as of the last sync; its Size is how much was read
+	spans     []span      // sorted, disjoint remote intervals present in the data file
 }
 
-// span is a coalesced half-open interval [off, end) present in the sparse data file.
+// span maps the remote half-open interval [off, end) to [fileOff, fileOff+(end-off)) in dataFile.
 type span struct {
 	off, end int64
+	fileOff  int64
 }
 
 func openDiskCache(cacheDir, url string, size int64) (*diskCache, error) {
@@ -104,100 +107,102 @@ func (c *diskCache) unlock() {
 	_ = syscall.Flock(int(c.dataFile.Fd()), syscall.LOCK_UN)
 }
 
-// load reads the index (or, when there is none yet, migrates any legacy per-extent hex files into
-// the sparse store), coalescing overlapping or adjacent spans and compacting the index when
-// redundant records exist.
+// load reads the index, coalescing contiguous spans and compacting the index when redundant or
+// corrupt records exist. A missing or incompatible-version index yields no spans. Data past the
+// last indexed byte (from an older format or a put whose index append never landed) is dropped.
 func (c *diskCache) load() error {
 	if err := c.lock(syscall.LOCK_EX); err != nil {
 		return err
 	}
 	defer c.unlock()
 
-	st, err := c.dataFile.Stat()
+	f, err := c.openIndex()
 	if err != nil {
 		return err
 	}
-	dataSize := st.Size()
-
-	rawRecords := 0
-	corruptIndex := false
-	raw, err := os.ReadFile(c.indexPath)
-	if err == nil {
-		if len(raw) >= indexHeaderSize &&
-			string(raw[:8]) == indexMagic && int64(binary.LittleEndian.Uint64(raw[8:16])) == c.size {
-			corruptIndex = (len(raw)-indexHeaderSize)%indexRecordSize != 0
-			for at := indexHeaderSize; at+indexRecordSize <= len(raw); at += indexRecordSize {
-				off := int64(binary.LittleEndian.Uint64(raw[at:]))
-				n := int64(binary.LittleEndian.Uint64(raw[at+8:]))
-				rawRecords++
-				if off < 0 || n <= 0 || n > c.size-off || off+n > dataSize {
-					corruptIndex = true
-					continue
-				}
-				c.spans = insertSpan(c.spans, span{off: off, end: off + n})
-			}
-		} else if len(raw) > 0 {
-			corruptIndex = true
-		}
-	} else {
-		// Legacy files can only predate the index, so look for them only when it is missing.
-		migrated, err := c.migrateLegacy()
-		if err != nil || migrated {
-			return err
-		}
+	defer f.Close()
+	dataSize, records, corrupt, err := c.syncLocked(f)
+	if err != nil {
+		return err
 	}
-
-	if corruptIndex || rawRecords-len(c.spans) >= compactSlack {
+	var live int64
+	for _, s := range c.spans {
+		live = max(live, s.fileOff+(s.end-s.off))
+	}
+	if dataSize > live {
+		_ = c.dataFile.Truncate(live)
+	}
+	if corrupt || records-len(c.spans) >= compactSlack {
 		_ = c.writeIndexLocked()
 	}
 	return nil
 }
 
-// migrateLegacy imports any old-format per-extent files ("00000c0ffee0-1000") into the sparse data
-// file and removes them once copied, so existing caches upgrade seamlessly without re-downloading.
-func (c *diskCache) migrateLegacy() (bool, error) {
-	entries, err := os.ReadDir(c.dir)
+func (c *diskCache) openIndex() (*os.File, error) {
+	return os.OpenFile(c.indexPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+}
+
+// refresh picks up extents other processes have stored since this one last read the index. It is
+// best effort: on failure the caller just fetches the bytes again.
+func (c *diskCache) refresh() {
+	st, err := os.Stat(c.indexPath)
+	if err != nil || c.index != nil && os.SameFile(c.index, st) && st.Size() == c.index.Size() {
+		return
+	}
+	if c.lock(syscall.LOCK_SH) != nil {
+		return
+	}
+	defer c.unlock()
+	if f, err := os.Open(c.indexPath); err == nil {
+		_, _, _, _ = c.syncLocked(f)
+		f.Close()
+	}
+}
+
+// syncLocked brings spans up to date with the index file f while the caller holds the data flock.
+// When f is the file last read, only the records appended since are parsed; when the index was
+// replaced (compacted) or never read, spans are rebuilt from the whole file. It returns the data
+// file's size, how many records it parsed and whether any were malformed.
+func (c *diskCache) syncLocked(f *os.File) (dataSize int64, records int, corrupt bool, err error) {
+	ds, err := c.dataFile.Stat()
 	if err != nil {
-		return false, err
+		return 0, 0, false, err
 	}
-	var legacy []string
-	for _, entry := range entries {
-		name := entry.Name()
-		first, second, ok := strings.Cut(name, "-")
-		if !ok {
+	dataSize = ds.Size()
+	st, err := f.Stat()
+	if err != nil {
+		return 0, 0, false, err
+	}
+	var from int64
+	if c.index != nil && os.SameFile(c.index, st) && st.Size() >= c.index.Size() {
+		from = c.index.Size()
+	}
+	b := make([]byte, st.Size()-from)
+	if _, err := f.ReadAt(b, from); err != nil {
+		return 0, 0, false, err
+	}
+	c.index = st
+	if from == 0 {
+		c.spans = nil
+		if len(b) < indexHeaderSize || string(b[:8]) != indexMagic || int64(binary.LittleEndian.Uint64(b[8:16])) != c.size {
+			// Unrecognized or older cache format: keep no records.
+			return dataSize, 0, len(b) > 0, nil
+		}
+		b = b[indexHeaderSize:]
+	}
+	corrupt = len(b)%indexRecordSize != 0
+	for at := 0; at+indexRecordSize <= len(b); at += indexRecordSize {
+		off := int64(binary.LittleEndian.Uint64(b[at:]))
+		fileOff := int64(binary.LittleEndian.Uint64(b[at+8:]))
+		n := int64(binary.LittleEndian.Uint64(b[at+16:]))
+		records++
+		if off < 0 || fileOff < 0 || n <= 0 || n > c.size-off || n > dataSize-fileOff {
+			corrupt = true
 			continue
 		}
-		off, err1 := strconv.ParseInt(first, 16, 64)
-		n, err2 := strconv.ParseInt(second, 16, 64)
-		if err1 != nil || err2 != nil || name != extentName(off, n) {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() || n <= 0 || off < 0 || n > c.size-off || info.Size() != n {
-			continue
-		}
-		path := filepath.Join(c.dir, name)
-		b, err := os.ReadFile(path)
-		if err != nil || int64(len(b)) != n {
-			continue
-		}
-		if _, err := c.dataFile.WriteAt(b, off); err != nil {
-			return false, err
-		}
-		c.spans = insertSpan(c.spans, span{off: off, end: off + n})
-		legacy = append(legacy, path)
+		c.spans = insertSpan(c.spans, span{off: off, end: off + n, fileOff: fileOff})
 	}
-	if len(legacy) == 0 {
-		return false, nil
-	}
-	// Persist the index before removing legacy files so a crash never loses cached bytes.
-	if err := c.writeIndexLocked(); err != nil {
-		return false, err
-	}
-	for _, path := range legacy {
-		_ = os.Remove(path)
-	}
-	return true, nil
+	return dataSize, records, corrupt, nil
 }
 
 func appendIndexHeader(b []byte, size int64) []byte {
@@ -205,16 +210,18 @@ func appendIndexHeader(b []byte, size int64) []byte {
 	return binary.LittleEndian.AppendUint64(b, uint64(size))
 }
 
-func appendIndexRecord(b []byte, off, n int64) []byte {
+func appendIndexRecord(b []byte, off, fileOff, n int64) []byte {
 	b = binary.LittleEndian.AppendUint64(b, uint64(off))
+	b = binary.LittleEndian.AppendUint64(b, uint64(fileOff))
 	return binary.LittleEndian.AppendUint64(b, uint64(n))
 }
 
 func (c *diskCache) writeIndexLocked() error {
 	buf := appendIndexHeader(make([]byte, 0, indexHeaderSize+len(c.spans)*indexRecordSize), c.size)
 	for _, s := range c.spans {
-		buf = appendIndexRecord(buf, s.off, s.end-s.off)
+		buf = appendIndexRecord(buf, s.off, s.fileOff, s.end-s.off)
 	}
+	c.index = nil // a new file: the next sync rereads it whole
 	return writeFileAtomic(c.dir, "index-*.tmp", c.indexPath, buf)
 }
 
@@ -234,69 +241,122 @@ func writeFileAtomic(dir, pattern, path string, b []byte) error {
 	return err
 }
 
-// put writes b at off in the sparse data file and appends its record to the index.
+// put appends the parts of b (the remote bytes at off) that no process has cached yet to the packed
+// data file, and records each one's (off, fileOff, len) entry in the index.
 func (c *diskCache) put(off int64, b []byte) error {
-	if _, err := c.dataFile.WriteAt(b, off); err != nil {
-		return err
-	}
 	if err := c.lock(syscall.LOCK_EX); err != nil {
 		return err
 	}
 	defer c.unlock()
 
-	f, err := os.OpenFile(c.indexPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+	f, err := c.openIndex()
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-
-	st, err := f.Stat()
+	fileOff, _, _, err := c.syncLocked(f)
 	if err != nil {
 		return err
 	}
 	var buf []byte
-	if st.Size() == 0 {
+	if c.index.Size() == 0 {
 		buf = appendIndexHeader(buf, c.size)
 	}
-	if _, err := f.Write(appendIndexRecord(buf, off, int64(len(b)))); err != nil {
+	gaps := make([]span, 0, 4)
+	for pos, end := off, off+int64(len(b)); pos < end; {
+		s, next := findSpan(c.spans, pos, end)
+		if s.end > pos {
+			pos = s.end
+			continue
+		}
+		next = min(next, end)
+		if _, err := c.dataFile.WriteAt(b[pos-off:next-off], fileOff); err != nil {
+			return err
+		}
+		buf = appendIndexRecord(buf, pos, fileOff, next-pos)
+		gaps = append(gaps, span{off: pos, end: next, fileOff: fileOff})
+		fileOff += next - pos
+		pos = next
+	}
+	if len(gaps) == 0 {
+		return nil
+	}
+	if _, err := f.Write(buf); err != nil {
 		return err
 	}
-	c.spans = insertSpan(c.spans, span{off: off, end: off + int64(len(b))})
+	if c.index, err = f.Stat(); err != nil {
+		c.index = nil
+	}
+	for _, g := range gaps {
+		c.spans = insertSpan(c.spans, g)
+	}
 	return nil
 }
 
 // read copies into p what the data file holds at pos, or returns 0 and where the next cached byte
-// is. A span that can no longer be read back (say the file was truncated) is forgotten.
+// is. On a miss it first picks up what other processes have stored. A span that can no longer be
+// read back (say the file was truncated) is forgotten.
 func (c *diskCache) read(p []byte, pos int64) (int, int64) {
+	refreshed := false
 	for {
 		s, next := findSpan(c.spans, pos, c.size)
 		if s.end <= pos {
-			return 0, next
+			if refreshed {
+				return 0, next
+			}
+			c.refresh()
+			refreshed = true
+			continue
 		}
 		take := min(int64(len(p)), s.end-pos)
-		if n, err := c.dataFile.ReadAt(p[:take], pos); err == nil && int64(n) == take {
+		fileOff := s.fileOff + (pos - s.off)
+		if n, err := c.dataFile.ReadAt(p[:take], fileOff); err == nil {
 			return n, 0
 		}
 		c.spans = slices.DeleteFunc(c.spans, func(x span) bool { return x == s })
 	}
 }
 
-func extentName(off, n int64) string { return fmt.Sprintf("%012x-%x", off, n) }
-
-// insertSpan merges s into a sorted slice of disjoint, non-adjacent spans.
+// insertSpan inserts s into a sorted slice of disjoint spans, trimming any overlapped portions of
+// existing spans and merging neighbors that are contiguous in both remote and file space.
 func insertSpan(spans []span, s span) []span {
 	if s.end <= s.off {
 		return spans
 	}
-	// First span that could overlap or touch s (end >= s.off).
-	i := sort.Search(len(spans), func(i int) bool { return spans[i].end >= s.off })
+	// spans[i:j) are all spans that strictly overlap s.
+	i := sort.Search(len(spans), func(i int) bool { return spans[i].end > s.off })
 	j := i
-	for j < len(spans) && spans[j].off <= s.end {
-		s.off = min(s.off, spans[j].off)
-		s.end = max(s.end, spans[j].end)
+	for j < len(spans) && spans[j].off < s.end {
 		j++
 	}
-	return slices.Replace(spans, i, j, s)
+	var repl [3]span
+	n := 0
+	if i < j && spans[i].off < s.off {
+		repl[n] = span{off: spans[i].off, end: s.off, fileOff: spans[i].fileOff}
+		n++
+	}
+	repl[n] = s
+	n++
+	if i < j && spans[j-1].end > s.end {
+		r := spans[j-1]
+		repl[n] = span{off: s.end, end: r.end, fileOff: r.fileOff + (s.end - r.off)}
+		n++
+	}
+	// Merge with immediately adjacent spans when contiguous in both remote and file offsets.
+	if i > 0 && contiguous(spans[i-1], repl[0]) {
+		repl[0].off = spans[i-1].off
+		repl[0].fileOff = spans[i-1].fileOff
+		i--
+	}
+	if j < len(spans) && contiguous(repl[n-1], spans[j]) {
+		repl[n-1].end = spans[j].end
+		j++
+	}
+	return slices.Replace(spans, i, j, repl[:n]...)
+}
+
+func contiguous(a, b span) bool {
+	return a.end == b.off && a.fileOff+(a.end-a.off) == b.fileOff
 }
 
 // findSpan returns the span covering pos, or an empty span and the offset where the next span begins.
@@ -393,7 +453,7 @@ func removeUnused(dir string) (int64, bool, error) {
 	} else if err != nil {
 		return 0, false, err
 	}
-	bytes := dirAllocatedBytes(dir)
+	bytes := dirSize(dir)
 	return bytes, true, os.RemoveAll(dir)
 }
 
@@ -405,21 +465,13 @@ func isCacheHashDir(name string) bool {
 	return err == nil
 }
 
-// dirAllocatedBytes returns the actual disk bytes allocated under dir, using filesystem block
-// counts so sparse data files report their true footprint rather than their logical length.
-func dirAllocatedBytes(dir string) int64 {
+func dirSize(dir string) int64 {
 	var total int64
 	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		if st, ok := info.Sys().(*syscall.Stat_t); ok {
-			total += st.Blocks * 512
-		} else {
+		if info, err := d.Info(); err == nil {
 			total += info.Size()
 		}
 		return nil

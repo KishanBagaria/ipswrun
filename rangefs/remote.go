@@ -36,8 +36,8 @@ type extent struct {
 // rangeReader is an HTTP io.ReaderAt. A read fetches the bytes it asks for and no more, unless it
 // is small and starts where the previous read ended: scattered lookups stay exact, and only a
 // sequential stream of small reads is read ahead. With a cache directory, fetched bytes are kept
-// in a single sparse file plus a compact binary index; without one, they are kept in memory up to
-// memBytes. A response that is not exactly the requested range is an error.
+// packed in an append-only data file plus a compact binary index; without one, they are kept in
+// memory up to memBytes. A response that is not exactly the requested range is an error.
 type rangeReader struct {
 	mu          sync.Mutex
 	client      *http.Client
