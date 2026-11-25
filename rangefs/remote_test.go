@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // origin serves one blob by range and records what was asked of it.
@@ -162,8 +161,8 @@ func TestCacheDirectory(t *testing.T) {
 	}
 	read(t, r, o, 5100, 100)
 	read(t, r, o, 5000, 100) // adjacent non-sequential: coalesces in memory without read-ahead
-	if len(r.spans) != 1 || r.spans[0] != (span{off: 5000, end: 5200}) {
-		t.Fatalf("spans = %v, want [{5000 5200}]", r.spans)
+	if len(r.disk.spans) != 1 || r.disk.spans[0] != (span{off: 5000, end: 5200}) {
+		t.Fatalf("spans = %v, want [{5000 5200}]", r.disk.spans)
 	}
 	if _, err := os.Stat(filepath.Join(r.dir, "data")); err != nil {
 		t.Fatalf("missing sparse data file: %v", err)
@@ -306,38 +305,21 @@ func TestPruneCache(t *testing.T) {
 	dir2 := r2.dir
 	r2.Close()
 
-	// Make dir1 older than dir2, and plant an unrelated file that must never be pruned.
-	oldTime := time.Now().Add(-time.Hour)
-	if err := os.Chtimes(dir1, oldTime, oldTime); err != nil {
-		t.Fatal(err)
-	}
+	// Plant an unrelated file that must never be pruned.
 	keep := filepath.Join(dir, "keep-me")
 	if err := os.WriteFile(keep, []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	sz2 := dirAllocatedBytes(dir2)
-	removed, freed, err := PruneCache(dir, sz2)
+	removed, freed, err := PruneCache(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if removed != 1 || freed <= 0 {
-		t.Fatalf("budget prune: removed=%d freed=%d, want 1 and >0", removed, freed)
+	if removed != 2 || freed <= 0 {
+		t.Fatalf("prune: removed=%d freed=%d, want 2 and >0", removed, freed)
 	}
 	if _, err := os.Stat(dir1); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("oldest dir1 still exists: %v", err)
-	}
-	if _, err := os.Stat(dir2); err != nil {
-		t.Fatalf("newer dir2 was removed: %v", err)
-	}
-
-	// Full prune (maxBytes <= 0) removes remaining cache dirs and head-* files, leaving unrelated files.
-	removed, freed, err = PruneCache(dir, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if removed != 1 || freed <= 0 {
-		t.Fatalf("full prune: removed=%d freed=%d, want 1 and >0", removed, freed)
+		t.Fatalf("dir1 still exists after prune: %v", err)
 	}
 	if _, err := os.Stat(dir2); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("dir2 still exists after full prune: %v", err)

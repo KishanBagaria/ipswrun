@@ -316,13 +316,13 @@ func newProgress(out io.Writer, live bool) *progress {
 
 func (p *progress) line() string {
 	line := "ipswrun: " + p.phase
+	var done, total int64
 	if p.stream != nil {
-		if done, total := p.stream(); total > 0 {
-			pct := float64(done) * 100 / float64(total)
-			return line + fmt.Sprintf(", streaming %.0f/%.0f MB (%.0f%%), %ds", float64(done)/1e6, float64(total)/1e6, pct, int(time.Since(p.started).Seconds()))
-		}
+		done, total = p.stream()
 	}
-	if p.stats != nil {
+	if total > 0 {
+		line += fmt.Sprintf(", streaming %.0f/%.0f MB (%.0f%%)", float64(done)/1e6, float64(total)/1e6, float64(done)*100/float64(total))
+	} else if p.stats != nil {
 		_, fetched := p.stats()
 		line += fmt.Sprintf(", %.0f MB fetched", float64(fetched)/1e6)
 	}
@@ -848,6 +848,10 @@ several of these separated by commas.`)
 	setup := flag.Bool("setup", false, "only fetch and verify libunicorn")
 	listReleases := flag.Bool("releases", false, "print the releases all stands for (version, build, URL): the first and last of each major version, and the one Apple currently offers")
 	flag.Parse()
+	defaultCache := *cache == ""
+	if defaultCache {
+		*cache = defaultCacheDir()
+	}
 
 	known := parseReleases(releasesText)
 	current := func() ([]release, error) { return fetchCurrent(*device) }
@@ -861,15 +865,11 @@ several of these separated by commas.`)
 		return 0, nil
 	}
 	if *pruneCache {
-		dir := *cache
-		if dir == "" {
-			dir = defaultCacheDir()
-		}
-		removed, freed, err := rangefs.PruneCache(dir, 0)
+		removed, freed, err := rangefs.PruneCache(*cache)
 		if err != nil {
 			return 0, err
 		}
-		fmt.Printf("removed %d cached image(s) (%.1f MB) from %s\n", removed, float64(freed)/1e6, dir)
+		fmt.Printf("removed %d cached image(s) (%.1f MB) from %s\n", removed, float64(freed)/1e6, *cache)
 		return 0, nil
 	}
 	// Nothing is fetched for a command line that cannot run. --setup takes no arguments.
@@ -943,8 +943,7 @@ several of these separated by commas.`)
 	if err != nil || *setup {
 		return 0, err
 	}
-	if *cache == "" {
-		*cache = defaultCacheDir()
+	if defaultCache {
 		if err := os.MkdirAll(*cache, 0o700); err != nil {
 			return 0, err
 		}
