@@ -274,7 +274,7 @@ func TestDispatch(t *testing.T) {
 
 		// Nothing is guessed: a call with no handler stops the run and says which.
 		for number, want := range map[int64]string{
-			2:   "unimplemented syscall 2 fork(",
+			51:  "unimplemented syscall 51 acct(",
 			999: "unimplemented syscall 999 999(",
 			-90: "unimplemented mach trap 90 mach_wait_until(",
 			-99: "unimplemented mach trap 99 99(",
@@ -289,8 +289,8 @@ func TestDispatch(t *testing.T) {
 		// A survey answers them with an error instead, and keeps count.
 		p.survey = true
 		for i := 0; i < 2; i++ {
-			if x0, carry, stopped := p.trap(2); x0 != eNOSYS || !carry || stopped != "" {
-				t.Errorf("fork under a survey: x0 %d carry %v stopped %q", x0, carry, stopped)
+			if x0, carry, stopped := p.trap(51); x0 != eNOSYS || !carry || stopped != "" {
+				t.Errorf("acct under a survey: x0 %d carry %v stopped %q", x0, carry, stopped)
 			}
 		}
 		if x0, _, stopped := p.trap(-90); x0 != kernInvalidArg || stopped != "" {
@@ -298,7 +298,7 @@ func TestDispatch(t *testing.T) {
 		}
 		p.unknown[unknownMIG{id: 3400, port: 0x707}] = 5
 		list := strings.Split(p.Unimplemented(), "\n")
-		for i, want := range []string{"2× syscall 2 fork, first from ", "1× mach trap 90 mach_wait_until, first from ", "5× mach message 3400 to port 0x707 from "} {
+		for i, want := range []string{"2× syscall 51 acct, first from ", "1× mach trap 90 mach_wait_until, first from ", "5× mach message 3400 to port 0x707 from "} {
 			if i >= len(list) || !strings.Contains(list[i], want) {
 				t.Errorf("survey line %d: want %q in %q", i, want, list)
 			}

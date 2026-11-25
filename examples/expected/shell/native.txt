@@ -1,4 +1,10 @@
 from the shell
 system: status 5
+A TOOL
+its output, taken
+status 1
+a subshell: 7
+waited
+system: status 0
 popen: through popen -> 0
 NSTask: "from NSTask", status 0

@@ -1,0 +1,11 @@
+  child: fork answered 0; a process of its own: 1; its parent is the one that forked: 1; its memory: 2 and 11
+fork answered the child's pid: 1; it exited 3; the parent's memory is as it was: 1 and 10
+read from it: 13 "from the copy", then 0; it exited 0
+a file both wrote to, one after the other: "child,parent"
+  child: its parent's handler, for signal 30
+it exited 4
+  child: now another program, told "by its copy"
+it exited 6
+one that aborts: it ended by signal 6
+one that waits, and is ended: it ended by signal 15
+exit runs what the parent set up, in a copy too: its output is written as it leaves; it exited 5

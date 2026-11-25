@@ -427,7 +427,8 @@ func heapStart(platform dyldcache.Platform) uint64 {
 // load.
 func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Process, err error) {
 	cfg := m.cfg
-	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: m.user.uid, gid: m.user.gid, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cwd: "/", cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
+	m.started++
+	p = &Process{m: m, pid: guestPID + m.started - 1, uid: m.user.uid, gid: m.user.gid, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cwd: "/", cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
 		system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
 		mapped: map[uint64]struct{}{}, brk: heapStart(cfg.Cache.Platform), nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},

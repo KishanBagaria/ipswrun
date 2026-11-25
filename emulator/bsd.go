@@ -50,7 +50,7 @@ func init() {
 		"mremap_encrypted": {0, constant(0)}, "shared_region_check_np": {1, sysSharedRegionCheck},
 		"shared_region_map_and_slide_2_np": {4, sysSharedRegionMap}, "map_with_linking_np": {4, constant(-eNOTSUP)},
 		// process
-		"exit": {1, sysExit}, "getpid": {0, sysGetpid}, "getppid": {0, sysGetppid}, "posix_spawn": {5, sysPosixSpawn}, "wait4": {4, sysWait4}, "__pthread_chdir": {1, sysPthreadChdir}, "__pthread_fchdir": {1, sysPthreadFchdir}, "execve": {3, sysExecve}, "getuid": {0, sysGetuid},
+		"exit": {1, sysExit}, "getpid": {0, sysGetpid}, "getppid": {0, sysGetppid}, "posix_spawn": {5, sysPosixSpawn}, "wait4": {4, sysWait4}, "fork": {0, sysFork}, "__pthread_chdir": {1, sysPthreadChdir}, "__pthread_fchdir": {1, sysPthreadFchdir}, "execve": {3, sysExecve}, "getuid": {0, sysGetuid},
 		"geteuid": {0, sysGetuid}, "getgid": {0, sysGetgid}, "getegid": {0, sysGetgid}, "gettid": {2, constant(-eSRCH)},
 		"setuid": {1, sysSetuid}, "seteuid": {1, sysSetuid}, "setgid": {1, sysSetgid}, "setegid": {1, sysSetgid},
 		"getrusage": {2, sysGetrusage}, "getlogin": {2, sysGetlogin}, "getdtablesize": {0, sysGetdtablesize},

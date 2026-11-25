@@ -2,6 +2,6 @@
   "build": "25G83",
   "cache_uuid": "F2E86C53-6052-388B-BA71-5A0C9B569413",
   "exit_code": 0,
-  "output": "from the shell\nsystem: status 5\npopen: through popen -> 0\nNSTask: \"from NSTask\", status 0\n",
+  "output": "from the shell\nsystem: status 5\nA TOOL\nits output, taken\nstatus 1\na subshell: 7\nwaited\nsystem: status 0\npopen: through popen -> 0\nNSTask: \"from NSTask\", status 0\n",
   "version": "26.6.2"
 }

@@ -32,6 +32,7 @@ type Machine struct {
 	replaced []*Process                     // processes that are no longer among procs, to be closed with them
 	deferred []func()                       // what a system call left to be done between stretches of emulation (see spawn.go)
 	pipes    uint64                         // how many pipes were ever made: the next one's number
+	started  uint32                         // how many processes were ever made: a pid is not given twice, whatever has ended since
 	ioRoot   *ioEntry                       // the root of the I/O Registry, once a process has asked for it (see registry.go)
 	clock    *clock
 	deadline time.Time // of the run, as every time here by the machine's clock

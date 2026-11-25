@@ -2,6 +2,6 @@
   "build": "24G90",
   "cache_uuid": "4C1223E5-CACE-3982-A003-6110A7A8A25C",
   "exit_code": 0,
-  "output": "from the shell\nsystem: status 5\npopen: through popen -> 0\nNSTask: \"from NSTask\", status 0\n",
+  "output": "from the shell\nsystem: status 5\nA TOOL\nits output, taken\nstatus 1\na subshell: 7\nwaited\nsystem: status 0\npopen: through popen -> 0\nNSTask: \"from NSTask\", status 0\n",
   "version": "15.6.1"
 }

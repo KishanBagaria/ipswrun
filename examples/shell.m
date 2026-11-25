@@ -8,6 +8,9 @@ int main(void) { @autoreleasepool {
   setvbuf(stdout, NULL, _IOLBF, 0);
   int rc = system("echo from the shell; exit 5");
   printf("system: status %d\n", WEXITSTATUS(rc));
+  // What a shell forks for: a command that is not its own, a pipeline, a command's output taken, a job waited for.
+  rc = system("/bin/echo a tool | /usr/bin/tr a-z A-Z; x=$(/bin/echo taken); echo \"its output, $x\"; /usr/bin/false; echo \"status $?\"; (exit 7); echo \"a subshell: $?\"; /bin/sleep 1 & wait; echo waited");
+  printf("system: status %d\n", WEXITSTATUS(rc));
   FILE *f = popen("/bin/echo through popen", "r"); char line[128] = ""; if (f) { fgets(line, sizeof line, f); printf("popen: %s -> %d\n", strtok(line, "\n"), pclose(f)); }
   NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:@"/bin/echo"]; task.arguments = @[@"from", @"NSTask"];
   NSPipe *out = [NSPipe pipe]; task.standardOutput = out; NSError *error = nil;

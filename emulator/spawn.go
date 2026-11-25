@@ -513,3 +513,128 @@ func (m *Machine) exitWatched(ended *Process) {
 		}
 	}
 }
+
+// sysFork is fork(): a copy of the process, which goes on from the same place as the thread that
+// called, with memory of its own that starts as the parent's, the parent's descriptors and what
+// it has said of signals, and no other of its threads, ports, timers or locks. The parent is
+// answered with the copy's pid, and the copy is told that it is the copy.
+func sysFork(p *Process, a []uint64) int64 {
+	t := p.current
+	p.m.deferred = append(p.m.deferred, func() {
+		child := p.fork()
+		p.setX(1, 0)
+		t.answer = &result{x0: uint64(child.pid)}
+		t.wake()
+	})
+	p.wait(waitSpawn, 0, time.Time{}, result{})
+	return 0
+}
+
+// fork makes the copy. It is made between two stretches of emulation, with the thread that
+// called still on the parent's engine, where its registers are read from.
+func (p *Process) fork() *Process {
+	m := p.m
+	child, err := m.newProcess(p.exePath, p.exe, p.path)
+	if err != nil {
+		stopf("fork: %v", err)
+	}
+	child.parent, child.ppid, child.stdio, child.pgroup = p, p.pid, p.stdio, p.group()
+	child.uid, child.gid, child.cwd, child.brk = p.uid, p.gid, p.workingDirectory(), p.brk
+	child.identity, child.entitlements, child.entitlementsDER = p.identity, p.entitlements, p.entitlementsDER
+	child.sigactions, child.cmask, child.cmaskSet, child.nice = p.sigactions, p.cmask, p.cmaskSet, p.nice
+	child.rlimits, child.iopolicies = maps.Clone(p.rlimits), maps.Clone(p.iopolicies)
+	child.threadStart, child.wqThread, child.pthreadSize, child.tsdOffset, child.portOffset = p.threadStart, p.wqThread, p.pthreadSize, p.tsdOffset, p.portOffset
+	child.inodes, child.seen = maps.Clone(p.inodes), maps.Clone(p.seen)
+	child.slide, child.slideSet, child.imageInfo, child.dit = p.slide, p.slideSet, p.imageInfo, p.dit
+
+	// Its memory: what a new process has that is the kernel's (the commpage, the tables that
+	// say where memory is) stays, and the rest is the parent's, a copy of what the parent has
+	// touched and, of what it has not, the same to be read on first touch.
+	kernels := func(r *region) bool { return r.name == "commpage" || r.name == "pagetables" }
+	for _, r := range slices.Clone(child.regions) {
+		if !kernels(r) {
+			child.unmap(r.start, r.end)
+		}
+	}
+	for _, r := range p.regions {
+		if !kernels(r) {
+			copied := *r
+			child.addRegion(&copied)
+		}
+	}
+	// A run of pages that follow one another in one region is copied at once: the engine takes
+	// long over each mapping it is given, and a process has touched thousands of pages.
+	pages := slices.Sorted(maps.Keys(p.mapped))
+	for i := 0; i < len(pages); {
+		start := pages[i] * pageSize
+		r := p.findRegion(start)
+		if r == nil {
+			stopf("fork: the page at %#x is in no region", start)
+		}
+		j := i + 1
+		for j < len(pages) && pages[j] == pages[j-1]+1 && pages[j]*pageSize < r.end {
+			j++
+		}
+		run, size := pages[i:j], uint64(j-i)*pageSize
+		i = j
+		if kernels(r) || r.kind == sharedRegion {
+			continue // a shared one is the same memory in both, mapped when the copy first touches it
+		}
+		for _, page := range run {
+			child.mapped[page] = struct{}{}
+		}
+		data, err := p.uc.memRead(start, int(size))
+		if err != nil {
+			stopf("fork: reading the pages at %#x: %v", start, err)
+		}
+		child.uc.memMap(start, size, r.prot())
+		child.uc.memWrite(start, data)
+	}
+
+	// Its one thread: the registers of the one that called, the vector ones too, and what the
+	// kernel keeps of a thread.
+	from, to := p.current, child.current
+	for i := uint32(0); i < 31; i++ {
+		child.setXR(i, p.xr(i))
+	}
+	for _, id := range []int{regSP, regNZCV, regFPCR, regFPSR, regTPIDRRO} {
+		child.uc.setReg(id, p.uc.reg(id))
+	}
+	vector := make([]byte, 16)
+	for i := 0; i < 32; i++ {
+		p.uc.regBytes(regV0+i, vector)
+		child.uc.setRegBytes(regV0+i, vector)
+	}
+	to.pc, to.tsd, to.pthread, to.port = from.pc, from.tsd, from.pthread, from.port
+	to.sigmask, to.altstack, to.onstack, to.cwd = from.sigmask, from.altstack, from.onstack, from.cwd
+	child.uc.setReg(regPC, to.pc)
+	child.setX(0, uint64(p.pid))
+	child.setX(1, 1) // it is the copy
+	child.carry(false)
+
+	// Its descriptors: the parent's, each still marked as it is. A kqueue is not a copy's.
+	child.fds = map[uint64]*fd{}
+	for n, f := range p.fds {
+		switch {
+		case f.kq != nil:
+			continue
+		case f.kind == hostFD:
+			h, err := syscall.Dup(f.host)
+			if err != nil {
+				stopf("fork: %v", err)
+			}
+			syscall.CloseOnExec(h)
+			f = &fd{kind: hostFD, host: h, path: f.path}
+		case f.kind == pipeFD:
+			f.refs++
+		case f.shared != nil:
+			f.shared.retain()
+		}
+		child.fds[n] = f
+		if p.cloexec[n] {
+			child.cloexec[n] = true
+		}
+	}
+	p.note("  forked, as pid %d", child.pid)
+	return child
+}
