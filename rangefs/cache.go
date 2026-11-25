@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 )
 
 const (
@@ -31,6 +30,7 @@ type diskCache struct {
 	size      int64
 	dataFile  *os.File
 	indexPath string
+	spans     []span // coalesced intervals present in the data file
 }
 
 // span is a coalesced half-open interval [off, end) present in the sparse data file.
@@ -38,20 +38,15 @@ type span struct {
 	off, end int64
 }
 
-func openDiskCache(cacheDir, url string, size int64) (*diskCache, []span, error) {
+func openDiskCache(cacheDir, url string, size int64) (*diskCache, error) {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\n%d", url, size)))
 	dir := filepath.Join(cacheDir, hex.EncodeToString(sum[:8]))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	// Record last-used time on the release directory so PruneCache can evict oldest-used first.
-	now := time.Now()
-	_ = os.Chtimes(dir, now, now)
-
-	dataPath := filepath.Join(dir, "data")
-	dataFile, err := os.OpenFile(dataPath, os.O_RDWR|os.O_CREATE, 0o644)
+	dataFile, err := os.OpenFile(filepath.Join(dir, "data"), os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	dc := &diskCache{
 		dir:       dir,
@@ -59,22 +54,14 @@ func openDiskCache(cacheDir, url string, size int64) (*diskCache, []span, error)
 		dataFile:  dataFile,
 		indexPath: filepath.Join(dir, "index"),
 	}
-	spans, err := dc.load()
-	if err != nil {
+	if err := dc.load(); err != nil {
 		dataFile.Close()
-		return nil, nil, err
+		return nil, err
 	}
-	return dc, spans, nil
+	return dc, nil
 }
 
-func (c *diskCache) close() error {
-	if c == nil || c.dataFile == nil {
-		return nil
-	}
-	err := c.dataFile.Close()
-	c.dataFile = nil
-	return err
-}
+func (c *diskCache) close() error { return c.dataFile.Close() }
 
 func (c *diskCache) lock(how int) error {
 	return syscall.Flock(int(c.dataFile.Fd()), how)
@@ -84,24 +71,25 @@ func (c *diskCache) unlock() {
 	_ = syscall.Flock(int(c.dataFile.Fd()), syscall.LOCK_UN)
 }
 
-// load reads the index (and migrates any legacy per-extent hex files into the sparse store),
-// coalescing overlapping or adjacent spans and compacting the index when redundant records exist.
-func (c *diskCache) load() ([]span, error) {
+// load reads the index (or, when there is none yet, migrates any legacy per-extent hex files into
+// the sparse store), coalescing overlapping or adjacent spans and compacting the index when
+// redundant records exist.
+func (c *diskCache) load() error {
 	if err := c.lock(syscall.LOCK_EX); err != nil {
-		return nil, err
+		return err
 	}
 	defer c.unlock()
 
 	st, err := c.dataFile.Stat()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	dataSize := st.Size()
 
-	var spans []span
 	rawRecords := 0
 	corruptIndex := false
-	if raw, err := os.ReadFile(c.indexPath); err == nil {
+	raw, err := os.ReadFile(c.indexPath)
+	if err == nil {
 		if len(raw) >= indexHeaderSize &&
 			string(raw[:8]) == indexMagic && int64(binary.LittleEndian.Uint64(raw[8:16])) == c.size {
 			corruptIndex = (len(raw)-indexHeaderSize)%indexRecordSize != 0
@@ -113,27 +101,28 @@ func (c *diskCache) load() ([]span, error) {
 					corruptIndex = true
 					continue
 				}
-				spans = insertSpan(spans, span{off: off, end: off + n})
+				c.spans = insertSpan(c.spans, span{off: off, end: off + n})
 			}
 		} else if len(raw) > 0 {
 			corruptIndex = true
 		}
+	} else {
+		// Legacy files can only predate the index, so look for them only when it is missing.
+		migrated, err := c.migrateLegacy()
+		if err != nil || migrated {
+			return err
+		}
 	}
 
-	migrated, err := c.migrateLegacy(&spans)
-	if err != nil {
-		return nil, err
+	if corruptIndex || rawRecords-len(c.spans) >= compactSlack {
+		_ = c.writeIndexLocked()
 	}
-
-	if corruptIndex || migrated || rawRecords-len(spans) >= compactSlack {
-		_ = c.writeIndexLocked(spans)
-	}
-	return spans, nil
+	return nil
 }
 
 // migrateLegacy imports any old-format per-extent files ("00000c0ffee0-1000") into the sparse data
 // file and removes them once copied, so existing caches upgrade seamlessly without re-downloading.
-func (c *diskCache) migrateLegacy(spans *[]span) (bool, error) {
+func (c *diskCache) migrateLegacy() (bool, error) {
 	entries, err := os.ReadDir(c.dir)
 	if err != nil {
 		return false, err
@@ -162,14 +151,14 @@ func (c *diskCache) migrateLegacy(spans *[]span) (bool, error) {
 		if _, err := c.dataFile.WriteAt(b, off); err != nil {
 			return false, err
 		}
-		*spans = insertSpan(*spans, span{off: off, end: off + n})
+		c.spans = insertSpan(c.spans, span{off: off, end: off + n})
 		legacy = append(legacy, path)
 	}
 	if len(legacy) == 0 {
 		return false, nil
 	}
 	// Persist the index before removing legacy files so a crash never loses cached bytes.
-	if err := c.writeIndexLocked(*spans); err != nil {
+	if err := c.writeIndexLocked(); err != nil {
 		return false, err
 	}
 	for _, path := range legacy {
@@ -178,29 +167,38 @@ func (c *diskCache) migrateLegacy(spans *[]span) (bool, error) {
 	return true, nil
 }
 
-func (c *diskCache) writeIndexLocked(spans []span) error {
-	buf := make([]byte, indexHeaderSize+len(spans)*indexRecordSize)
-	copy(buf[:8], indexMagic)
-	binary.LittleEndian.PutUint64(buf[8:16], uint64(c.size))
-	for i, s := range spans {
-		at := indexHeaderSize + i*indexRecordSize
-		binary.LittleEndian.PutUint64(buf[at:], uint64(s.off))
-		binary.LittleEndian.PutUint64(buf[at+8:], uint64(s.end-s.off))
+func appendIndexHeader(b []byte, size int64) []byte {
+	b = append(b, indexMagic...)
+	return binary.LittleEndian.AppendUint64(b, uint64(size))
+}
+
+func appendIndexRecord(b []byte, off, n int64) []byte {
+	b = binary.LittleEndian.AppendUint64(b, uint64(off))
+	return binary.LittleEndian.AppendUint64(b, uint64(n))
+}
+
+func (c *diskCache) writeIndexLocked() error {
+	buf := appendIndexHeader(make([]byte, 0, indexHeaderSize+len(c.spans)*indexRecordSize), c.size)
+	for _, s := range c.spans {
+		buf = appendIndexRecord(buf, s.off, s.end-s.off)
 	}
-	tmp, err := os.CreateTemp(c.dir, "index-*.tmp")
+	return writeFileAtomic(c.dir, "index-*.tmp", c.indexPath, buf)
+}
+
+// writeFileAtomic writes b to a temporary file in dir and renames it to path.
+func writeFileAtomic(dir, pattern, path string, b []byte) error {
+	tmp, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return err
 	}
-	_, err = tmp.Write(buf)
-	if err = errors.Join(err, tmp.Close()); err != nil {
-		os.Remove(tmp.Name())
-		return err
+	_, err = tmp.Write(b)
+	if err = errors.Join(err, tmp.Close()); err == nil {
+		err = os.Rename(tmp.Name(), path)
 	}
-	if err := os.Rename(tmp.Name(), c.indexPath); err != nil {
+	if err != nil {
 		os.Remove(tmp.Name())
-		return err
 	}
-	return nil
+	return err
 }
 
 // put writes b at off in the sparse data file and appends its record to the index.
@@ -223,28 +221,31 @@ func (c *diskCache) put(off int64, b []byte) error {
 	if err != nil {
 		return err
 	}
+	var buf []byte
 	if st.Size() == 0 {
-		var hdr [indexHeaderSize + indexRecordSize]byte
-		copy(hdr[:8], indexMagic)
-		binary.LittleEndian.PutUint64(hdr[8:16], uint64(c.size))
-		binary.LittleEndian.PutUint64(hdr[16:24], uint64(off))
-		binary.LittleEndian.PutUint64(hdr[24:32], uint64(len(b)))
-		_, err = f.Write(hdr[:])
+		buf = appendIndexHeader(buf, c.size)
+	}
+	if _, err := f.Write(appendIndexRecord(buf, off, int64(len(b)))); err != nil {
 		return err
 	}
-	var rec [indexRecordSize]byte
-	binary.LittleEndian.PutUint64(rec[0:8], uint64(off))
-	binary.LittleEndian.PutUint64(rec[8:16], uint64(len(b)))
-	_, err = f.Write(rec[:])
-	return err
+	c.spans = insertSpan(c.spans, span{off: off, end: off + int64(len(b))})
+	return nil
 }
 
-func (c *diskCache) readAt(p []byte, off int64) error {
-	n, err := c.dataFile.ReadAt(p, off)
-	if err != nil || n != len(p) {
-		return errors.Join(err, errors.New("short read from cache"))
+// read copies into p what the data file holds at pos, or returns 0 and where the next cached byte
+// is. A span that can no longer be read back (say the file was truncated) is forgotten.
+func (c *diskCache) read(p []byte, pos int64) (int, int64) {
+	for {
+		s, next := findSpan(c.spans, pos, c.size)
+		if s.end <= pos {
+			return 0, next
+		}
+		take := min(int64(len(p)), s.end-pos)
+		if n, err := c.dataFile.ReadAt(p[:take], pos); err == nil && int64(n) == take {
+			return n, 0
+		}
+		c.spans = slices.DeleteFunc(c.spans, func(x span) bool { return x == s })
 	}
-	return nil
 }
 
 func extentName(off, n int64) string { return fmt.Sprintf("%012x-%x", off, n) }
@@ -300,26 +301,18 @@ func writeCachedSize(cacheDir, url string, size int64) {
 	if cacheDir == "" || size <= 0 {
 		return
 	}
+	if cached, ok := readCachedSize(cacheDir, url); ok && cached == size {
+		return
+	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return
 	}
-	tmp, err := os.CreateTemp(cacheDir, "head-*.tmp")
-	if err != nil {
-		return
-	}
-	_, err = fmt.Fprintf(tmp, "%d\n", size)
-	if err = errors.Join(err, tmp.Close()); err != nil {
-		os.Remove(tmp.Name())
-		return
-	}
-	if err := os.Rename(tmp.Name(), metaPath(cacheDir, url)); err != nil {
-		os.Remove(tmp.Name())
-	}
+	_ = writeFileAtomic(cacheDir, "head-*.tmp", metaPath(cacheDir, url), []byte(fmt.Sprintf("%d\n", size)))
 }
 
-// PruneCache removes cached restore image directories under cacheDir, oldest-used first, until
-// the allocated disk usage is at most maxBytes. Passing maxBytes <= 0 removes all cached images.
-func PruneCache(cacheDir string, maxBytes int64) (removed int, freed int64, err error) {
+// PruneCache removes every cached restore image under cacheDir, and the remembered sizes, leaving
+// anything else there alone. It reports how many images it removed and the disk bytes they held.
+func PruneCache(cacheDir string) (removed int, freed int64, err error) {
 	entries, err := os.ReadDir(cacheDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, 0, nil
@@ -327,43 +320,20 @@ func PruneCache(cacheDir string, maxBytes int64) (removed int, freed int64, err 
 	if err != nil {
 		return 0, 0, err
 	}
-	type item struct {
-		path  string
-		mtime time.Time
-		bytes int64
-	}
-	var items []item
-	var total int64
 	for _, entry := range entries {
 		name := entry.Name()
 		path := filepath.Join(cacheDir, name)
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
 		switch {
 		case entry.IsDir() && (isCacheHashDir(name) || name == "local"):
-			sz := dirAllocatedBytes(path)
-			items = append(items, item{path: path, mtime: info.ModTime(), bytes: sz})
-			total += sz
-		case !entry.IsDir() && strings.HasPrefix(name, "head-") && maxBytes <= 0:
+			bytes := dirAllocatedBytes(path)
+			if err := os.RemoveAll(path); err != nil {
+				return removed, freed, err
+			}
+			removed++
+			freed += bytes
+		case !entry.IsDir() && strings.HasPrefix(name, "head-"):
 			_ = os.Remove(path)
 		}
-	}
-	if maxBytes > 0 && total <= maxBytes {
-		return 0, 0, nil
-	}
-	slices.SortFunc(items, func(a, b item) int { return a.mtime.Compare(b.mtime) })
-	for _, it := range items {
-		if maxBytes > 0 && total <= maxBytes {
-			break
-		}
-		if err := os.RemoveAll(it.path); err != nil {
-			return removed, freed, err
-		}
-		removed++
-		freed += it.bytes
-		total -= it.bytes
 	}
 	return removed, freed, nil
 }

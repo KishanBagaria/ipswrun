@@ -151,8 +151,7 @@ func (m *Image) StreamProgress() (done, total int64) {
 	if total <= 0 {
 		return 0, 0
 	}
-	done = min(max(m.remote.bytes.Load()-m.remote.streamStart.Load(), 0), total)
-	return done, total
+	return min(m.remote.streamDone.Load(), total), total
 }
 
 // image opens a disk image member as an APFS container, through AEA, UDIF and GPT as needed.

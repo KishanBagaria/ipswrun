@@ -45,15 +45,14 @@ type rangeReader struct {
 	size        int64
 	dir         string
 	disk        *diskCache
-	spans       []span    // coalesced cached intervals on disk (when disk != nil)
 	extents     []*extent // in-memory extents by offset (when disk == nil)
 	loaded      []*extent // in-memory extents, oldest first (when disk == nil)
 	held        int64
 	lastEnd     int64 // where the previous read ended
 	requests    atomic.Int64
 	bytes       atomic.Int64
-	streamStart atomic.Int64
-	streamTotal atomic.Int64
+	streamDone  atomic.Int64 // compressed bytes read by the member being streamed
+	streamTotal atomic.Int64 // its compressed size, or 0 when none is streaming
 }
 
 // StatusError is a restore image URL that did not answer the opening request with its size.
@@ -92,11 +91,11 @@ func newRangeReader(url, cacheDir string) (*rangeReader, error) {
 		writeCachedSize(cacheDir, url, r.size)
 	}
 	if cacheDir != "" {
-		dc, spans, err := openDiskCache(cacheDir, url, r.size)
+		dc, err := openDiskCache(cacheDir, url, r.size)
 		if err != nil {
 			return nil, err
 		}
-		r.disk, r.dir, r.spans = dc, dc.dir, spans
+		r.disk, r.dir = dc, dc.dir
 	}
 	return r, nil
 }
@@ -104,12 +103,12 @@ func newRangeReader(url, cacheDir string) (*rangeReader, error) {
 func (r *rangeReader) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.disk != nil {
-		err := r.disk.close()
-		r.disk = nil
-		return err
+	if r.disk == nil {
+		return nil
 	}
-	return nil
+	err := r.disk.close()
+	r.disk = nil
+	return err
 }
 
 // add files e in the in-memory index unless a known extent already covers it, dropping those it covers.
@@ -155,31 +154,42 @@ func (r *rangeReader) hold(e *extent, b []byte) {
 		oldest := r.loaded[0]
 		r.loaded = r.loaded[1:]
 		r.held -= oldest.n
-		oldest.data = nil
 		r.drop(oldest)
 	}
 }
 
-// fetch downloads [start, end) and stores it in the disk cache (or in memory when uncached).
-func (r *rangeReader) fetch(start, end int64) error {
+// fetch downloads [start, end), stores it in the disk cache (or in memory when uncached) and
+// returns it.
+func (r *rangeReader) fetch(start, end int64) ([]byte, error) {
 	b := make([]byte, end-start)
 	body := r.open(r.client, start, end)
 	_, err := io.ReadFull(body, b)
 	body.Close()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if r.disk != nil {
 		if err := r.disk.put(start, b); err != nil {
-			return fmt.Errorf("write cache: %w", err)
+			return nil, fmt.Errorf("write cache: %w", err)
 		}
-		r.spans = insertSpan(r.spans, span{off: start, end: end})
-		return nil
+		return b, nil
 	}
 	e := &extent{off: start, n: end - start}
 	r.add(e)
 	r.hold(e, b)
-	return nil
+	return b, nil
+}
+
+// cached copies into p what is already held at pos, or returns 0 and where the next held byte is.
+func (r *rangeReader) cached(p []byte, pos int64) (int, int64) {
+	if r.disk != nil {
+		return r.disk.read(p, pos)
+	}
+	e, next := r.find(pos)
+	if e == nil {
+		return 0, next
+	}
+	return copy(p, e.data[pos-e.off:]), 0
 }
 
 func (r *rangeReader) ReadAt(p []byte, off int64) (int, error) {
@@ -193,41 +203,20 @@ func (r *rangeReader) ReadAt(p []byte, off int64) (int, error) {
 	r.lastEnd = end
 	n := 0
 	for pos := off; pos < end; {
-		if r.disk != nil {
-			s, next := findSpan(r.spans, pos, r.size)
-			if s.end > pos {
-				take := min(end, s.end) - pos
-				if err := r.disk.readAt(p[n:n+int(take)], pos); err == nil {
-					n += int(take)
-					pos += take
-					continue
-				}
-				// Cache read failed (e.g. external truncation): drop stale span and re-fetch.
-				r.spans = slices.DeleteFunc(r.spans, func(x span) bool { return x == s })
-				continue
-			}
-			stop := min(end, next)
-			if ahead {
-				stop = min(max(stop, pos+readAhead), next)
-			}
-			if err := r.fetch(pos, min(stop, pos+maxRequest)); err != nil {
-				return n, err
-			}
-			continue
-		}
-		e, next := r.find(pos)
-		if e == nil {
+		want := p[n : end-off]
+		c, next := r.cached(want, pos)
+		if c == 0 {
 			// Exactly the gap this read needs, or up to readAhead of it; never what is already here.
 			stop := min(end, next)
 			if ahead {
 				stop = min(max(stop, pos+readAhead), next)
 			}
-			if err := r.fetch(pos, min(stop, pos+maxRequest)); err != nil {
+			b, err := r.fetch(pos, min(stop, pos+maxRequest))
+			if err != nil {
 				return n, err
 			}
-			continue
+			c = copy(want, b)
 		}
-		c := copy(p[n:], e.data[pos-e.off:])
 		n += c
 		pos += int64(c)
 	}
