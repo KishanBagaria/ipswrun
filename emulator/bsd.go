@@ -551,26 +551,29 @@ const (
 	osVariantIOS = 0x70010000FBAAAAAA
 )
 
+// cpuFamilyFirestorm is CPUFAMILY_ARM_FIRESTORM_ICESTORM, of the A14 and the M1: a Mac's here.
+const cpuFamilyFirestorm = 0x1b588bb3
+
 // cpuFamilies is the CPUFAMILY_ARM_* of mach/machine.h of the chip in each iPhone and iPad an iOS
 // release of 14 or later runs on, by the product type's generation (iPhone14) or, where one
 // generation has two chips, by the product type itself.
 var cpuFamilies = map[string]uint64{
-	"iPhone11":   0x07d34b9f, // A12 (Vortex and Tempest)
-	"iPhone12":   0x462504d2, // A13 (Lightning and Thunder)
-	"iPhone13":   0x1b588bb3, // A14 (Firestorm and Icestorm)
-	"iPhone14":   0xda33d83d, // A15 (Avalanche and Blizzard)
-	"iPhone15":   0x8765edea, // A16 (Everest and Sawtooth)
-	"iPhone16":   0x2876f5b5, // A17 Pro (Coll)
-	"iPhone17":   0x204526d0, // A18 (Tupai)
-	"iPhone17,1": 0x75d4acb9, // A18 Pro (Tahiti)
+	"iPhone11":   0x07d34b9f,         // A12 (Vortex and Tempest)
+	"iPhone12":   0x462504d2,         // A13 (Lightning and Thunder)
+	"iPhone13":   cpuFamilyFirestorm, // A14 (Firestorm and Icestorm)
+	"iPhone14":   0xda33d83d,         // A15 (Avalanche and Blizzard)
+	"iPhone15":   0x8765edea,         // A16 (Everest and Sawtooth)
+	"iPhone16":   0x2876f5b5,         // A17 Pro (Coll)
+	"iPhone17":   0x204526d0,         // A18 (Tupai)
+	"iPhone17,1": 0x75d4acb9,         // A18 Pro (Tahiti)
 	"iPhone17,2": 0x75d4acb9,
-	"iPad8":      0x07d34b9f, // A12X and A12Z
-	"iPad11":     0x07d34b9f, // A12
-	"iPad12":     0x462504d2, // A13
-	"iPad13":     0x1b588bb3, // A14 and M1
-	"iPad14":     0xda33d83d, // A15 and M2
-	"iPad15":     0xfa33415e, // M3 (Ibiza)
-	"iPad15,7":   0x8765edea, // A16
+	"iPad8":      0x07d34b9f,         // A12X and A12Z
+	"iPad11":     0x07d34b9f,         // A12
+	"iPad12":     0x462504d2,         // A13
+	"iPad13":     cpuFamilyFirestorm, // A14 and M1
+	"iPad14":     0xda33d83d,         // A15 and M2
+	"iPad15":     0xfa33415e,         // M3 (Ibiza)
+	"iPad15,7":   0x8765edea,         // A16
 	"iPad15,8":   0x8765edea,
 	"iPad16":     0x6f5129ac, // M4 (Donan)
 	"iPad16,1":   0x2876f5b5, // A17 Pro
@@ -602,7 +605,7 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			"hw.pagesize": n(16384), "hw.pagesize32": n(16384), "vm.pagesize": n(16384), "hw.ncpu": n(1), "hw.activecpu": n(1),
 			"hw.physicalcpu": n(1), "hw.physicalcpu_max": n(1), "hw.logicalcpu": n(1), "hw.logicalcpu_max": n(1),
 			"hw.memsize": n(guestMemory), "hw.physmem": n(guestMemory), "hw.byteorder": n(1234), "hw.cputype": n(cpuARM64),
-			"hw.cpusubtype": n(cpuSubtypeARM64E), "hw.cpufamily": n(0x1b588bb3), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128),
+			"hw.cpusubtype": n(cpuSubtypeARM64E), "hw.cpufamily": n(cpuFamilyFirestorm), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128),
 			"hw.l1dcachesize": n(65536), "hw.l1icachesize": n(131072), "hw.l2cachesize": n(4 << 20), "hw.packages": n(1),
 			"hw.nperflevels": n(1), "hw.perflevel0.logicalcpu": n(1), "hw.perflevel0.physicalcpu": n(1),
 			"hw.perflevel0.logicalcpu_max": n(1), "hw.machine": "arm64", "hw.model": os("model", "Macmini9,1"), "hw.targettype": "J274",

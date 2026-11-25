@@ -50,8 +50,8 @@ func TestCPUFamilyByDevice(t *testing.T) {
 		{dyldcache.IOS, "iPad15,3", 0xfa33415e},
 		{dyldcache.IOS, "iPad16,1", 0x2876f5b5},
 		{dyldcache.IOS, "iPad16,3", 0x6f5129ac},
-		{dyldcache.IOS, "iPhone99,1", 0x1b588bb3},
-		{dyldcache.MacOS, "Macmini9,1", 0x1b588bb3},
+		{dyldcache.IOS, "iPhone99,1", cpuFamilyFirestorm},
+		{dyldcache.MacOS, "Macmini9,1", cpuFamilyFirestorm},
 	} {
 		p := &Process{cache: &dyldcache.Cache{Platform: c.platform}, os: map[string]string{"model": c.model}}
 		if got, _ := p.sysctlValue("hw.cpufamily"); got != c.family {

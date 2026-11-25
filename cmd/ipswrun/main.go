@@ -870,9 +870,12 @@ releases of iOS for it.`)
 			return 2, nil
 		}
 		// Apple names no iOS release in its feed of Macs', and ipswrun has none built in: every
-		// one is the index's, the newest of them the current one. It is asked only for a name
-		// that is not a restore image.
-		index = sync.OnceValues(index)
+		// one is the index's, the newest of them the current one, and those it cannot run are
+		// left out of it. It is asked only for a name that is not a restore image.
+		index = sync.OnceValues(func() ([]release, error) {
+			every, err := fetchIndex(*device)
+			return filter(every, func(r release) bool { return supportedIOS(r.Version) }), err
+		})
 		current = func() ([]release, error) {
 			every, err := index()
 			if err != nil {
@@ -882,11 +885,10 @@ releases of iOS for it.`)
 		}
 		known = nil
 		if *listReleases || (flag.NArg() > 0 && needsIndex(flag.Arg(0))) {
-			every, err := index()
-			if err != nil {
+			var err error
+			if known, err = index(); err != nil {
 				return 0, fmt.Errorf("the releases of %s are those api.ipsw.me lists, which %w: %w", *device, errSource, err)
 			}
-			known = filter(every, func(r release) bool { return supportedIOS(r.Version) })
 		}
 	}
 	if *listReleases {
