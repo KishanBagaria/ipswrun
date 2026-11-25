@@ -505,3 +505,26 @@ func TestIdentityCalls(t *testing.T) {
 		}
 	})
 }
+
+// What the first guest writes is passed on as it writes it, if there is somewhere for it to go,
+// and is otherwise kept, up to a ceiling.
+func TestGuestOutput(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		const buf = dataAddr + 0x100
+		p.write(buf, []byte("ab\xffcd"))
+		if got := p.result(t, "write", 1, buf, 5); got != 5 || p.Stdout() != "ab�cd" {
+			t.Errorf("a write that is kept: %d, %q", got, p.Stdout())
+		}
+		var out, err bytes.Buffer
+		p.m.cfg.Stdout, p.m.cfg.Stderr = &out, &err
+		if one, two := p.result(t, "write", 1, buf, 5), p.result(t, "write", 2, buf, 2); one != 5 || two != 2 || out.String() != "ab\xffcd" || err.String() != "ab" || len(p.Stdout()) != 7 || p.Stderr() != "" {
+			t.Errorf("writes that are passed on: %d and %d, %q and %q, with %q and %q kept", one, two, out.String(), err.String(), p.Stdout(), p.Stderr())
+		}
+		p.m.cfg.Stdout = nil
+		p.stdout.WriteString(strings.Repeat("x", maxKeptOutput-8))
+		if _, _, stopped := p.trap(number(t, "write"), 1, buf, 5); stopped == "" {
+			t.Errorf("a guest wrote more than is kept, and went on")
+		}
+	})
+}

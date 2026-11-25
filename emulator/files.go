@@ -639,6 +639,10 @@ func sysPread(p *Process, a []uint64) int64 {
 	return int64(len(data))
 }
 
+// maxKeptOutput is how much of what a guest writes to its standard output and error is kept for
+// the end of the run. A guest that writes without end would otherwise take the host's memory.
+const maxKeptOutput = 64 << 20
+
 func sysWrite(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
 	if f == nil {
@@ -649,12 +653,22 @@ func sysWrite(p *Process, a []uint64) int64 {
 			return -eBADF
 		}
 		data := p.read(a[1], a[2])
-		text := strings.ToValidUTF8(string(data), "�")
-		if f.host == 1 {
-			p.stdout.WriteString(text)
-		} else {
-			p.stderr.WriteString(text)
+		kept, live := &p.stdout, p.m.cfg.Stdout
+		if f.host == 2 {
+			kept, live = &p.stderr, p.m.cfg.Stderr
 		}
+		if live != nil && p == p.m.procs[0] {
+			// As it is written, and as it is: whoever reads it is the guest's own reader.
+			if _, err := live.Write(data); err != nil {
+				stopf("the guest's output could not be written: %v", err)
+			}
+			return int64(a[2])
+		}
+		text := strings.ToValidUTF8(string(data), "�")
+		if p.stdout.Len()+p.stderr.Len()+len(text) > maxKeptOutput {
+			stopf("%s wrote more than %d MB, and what a guest writes is kept until the run ends, unless it is the one guest of a run against one release, whose output is passed on as it is written", p.Label(), maxKeptOutput>>20)
+		}
+		kept.WriteString(text)
 		if p.trace {
 			syscall.Write(2, []byte(text))
 		}

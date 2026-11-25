@@ -116,7 +116,7 @@ Every Mach-O executable in `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` and `/usr/li
 
 What is asked for most that is still not there, by programs asking: `getrusage` (21), launchd's routine in message 1073742225 (16), the kqueue filter for user events (13), `pipe` (9), the properties of the registry's root (9, the kext tools), `kqueue_workloop_ctl`, `memorystatus_control` and `mach_port_get_attributes` (5 each; the last is [there now](#a-ports-status)).
 
-One run of it filled the disk: `/usr/bin/yes` writes without end, and a guest's output is kept until it ends, with no limit on how much (27 GB in its 60 seconds).
+One run of it filled the disk: `/usr/bin/yes` writes without end, and a guest's output was kept until it ended, with no limit on how much (27 GB in its 60 seconds). Since then the output of a run against one release is passed on as it is written, and where it has to be kept (several releases, whose outputs are compared, and the guests started beside the first) a guest that writes more than 64 MB stops the run and says so.
 
 What it did not confirm from the ranked list: pipes (9 programs), and `fork`, `execve` and `posix_spawn` (6 between them), which a program asked for nothing does not reach.
 
@@ -125,7 +125,7 @@ Added after it, each answered as macOS 27.2.1 answers a process that is not root
 Left as they were, still stopping or listed by name:
 
 - **`getrusage`** (21 programs: the shells, and net-snmp's tools through libc). There is no account of the CPU time a process has used to answer it with.
-- **Starting `dirhelper` when it is looked up.** `confstr(_CS_DARWIN_USER_CACHE_DIR)` fails without it (15 programs say so as they end). Started by hand (`--daemon com.apple.bsd.dirhelper=system:/usr/libexec/dirhelper`) it now checks in and takes the request, and then fails on `/var/folders`, which is on a device's data volume and so in no restore image: there is no such directory here unless `--mount` gives one. It is one case of limit 2, and of files outside the home.
+- **`confstr(_CS_DARWIN_USER_CACHE_DIR)` and the like**, which 15 programs end on. The directory is made by the release's `dirhelper`, and that was followed as far as it goes. Started by hand (`--daemon com.apple.bsd.dirhelper=system:/usr/libexec/dirhelper`) it checks in and takes the request. It needs `/var/folders`, which is on a device's data volume and so in no restore image (`--mount /var/folders=<dir>` gives one). It then makes `/var/folders/zz` and marks it with a call of the sandbox's (number 261 on macOS 27.2.1, given the directory and the word `folders`), which on a Mac leaves the directory with the extended attribute `com.apple.rootless` set to `folders`. That call is one of System Integrity Protection's: its number is a release's own, and what it answers can only be measured by a process that is root and entitled by Apple, so it stays unimplemented and dirhelper gives up there. Starting dirhelper when it is looked up would not change that.
 
 ## A port's status
 

@@ -118,7 +118,7 @@ What the guest gets:
 - **That release's code.** It is loaded by the release's own dyld against the release's own dyld shared cache, so `dlopen` of any system framework, private ones included, gets the code that shipped.
 - **A home directory**: `/Users/emu` on macOS, as the user `emu`, and `/var/mobile` on iOS, as the user `mobile`. By default it is a temporary directory that is deleted after the run. Pass `--home <dir>` to keep what the guest writes there, which is the usual way to get results out. With several releases, give each its own: `--home 'out/{build}'`.
 - **The device it asked for.** `hw.machine` and `hw.model` name the `--device`, and on iOS its board.
-- **Standard output and error**, printed when the guest has finished rather than as it runs.
+- **Standard output and error.** Run against one release, what the guest writes is passed on as it writes it. With several releases, and for a guest started beside the first, it is kept until the run ends, which is what lets a release that repeats an earlier one say `same as`; a guest that writes more than 64 MB then stops the run.
 - **Its exit status**, which becomes ipswrun's. ipswrun itself exits 2 for a bad command line and 70 for a run that failed. With several releases it exits 70 if any run failed, otherwise 1 if any guest exited nonzero.
 
 ## Several guests

@@ -65,7 +65,9 @@ type Run struct {
 	Timeout time.Duration // for the whole run
 	Trace   bool          // print every system call to stderr
 	Survey  bool          // answer calls nothing implements with an error instead of stopping (see Config.Survey)
-	Notes   io.Writer     // told about a cache location that could not be read, unless the release has none there; os.Stderr if nil
+	// Stdout and Stderr, if not nil, are given the guest's output as it writes it (see Config).
+	Stdout, Stderr io.Writer
+	Notes          io.Writer // told about a cache location that could not be read, unless the release has none there; os.Stderr if nil
 }
 
 var leadingDigits = regexp.MustCompile(`^\d+`)
@@ -307,7 +309,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 	}
 
 	build := image.Build()
-	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, System: system, Trace: run.Trace, Survey: run.Survey,
+	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, Stdout: run.Stdout, Stderr: run.Stderr, System: system, Trace: run.Trace, Survey: run.Survey,
 		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device(), "board": image.Board()}})
 	if err != nil {
 		return nil, cache, err

@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -205,6 +206,10 @@ type Config struct {
 	Mounts   []Mount          // more host directories the guests may change (see CheckMounts)
 	Dyld     []byte           // the build's /usr/lib/dyld
 	Drivers  []Driver         // the kernel's services, which guests reach through IOKit: none unless given
+	// Stdout and Stderr, if not nil, are given what the first guest writes to its standard output
+	// and error as it writes it, and none of it is kept (Process.Stdout). What the other guests
+	// write is always kept.
+	Stdout, Stderr io.Writer
 	// DeviceTree reads the device's flattened device tree, which is what the I/O Registry holds;
 	// with none, the registry is not there to ask. It is read when a guest first asks.
 	DeviceTree func() ([]byte, error)

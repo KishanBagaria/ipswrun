@@ -278,6 +278,22 @@ func fix(err error, timeout float64, stream bool) string {
 	return ""
 }
 
+// live is where a guest's output goes as it is written: to out, with the status line taken away
+// first. Nil, for output that is kept until the run ends, if out is.
+func live(status *progress, out io.Writer) io.Writer {
+	if out == nil {
+		return nil
+	}
+	return writerFunc(func(b []byte) (int, error) {
+		status.erase()
+		return out.Write(b)
+	})
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(b []byte) (int, error) { return f(b) }
+
 // progress keeps one status line on a terminal while a run fetches. Everything else written to
 // that terminal goes through Write, which takes the line away first. A progress with no terminal
 // only passes writes on.
@@ -380,6 +396,9 @@ type options struct {
 	runOptions
 	showStatus, bisect bool
 	jobs               int
+	// Where the guest's output goes as it is written, for the one run of a command line that
+	// has one; nil for output that is kept until the run ends.
+	liveStdout, liveStderr io.Writer
 }
 
 // runOptions is what one release is run with: all a worker is sent.
@@ -452,7 +471,8 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	}
 	status.set(label+out.name, stats, stream)
 	machine, dyldCache, err := emulator.RunBuild(image, emulator.Run{Unicorn: o.Unicorn, Home: home, Mounts: mounts, Services: o.Services, Executable: o.Guest, Args: o.Args,
-		Daemons: o.Daemons, Env: o.Env, System: o.System, Timeout: time.Duration(o.Timeout * float64(time.Second)), Trace: o.Trace, Survey: o.Missing, Notes: status})
+		Daemons: o.Daemons, Env: o.Env, System: o.System, Timeout: time.Duration(o.Timeout * float64(time.Second)), Trace: o.Trace, Survey: o.Missing, Notes: status,
+		Stdout: live(status, o.liveStdout), Stderr: live(status, o.liveStderr)})
 	status.stop()
 	pages := 0
 	if machine != nil {
@@ -568,6 +588,10 @@ func (o *options) runAll(releases []release) (int, error) {
 		return bisectReleases(releases, o.runOne, os.Stdout, os.Stderr), nil
 	}
 	if len(releases) == 1 && len(skipped) == 0 {
+		// One run: what the guest writes is passed on as it writes it. A trace already echoes it.
+		if !o.Trace {
+			o.liveStdout, o.liveStderr = os.Stdout, os.Stderr
+		}
 		out := o.runOne(releases[0], "")
 		os.Stdout.WriteString(out.stdout)
 		os.Stderr.WriteString(out.stderr + out.missing)
