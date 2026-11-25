@@ -238,27 +238,30 @@ const (
 	masterPasswdFile = "/private/etc/master.passwd"
 )
 
-var (
-	userID       = strconv.Itoa(guestUID) + ":" + strconv.Itoa(guestGID)
-	passwd       = "root:*:0:0:System Administrator:/var/root:/bin/sh\nemu:*:" + userID + ":emu:" + GuestHome + ":/bin/zsh\n"
-	masterPasswd = "root:*:0:0::0:0:System Administrator:/var/root:/bin/sh\nemu:*:" + userID + "::0:0:emu:" + GuestHome + ":/bin/zsh\n"
-)
+func passwd(u user, master bool) string {
+	id := strconv.Itoa(int(u.uid)) + ":" + strconv.Itoa(int(u.gid))
+	if master {
+		return "root:*:0:0::0:0:System Administrator:/var/root:/bin/sh\n" + u.name + ":*:" + id + "::0:0:" + u.name + ":" + u.home + ":" + u.shell + "\n"
+	}
+	return "root:*:0:0:System Administrator:/var/root:/bin/sh\n" + u.name + ":*:" + id + ":" + u.name + ":" + u.home + ":" + u.shell + "\n"
+}
 
 func crcInode(path string) uint64 { return uint64(crc32.ChecksumIEEE([]byte(path)) & 0xFFFFFF) }
 
 // Mount is a host directory the guest sees, and may change, at a guest directory. The home is one.
 type Mount struct{ Guest, Host string }
 
-// CheckMounts says what is wrong with the mounts a guest is given besides its home: each is at
-// an absolute guest directory of its own, and neither the root nor the home.
-func CheckMounts(mounts []Mount) error {
-	seen := map[string]bool{GuestHome: true}
+// CheckMounts says what is wrong with the mounts a guest is given besides its home (GuestHome or
+// GuestHomeIOS): each is at an absolute guest directory of its own, and neither the root nor the
+// home.
+func CheckMounts(mounts []Mount, home string) error {
+	seen := map[string]bool{home: true}
 	for _, m := range mounts {
 		guest := canonical(m.Guest)
 		switch {
 		case !strings.HasPrefix(m.Guest, "/") || guest == "/":
 			return fmt.Errorf("a mount at %q: it has to be at an absolute guest directory other than the root", m.Guest)
-		case guest == GuestHome:
+		case guest == home:
 			return fmt.Errorf("a mount at %s: that is the guest's home, which is given as the home", guest)
 		case seen[guest]:
 			return fmt.Errorf("two mounts at %s", guest)
@@ -297,9 +300,9 @@ func (p *Process) lookup(path string) (target, bool) {
 	case path == guestDyld:
 		return target{kind: dataFD, data: p.dyld}, true
 	case path == passwdFile:
-		return target{kind: dataFD, data: []byte(passwd)}, true
+		return target{kind: dataFD, data: []byte(passwd(userOf(p.cache), false))}, true
 	case path == masterPasswdFile:
-		return target{kind: dataFD, data: []byte(masterPasswd)}, true
+		return target{kind: dataFD, data: []byte(passwd(userOf(p.cache), true))}, true
 	}
 	if f, ok := p.cachePaths[path]; ok {
 		return target{kind: cacheFD, cache: f}, true
@@ -340,15 +343,15 @@ func (p *Process) lookup(path string) (target, bool) {
 	return target{}, false
 }
 
-// statBuf is a struct stat64.
-func statBuf(i fileInfo) []byte {
+// statBuf is a struct stat64 of a file the user owns.
+func statBuf(i fileInfo, owner user) []byte {
 	b := make([]byte, 144)
 	le.PutUint32(b[0:], i.dev)
 	le.PutUint16(b[4:], i.mode)
 	le.PutUint16(b[6:], 1)
 	le.PutUint64(b[8:], i.ino)
-	le.PutUint32(b[16:], guestUID)
-	le.PutUint32(b[20:], guestGID)
+	le.PutUint32(b[16:], owner.uid)
+	le.PutUint32(b[20:], owner.gid)
 	for at := 32; at < 96; at += 16 { // access, modification, change and birth times
 		le.PutUint64(b[at:], uint64(i.mtime))
 	}
@@ -367,7 +370,7 @@ const (
 // putStat writes the struct stat64 of a file that was described without an error.
 func (p *Process) putStat(buf uint64, info fileInfo, errno int64) int64 {
 	if errno == 0 {
-		p.write(buf, statBuf(info))
+		p.write(buf, statBuf(info, userOf(p.cache)))
 	}
 	return errno
 }

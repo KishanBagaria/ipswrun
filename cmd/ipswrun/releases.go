@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/KishanBagaria/ipswrun/emulator"
 	"github.com/KishanBagaria/ipswrun/rangefs"
 	"github.com/blacktop/go-plist"
 )
@@ -56,6 +57,10 @@ func (r release) compressed() bool {
 	return strings.HasPrefix(r.Version, "13.") || strings.HasPrefix(r.Version, "14.")
 }
 
+// builtIn is what the releases selectReleases knows without asking are, as its errors say: those
+// of releases.tsv, or for iOS, which has none there, those of the index for the --device.
+var builtIn = "the releases built in"
+
 // iOS is the OS of a release for an iPhone, iPad or iPod touch.
 const iOS = "iOS"
 
@@ -68,6 +73,14 @@ func osOf(device string) string {
 		}
 	}
 	return ""
+}
+
+// homeOf is the guest's home on system (see osOf).
+func homeOf(system string) string {
+	if system == iOS {
+		return emulator.GuestHomeIOS
+	}
+	return emulator.GuestHome
 }
 
 // splitSelector is the comma-separated parts of a release selector. The URL or path of an iOS
@@ -365,7 +378,7 @@ func selectReleases(known, betas []release, selector string, current, index func
 			matched = filter(pool, func(r release) bool { return strings.HasPrefix(r.Version, prefix) })
 			note = cmp.Or(note, feedErr)
 			if len(matched) == 0 {
-				return nil, nil, noRelease("the releases built in")
+				return nil, nil, noRelease(builtIn)
 			}
 		case part == "latest":
 			if matched = offered(); feedErr != nil {

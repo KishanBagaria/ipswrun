@@ -153,8 +153,8 @@ var (
 		{0x100, 4, nil}, // script
 		{0x200, 16, attrTime}, {0x400, 16, attrTime}, {0x800, 16, attrTime}, {0x1000, 16, attrTime},
 		{0x2000, 16, nil}, {0x4000, -32, nil}, // backup time, no Finder info
-		{0x8000, 4, always(le32(guestUID))},
-		{0x10000, 4, always(le32(guestGID))},
+		{0x8000, 4, func(c *attrContext) []byte { return le32(userOf(c.p.cache).uid) }},
+		{0x10000, 4, func(c *attrContext) []byte { return le32(userOf(c.p.cache).gid) }},
 		{0x20000, 4, func(c *attrContext) []byte { return le32(uint32(c.mode)) }},
 		{0x40000, 4, nil}, {0x80000, 4, nil}, {0x100000, 4, nil}, // flags, generation, document id
 		{0x200000, 4, func(c *attrContext) []byte { // user access: what the owner bits allow

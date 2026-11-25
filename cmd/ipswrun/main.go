@@ -227,8 +227,8 @@ func checkPerRelease(releases int, flag, value string) error {
 }
 
 // parseMounts reads each --mount as <guest dir>=<host dir>, and refuses one that several releases
-// would share or that the emulator would not take.
-func parseMounts(releases int, values []string) (mounts []emulator.Mount, err error) {
+// would share or that the emulator would not take beside the guest's home.
+func parseMounts(releases int, values []string, home string) (mounts []emulator.Mount, err error) {
 	for _, value := range values {
 		guest, host, ok := strings.Cut(value, "=")
 		if !ok || host == "" {
@@ -239,7 +239,7 @@ func parseMounts(releases int, values []string) (mounts []emulator.Mount, err er
 		}
 		mounts = append(mounts, emulator.Mount{Guest: guest, Host: host})
 	}
-	if err := emulator.CheckMounts(mounts); err != nil {
+	if err := emulator.CheckMounts(mounts, home); err != nil {
 		return nil, fmt.Errorf("--mount: %w", err)
 	}
 	return mounts, nil
@@ -816,7 +816,7 @@ several of these separated by commas. With an iPhone or iPad --device (iPhone11,
 releases of iOS for it.`)
 		flag.PrintDefaults()
 	}
-	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
+	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+" ("+emulator.GuestHomeIOS+" on iOS); {build} and {version} in it become the release's (default: a temporary one)")
 	var env, system, mountValues, services, daemonValues, agentValues list
 	flag.Var(&agentValues, "agent", "<service>[,<service>...]=<executable> [arguments]: another guest, started beside the first as the same user, that provides these Mach services to it; its executable may be a source file, as the first's may (repeatable)")
 	flag.Var(&daemonValues, "daemon", "like --agent, for a guest that runs as root, as a daemon of the system does (repeatable)")
@@ -843,6 +843,10 @@ releases of iOS for it.`)
 	index := func() ([]release, error) { return fetchIndex(*device) }
 	guestOS := osOf(*device)
 	if guestOS == iOS {
+		if err := checkDevice(*device); err != nil {
+			fmt.Fprintf(os.Stderr, "ipswrun: %v\n", err)
+			return 2, nil
+		}
 		// Apple names no iOS release in its feed of Macs', and ipswrun has none built in: every
 		// one is the index's, the newest of them the current one. It is asked only for a name
 		// that is not a restore image.
@@ -854,7 +858,7 @@ releases of iOS for it.`)
 			}
 			return every[len(every)-1:], nil
 		}
-		known = nil
+		known, builtIn = nil, "the releases api.ipsw.me lists for "+*device
 		if *listReleases || (flag.NArg() > 0 && needsIndex(flag.Arg(0))) {
 			every, err := index()
 			if err != nil {
@@ -902,7 +906,7 @@ releases of iOS for it.`)
 				err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath))
 			}
 			if err == nil {
-				mounts, err = parseMounts(len(releases), mountValues)
+				mounts, err = parseMounts(len(releases), mountValues, homeOf(guestOS))
 			}
 			if err == nil {
 				daemons, err = parseDaemons("agent", agentValues)
@@ -911,6 +915,12 @@ releases of iOS for it.`)
 				var more []emulator.Guest
 				more, err = parseDaemons("daemon", daemonValues)
 				daemons = append(daemons, more...)
+			}
+			if err == nil {
+				err = checkBuiltFor(flag.Arg(1), guestOS)
+			}
+			for i := 0; err == nil && i < len(daemons); i++ {
+				err = checkBuiltFor(daemons[i].Executable, guestOS)
 			}
 		}
 		if errors.Is(err, errSource) {

@@ -588,6 +588,10 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			p.sysctls["hw.machine"], p.sysctls["hw.model"] = os("model", "iPhone"), board
 			p.sysctls["hw.targettype"] = strings.TrimSuffix(board, "AP")
 			p.sysctls["kern.osvariant_status"] = n(osVariantIOS)
+			// What a Mac says of the macOS version it reports to old programs (10.16) and of the
+			// iOS its Catalyst apps see: an iPhone has neither.
+			delete(p.sysctls, "kern.osproductversioncompat")
+			delete(p.sysctls, "kern.iossupportversion")
 		}
 	}
 	if v, ok := p.sysctls[name]; ok {

@@ -320,7 +320,9 @@ func init() {
 		200:  migHostInfo,
 		202:  func(*Process, []byte) migReply { return migData(le64(pageSize)) }, // host_page_size
 		205:  migHostGetIOMain,
-		217:  ok,        // host_request_notification: of the calendar changing, which it does not
+		216:  migHostStatistics,
+		217:  ok, // host_request_notification: of the calendar changing, which it does not
+		219:  migHostStatistics64,
 		206:  freshPort, // host_get_clock_service
 		412:  migHostGetSpecialPort,
 		1000: migClockGetTime,
@@ -463,6 +465,61 @@ func migHostInfo(p *Process, body []byte) migReply {
 	case 5: // HOST_PRIORITY_INFO
 		info = le32(0, 31, 31, 31, 0, 31, 0, 127)
 	default:
+		return migCode(kernInvalidArg)
+	}
+	return counted(info[:min(count*4, uint64(len(info)))])
+}
+
+// The pages of guestMemory as host_statistics tells them: half free, as kern.memorystatus_level
+// says, and of the rest, what is in use split between active, inactive and wired. They and the
+// counters are the same on every run, so that a guest that prints them prints the same thing.
+const (
+	pagesFree     = guestMemory / pageSize / 2
+	pagesActive   = guestMemory / pageSize / 4
+	pagesInactive = guestMemory / pageSize / 8
+	pagesWired    = guestMemory/pageSize - pagesFree - pagesActive - pagesInactive
+)
+
+// vmStatistics64 is a vm_statistics64: the page counts, then what the pager has done since boot.
+func vmStatistics64() []byte {
+	var b []byte
+	b = append(b, le32(pagesFree, pagesActive, pagesInactive, pagesWired)...)
+	b = append(b, le64(100000, 0, 2000, 0, 300000, 5000, 0, 0, 0)...) // zero fills, reactivations, pageins, pageouts, faults, copy-on-write faults, lookups, hits, purges
+	b = append(b, le32(0, 0)...)                                      // purgeable, speculative
+	b = append(b, le64(0, 0, 0, 0)...)                                // decompressions, compressions, swapins, swapouts
+	b = append(b, le32(0, 0, pagesInactive, pagesActive)...)          // compressor, throttled, file-backed and anonymous pages
+	return append(b, le64(0)...)                                      // pages held compressed
+}
+
+// hostStatistics is what host_statistics and host_statistics64 answer for a flavor, or nil for
+// one they do not know. The 32-bit vm_statistics is the 64-bit one with its counters cut down.
+func hostStatistics(flavor int32, wide bool) []byte {
+	switch flavor {
+	case 1: // HOST_LOAD_INFO: load averages and Mach factors, in fixed point of 1000
+		return le32(0, 0, 0, 1000, 1000, 1000)
+	case 2: // HOST_VM_INFO
+		if wide {
+			return nil
+		}
+		return le32(pagesFree, pagesActive, pagesInactive, pagesWired, 100000, 0, 2000, 0, 300000, 5000, 0, 0, 0, 0, 0)
+	case 3: // HOST_CPU_LOAD_INFO: ticks spent in user, system, idle and nice
+		return le32(0, 0, 0, 0)
+	case 4: // HOST_VM_INFO64
+		return vmStatistics64()
+	}
+	return nil
+}
+
+// migHostStatistics (host_statistics) and migHostStatistics64 (host_statistics64) are how vm_stat
+// and top see memory and load. Their request is a flavor and how many words the caller has room for.
+func migHostStatistics(p *Process, body []byte) migReply   { return hostStatisticsReply(p, body, false) }
+func migHostStatistics64(p *Process, body []byte) migReply { return hostStatisticsReply(p, body, true) }
+
+func hostStatisticsReply(p *Process, body []byte, wide bool) migReply {
+	flavor, count := int32(le.Uint32(body[32:])), uint64(le.Uint32(body[36:]))
+	p.note("  host_statistics flavor %d", flavor)
+	info := hostStatistics(flavor, wide)
+	if info == nil {
 		return migCode(kernInvalidArg)
 	}
 	return counted(info[:min(count*4, uint64(len(info)))])

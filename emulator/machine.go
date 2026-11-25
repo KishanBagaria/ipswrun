@@ -50,10 +50,11 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dyld: %w", err)
 	}
-	if err := CheckMounts(cfg.Mounts); err != nil {
+	home := userOf(cfg.Cache).home
+	if err := CheckMounts(cfg.Mounts, home); err != nil {
 		return nil, err
 	}
-	mounts, err := openMounts(append([]Mount{{GuestHome, cfg.Home}}, cfg.Mounts...))
+	mounts, err := openMounts(append([]Mount{{home, cfg.Home}}, cfg.Mounts...))
 	if err != nil {
 		return nil, err
 	}

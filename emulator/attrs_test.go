@@ -173,11 +173,11 @@ func TestMounts(t *testing.T) {
 		t.Errorf("the directory above the mount resolved to %+v, %v", above, ok)
 	}
 	for _, bad := range [][]Mount{{{"/", host}}, {{"var/db", host}}, {{GuestHome + "/", host}}, {{"/var/db", host}, {"/var/./db", host}}} {
-		if CheckMounts(bad) == nil {
+		if CheckMounts(bad, GuestHome) == nil {
 			t.Errorf("mounts %v were accepted", bad)
 		}
 	}
-	if err := CheckMounts([]Mount{{"/Users", host}, {"/var/db", host}}); err != nil {
+	if err := CheckMounts([]Mount{{"/Users", host}, {"/var/db", host}}, GuestHome); err != nil {
 		t.Errorf("a mount above the home, and another: %v", err)
 	}
 	for name, errno := range map[string]int64{

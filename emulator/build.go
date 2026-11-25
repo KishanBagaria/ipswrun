@@ -30,10 +30,12 @@ var cacheLocations = []struct{ volume, dir string }{
 }
 
 // BaseEnv is the environment every guest gets: no preference daemon, no allocator features that
-// need address space or kernel support the emulator lacks, and the emulated home. A run that
-// has what one of these stands in for takes it out again (see Run.Env).
-var BaseEnv = []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "MallocDeferredReclaim=0", "HOME=" + GuestHome,
-	"CFFIXED_USER_HOME=" + GuestHome, "TMPDIR=" + GuestHome + "/tmp/"}
+// need address space or kernel support the emulator lacks, and the emulated home (see HomeOf). A
+// run that has what one of these stands in for takes it out again (see Run.Env).
+func BaseEnv(home string) []string {
+	return []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "MallocDeferredReclaim=0", "HOME=" + home,
+		"CFFIXED_USER_HOME=" + home, "TMPDIR=" + home + "/tmp/"}
+}
 
 // DefaultSystem is what a guest may read from the build's system volume unless told otherwise:
 // the feature flags, the system version, ICU's data (locales, calendars, time zones) and the
@@ -48,7 +50,7 @@ const SystemPrefix = "system:"
 // Run describes one guest execution against a build.
 type Run struct {
 	Unicorn    string   // path of the verified libunicorn (see EnsureUnicorn)
-	Home       string   // host directory behind GuestHome
+	Home       string   // host directory behind the guest's home (see HomeOf)
 	Mounts     []Mount  // more host directories the guests may change (see CheckMounts)
 	Services   []string // the Mach services the guest provides: the names it may check in with launchd
 	Executable string   // host path of the guest Mach-O (arm64, linked against the cache), or with SystemPrefix its path in the build
@@ -236,7 +238,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 	if err != nil {
 		return nil, cache, err
 	}
-	env := slices.Clone(BaseEnv)
+	env := BaseEnv(HomeOf(cache.Platform))
 	for _, change := range run.Env {
 		if name, _, set := strings.Cut(change, "="); set {
 			env = append(env, change)

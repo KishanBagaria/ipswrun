@@ -1,6 +1,8 @@
 package emulator
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/KishanBagaria/ipswrun/dyldcache"
@@ -23,6 +25,11 @@ func TestSysctlsByPlatform(t *testing.T) {
 				t.Errorf("%v: %s = %v, want %v", c.platform, name, got, want)
 			}
 		}
+		for _, name := range []string{"kern.osproductversioncompat", "kern.iossupportversion"} {
+			if _, ok := p.sysctlValue(name); ok != (c.platform == dyldcache.MacOS) {
+				t.Errorf("%v: %s is there: %v", c.platform, name, ok)
+			}
+		}
 	}
 }
 
@@ -34,5 +41,35 @@ func TestHeapByPlatform(t *testing.T) {
 	}
 	if got := heapStart(dyldcache.IOS); got >= 1<<39 || got < 0x300000000 {
 		t.Errorf("iOS heap at %#x", got)
+	}
+}
+
+// An iOS guest is the user mobile, with its home in /var/mobile, as on an iPhone; a macOS one emu.
+func TestUserByPlatform(t *testing.T) {
+	for _, c := range []struct {
+		platform dyldcache.Platform
+		home     string
+		gid      uint32
+		entry    string
+	}{
+		{dyldcache.MacOS, "/Users/emu", 20, "emu:*:501:20:emu:/Users/emu:/bin/zsh\n"},
+		{dyldcache.IOS, "/var/mobile", 501, "mobile:*:501:501:mobile:/var/mobile:/bin/sh\n"},
+	} {
+		cache := &dyldcache.Cache{Platform: c.platform}
+		if got := HomeOf(c.platform); got != c.home {
+			t.Errorf("%v: home %s, want %s", c.platform, got, c.home)
+		}
+		if env := BaseEnv(HomeOf(c.platform)); !slices.Contains(env, "HOME="+c.home) || !slices.Contains(env, "TMPDIR="+c.home+"/tmp/") {
+			t.Errorf("%v: environment %q", c.platform, env)
+		}
+		if got := passwd(userOf(cache), false); !strings.HasSuffix(got, c.entry) {
+			t.Errorf("%v: passwd %q, want it to end in %q", c.platform, got, c.entry)
+		}
+		if st := statBuf(fileInfo{}, userOf(cache)); le.Uint32(st[16:]) != 501 || le.Uint32(st[20:]) != c.gid {
+			t.Errorf("%v: files owned by %d:%d", c.platform, le.Uint32(st[16:]), le.Uint32(st[20:]))
+		}
+		if err := CheckMounts([]Mount{{c.home, t.TempDir()}}, c.home); err == nil {
+			t.Errorf("%v: a mount at the home is taken", c.platform)
+		}
 	}
 }

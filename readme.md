@@ -98,7 +98,7 @@ An executable can also be the release's own, by `system:` and its path there: `s
 What the guest gets:
 
 - **That release's code.** It is loaded by the release's own dyld against the release's own dyld shared cache, so `dlopen` of any system framework, private ones included, gets the code that shipped.
-- **A home directory**, `/Users/emu`. By default it is a temporary directory that is deleted after the run. Pass `--home <dir>` to keep what the guest writes there, which is the usual way to get results out. With several releases, give each its own: `--home 'out/{build}'`.
+- **A home directory**, `/Users/emu` (on iOS `/var/mobile`). By default it is a temporary directory that is deleted after the run. Pass `--home <dir>` to keep what the guest writes there, which is the usual way to get results out. With several releases, give each its own: `--home 'out/{build}'`.
 - **Standard output and error**, printed when the guest has finished rather than as it runs.
 - **Its exit status**, which becomes ipswrun's. ipswrun itself exits 2 for a bad command line and 70 for a run that failed. With several releases it exits 70 if any run failed, otherwise 1 if any guest exited nonzero.
 
@@ -125,24 +125,24 @@ The run is the first guest's: its output and its exit status. When it exits, the
 An iPhone or iPad `--device` runs the guest against iOS instead, from that device's restore images:
 
 ```sh
-./ipswrun --device iPhone11,2 --home out 18.7.12 system:/usr/bin/truncate -s 12345 /Users/emu/made-on-ios
+./ipswrun --device iPhone11,2 --home out 18.7.12 system:/usr/bin/truncate -s 12345 /var/mobile/made-on-ios
 ```
 
 The release is named as for macOS: a version or build, `latest`, `all`, `18`, `18.*`, a range, or an image's URL or path, commas in its name and all. Every iOS release is looked up in the [ipsw.me](https://ipsw.me) index for the device, with the same checks as a macOS one; none are built in. `--releases` lists them.
 
-A guest for iOS is an ordinary iOS executable, built against the iOS SDK, which needs Xcode, not only its command line tools. ipswrun builds a source file so, and the examples build with `make -C examples PLATFORM=ios` into `examples/bin/ios`. By hand:
+A guest for iOS is an ordinary iOS executable, built against the iOS SDK, which needs Xcode, not only its command line tools. One built for macOS is refused before anything is fetched, and the other way round. Only devices from the A12 on can be named (iPhone11,2 and later, iPad8,1 and later): the iOS of earlier ones has an arm64 shared cache, not an arm64e one. ipswrun builds a source file so, and the examples build with `make -C examples PLATFORM=ios` into `examples/bin/ios`. By hand:
 
 ```sh
 xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=14.0 -Wl,-no_fixup_chains -o guest guest.c
 ```
 
-What the guest gets is what it gets on macOS, with the same home. What iOS has that macOS does not is not there: no SpringBoard or backboardd, so no UIKit app, and with no IOKit services MobileGestalt answers nothing. iOS 16 and 17 need [`--stream-compressed`](#what-does-not-work), for the same reason as macOS 13 and 14.
+What the guest gets is what it gets on macOS, but as an iPhone has it: it runs as the user `mobile`, with its home in `/var/mobile`, and `hw.machine` and `hw.model` name the device and its board. What iOS has that macOS does not is not there: no SpringBoard or backboardd, so no UIKit app, and with no IOKit services MobileGestalt answers nothing. iOS 16 and 17 need [`--stream-compressed`](#what-does-not-work), for the same reason as macOS 13 and 14.
 
 ## Options
 
 | Flag | What it does |
 | --- | --- |
-| `--home <dir>` | host directory the guest sees as its home, `/Users/emu` (default: a temporary one, deleted afterwards). `{build}` and `{version}` are filled in per release, and one is required with several |
+| `--home <dir>` | host directory the guest sees as its home, `/Users/emu` (`/var/mobile` on iOS) (default: a temporary one, deleted afterwards). `{build}` and `{version}` are filled in per release, and one is required with several |
 | `--mount <guest dir>=<host dir>` | another host directory the guest sees and may change, at that guest path, such as `--mount /var/db=out/db` (repeatable). `{build}` and `{version}` in the host directory as in `--home` |
 | `--service <name>` | a Mach service the guest provides, as a daemon started by launchd does: it can check that name in, and look it up as a client (repeatable). Without it no name can be checked in, as for any program run by hand |
 | `--agent <service>[,<service>…]=<executable> [arguments]` | another guest, started beside the first as the same user, that provides these Mach services (repeatable). Arguments are separated by spaces |

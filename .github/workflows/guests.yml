@@ -16,7 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make -C examples
-      - run: file examples/bin/* && shasum -a 256 examples/bin/*
+      # The same guests for iOS, against the iOS SDK that comes with Xcode, into examples/bin/ios.
+      - run: make -C examples PLATFORM=ios
+      - run: file examples/bin/* examples/bin/ios/* && shasum -a 256 examples/bin/* examples/bin/ios/* 2>/dev/null
       # What these guests print on a real Mac, which is what they should print under ipswrun.
       - run: |
           for guest in threads swiftasync ipc; do
@@ -62,3 +64,37 @@ jobs:
       - run: examples/matrix.sh --guest=crypto,threads,swiftasync,ipc,service,client,prefs,adi 15.0 27.2
         env:
           IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix
+
+  # TEMPORARY: runs every guest against the iOS releases, to record what they print.
+  explore-ios:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: guests
+          path: examples/bin
+      - run: chmod +x examples/bin/* examples/bin/ios/*
+      - run: examples/matrix.sh --device=iPhone11,2 --guest=all --stream-compressed --update --jobs=6 || true
+        env:
+          IPSWRUN_CACHE: ${{ runner.temp }}/cache
+          RESULTS: ${{ runner.temp }}/results
+      - run: examples/matrix.sh --device=iPhone15,2 --guest=all --update --jobs=6 26 27 || true
+        env:
+          IPSWRUN_CACHE: ${{ runner.temp }}/cache
+          RESULTS: ${{ runner.temp }}/results
+      - run: |
+          for f in examples/expected/ios/*/*.json; do echo "== $f"; jq -c '{version, build, exit_code, output}' "$f"; done
+      - run: |
+          cd ${{ runner.temp }}/results
+          for f in */*.err; do [ -s "$f" ] || continue; echo "== $f"; tail -n 25 "$f"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-expected
+          path: examples/expected/ios/
