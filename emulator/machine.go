@@ -172,6 +172,13 @@ func (m *Machine) exit(p *Process, how string) {
 	for _, n := range slices.Sorted(maps.Keys(p.fds)) { // and its files, with the locks on them
 		p.closeFD(n)
 	}
+	if parent := p.parent; parent != nil && !parent.exited { // told before it is given the child to wait for
+		told := pendingSignal{sig: sigChild, code: codeChildExited, status: int32(p.exitCode), pid: p.pid, uid: p.uid}
+		if p.endSignal != 0 {
+			told.code, told.status = codeChildKilled, int32(p.endSignal)
+		}
+		parent.sendSignal(told)
+	}
 	m.childExited(p)
 	m.exitWatched(p)
 	if p == m.procs[0] {

@@ -264,7 +264,8 @@ type Process struct {
 	exited    bool
 	early     bool // it exited while the guest the run is for was still running
 	exitCode  int
-	endSignal int // the signal that ended it, if one did (see signals.go)
+	endSignal int             // the signal that ended it, if one did (see signals.go)
+	pending   []pendingSignal // the signals no thread has taken yet
 	fault     string
 	faultKind StopKind // of the stop that set fault, carried out of the hook it happened in
 	resume    bool
@@ -1221,6 +1222,9 @@ func (p *Process) interrupt(number uint32) {
 		p.machTrap(-n)
 	default:
 		p.bsd(n)
+	}
+	if !p.exited && !p.reschedule() {
+		p.takeSignals()
 	}
 	if p.exited || p.reschedule() {
 		p.resume = true

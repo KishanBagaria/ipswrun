@@ -464,19 +464,6 @@ func sysGetpgid(p *Process, a []uint64) int64 {
 	return -eSRCH
 }
 
-// sysSigreturn is sigreturn(context, style, token), which is how a handler returns to what its
-// signal interrupted. No handler is ever run here, so the one call there can be is the one that
-// only says the thread is no longer on its alternate signal stack (longjmp makes it): it never
-// was.
-func sysSigreturn(p *Process, a []uint64) int64 {
-	const resetAltStack = 0x80000000 // UC_RESET_ALT_STACK
-	if a[0] != 0 || uint32(a[1]) != resetAltStack {
-		p.unimplemented("sigreturn from a signal handler", a)
-		return -eINVAL
-	}
-	return 0
-}
-
 const (
 	noteExit       = 0x80000000 // of a process filter: it ended, and
 	noteExitStatus = 0x04000000 // how, as wait4 says it

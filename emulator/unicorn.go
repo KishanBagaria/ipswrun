@@ -20,6 +20,9 @@ const (
 	regCPACREL1  = 261
 	regTPIDRRO   = 263
 	regCPReg     = 290
+	regV0        = 228 // the first of the 32 vector registers, 16 bytes each
+	regFPCR      = 291
+	regFPSR      = 292
 	cpuModelMax  = 3
 	unicornMajor = 2
 	unicornMinor = 1
@@ -247,6 +250,15 @@ func (e *engine) reg(id int) uint64 {
 
 func (e *engine) setReg(id int, v uint64) {
 	must(api.regWrite(e.uc, int32(id), unsafe.Pointer(&v)), "reg_write")
+}
+
+// regBytes reads a register that is wider than a word, and setRegBytes writes one.
+func (e *engine) regBytes(id int, v []byte) {
+	must(api.regRead(e.uc, int32(id), unsafe.Pointer(&v[0])), "reg_read")
+}
+
+func (e *engine) setRegBytes(id int, v []byte) {
+	must(api.regWrite(e.uc, int32(id), unsafe.Pointer(&v[0])), "reg_write")
 }
 
 func (e *engine) newContext() uintptr {

@@ -612,3 +612,40 @@ func TestUsage(t *testing.T) {
 		}
 	})
 }
+
+// The engine's numbers for the registers a signal handler's context holds beside the general
+// ones: each is written here and read back by an instruction, and the other way round.
+func TestVectorRegisters(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		run := func(instruction uint32) uint64 {
+			p.write(codeAddr, le32(instruction))
+			if err := p.uc.start(codeAddr, codeAddr+4, 10_000_000); err != nil {
+				t.Fatal(err)
+			}
+			return p.x(0)
+		}
+		const fmovX0D0, umovX0V3High, mrsFPCR, mrsFPSR, msrFPCR, mrsNZCV = 0x9e660000, 0x4e183c60, 0xd53b4400, 0xd53b4420, 0xd51b4400, 0xd53b4200
+		p.uc.setRegBytes(regV0, append(le64(0x1122334455667788), le64(0x99aabbccddeeff00)...))
+		p.uc.setRegBytes(regV0+3, append(le64(1), le64(0x0123456789abcdef)...))
+		if low, high := run(fmovX0D0), run(umovX0V3High); low != 0x1122334455667788 || high != 0x0123456789abcdef {
+			t.Errorf("v0's low half %#x, v3's high half %#x", low, high)
+		}
+		p.uc.setReg(regFPCR, 0x00800000) // rounding towards minus infinity
+		p.uc.setReg(regFPSR, 0x08000000) // a saturation happened
+		if control, status := run(mrsFPCR), run(mrsFPSR); control != 0x00800000 || status != 0x08000000 {
+			t.Errorf("fpcr %#x, fpsr %#x", control, status)
+		}
+		p.setX(0, 0x00400000)
+		run(msrFPCR)
+		back := make([]byte, 16)
+		p.uc.regBytes(regV0, back)
+		if got := p.uc.reg(regFPCR); got != 0x00400000 || le.Uint64(back[8:]) != 0x99aabbccddeeff00 {
+			t.Errorf("fpcr set by the guest reads %#x; v0's high half %#x", got, le.Uint64(back[8:]))
+		}
+		p.uc.setReg(regNZCV, 0x60000000)
+		if flags := run(mrsNZCV); flags != 0x60000000 {
+			t.Errorf("flags %#x", flags)
+		}
+	})
+}

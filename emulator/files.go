@@ -18,6 +18,7 @@ import (
 // Guest errno values (Darwin's).
 const (
 	ePERM     = 1
+	eINTR     = 4
 	eNOENT    = 2
 	eSRCH     = 3
 	eIO       = 5

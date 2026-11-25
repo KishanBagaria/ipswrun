@@ -181,10 +181,8 @@ func (p *Process) tryWrite(op *pipeOp) (int64, bool) {
 func (p *Process) brokenPipe(f *fd) int64 {
 	switch handler := p.sigactions[sigPipe].handler; {
 	case f.noSigpipe || handler == sigIgnore:
-	case handler == 0:
-		p.endBySignal(sigPipe)
 	default:
-		p.unimplemented("SIGPIPE to a process with a handler for it", nil)
+		p.sendSignal(pendingSignal{sig: sigPipe, status: sigPipe, pid: p.pid, uid: p.uid, to: p.current})
 	}
 	return -ePIPE
 }

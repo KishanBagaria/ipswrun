@@ -74,8 +74,12 @@ type thread struct {
 	cwd       string      // its working directory, if it has one of its own (see sysPthreadChdir)
 	waiting4  *waiting4   // of a thread waiting for a child to end: which, and where to say how
 
-	sigmask  uint32    // the signals it blocks
-	altstack [2]uint64 // its alternate signal stack, if it has one: where, and its size
+	sigmask   uint32    // the signals it blocks
+	altstack  [2]uint64 // its alternate signal stack, if it has one: where, and its size
+	onstack   bool      // a handler of its is running on that stack
+	suspended *uint32   // of a thread in sigsuspend: the mask it had before, which it has again after
+	sleeping  bool      // that call is the one libc sleeps with, which a signal interrupts
+	arg0      uint64    // the first argument of the system call it is in, which the answer is put in place of
 
 	pthread uint64  // of a work queue thread: its pthread, which sits on top of its stack
 	serving *kqueue // of a work queue thread: whose events it was started for, if any
@@ -208,6 +212,7 @@ func (p *Process) switchTo(t *thread) {
 		p.current, t.relaunched = t, false
 	}
 	p.deliver()
+	p.takeSignals()
 }
 
 // threadList describes every thread that has not ended, one per line.
@@ -355,7 +360,26 @@ func (p *Process) contended() bool {
 }
 
 // sysSigsuspend waits for a signal. None is ever sent, so the thread is never heard from again.
+// sysSigsuspend is sigsuspend(mask): the thread blocks those signals and no others, and waits
+// for one it does not block to have its handler run, or to end the process. sysSigwait waits
+// for one of a set of signals to be sent, with no handler run, which nothing here ends.
 func sysSigsuspend(p *Process, a []uint64) int64 {
+	t := p.current
+	before := t.sigmask
+	t.suspended, t.sigmask = &before, uint32(a[0])&^(1<<(sigKill-1)|1<<(sigStop-1))
+	p.wait(waitSignal, 0, time.Time{}, result{})
+	// One that waited already is taken now.
+	for _, s := range p.pending {
+		if s.takes(t) {
+			t.state = runnable
+			t.answer = &result{x0: eINTR, carry: true}
+			break
+		}
+	}
+	return 0
+}
+
+func sysSigwait(p *Process, a []uint64) int64 {
 	p.wait(waitSignal, 0, time.Time{}, result{})
 	return 0
 }
