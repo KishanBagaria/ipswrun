@@ -836,7 +836,7 @@ several of these separated by commas.`)
 	flag.Var(&system, "system", "system-volume file, or directory ending in /, the guest may read (repeatable; default: feature flags, SystemVersion.plist, /usr/share/icu/ and libobjc-trampolines.dylib; giving any replaces the default)")
 	device := flag.String("device", "Macmini9,1", "BuildManifest product used to pick disk images")
 	cache := flag.String("cache", "", "directory that keeps what was downloaded between runs (default: the user cache directory)")
-	pruneCache := flag.Bool("prune-cache", false, "remove cached restore image downloads from --cache, then exit")
+	pruneCache := flag.Bool("prune-cache", false, "remove cached restore image downloads from --cache (skipping any a running ipswrun has open), then exit")
 	stream := flag.Bool("stream-compressed", false, "download a compressed disk image member front to back when it cannot be read by range")
 	timeout := flag.Float64("timeout", 900, "seconds the guest may run on each release, counted from when it starts (opening the image and fetching its pages are not counted)")
 	trace := flag.Bool("trace", false, "print every emulated system call")
@@ -865,11 +865,14 @@ several of these separated by commas.`)
 		return 0, nil
 	}
 	if *pruneCache {
-		removed, freed, err := rangefs.PruneCache(*cache)
+		removed, inUse, freed, err := rangefs.PruneCache(*cache)
 		if err != nil {
 			return 0, err
 		}
 		fmt.Printf("removed %d cached image(s) (%.1f MB) from %s\n", removed, float64(freed)/1e6, *cache)
+		if inUse > 0 {
+			fmt.Printf("left %d image(s) in use by a running ipswrun\n", inUse)
+		}
 		return 0, nil
 	}
 	// Nothing is fetched for a command line that cannot run. --setup takes no arguments.
