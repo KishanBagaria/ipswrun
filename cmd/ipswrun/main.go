@@ -57,7 +57,7 @@ const usage = "ipswrun [flags] <release> <guest executable or source> [guest arg
 
 // checkArgs says what is wrong with the positional arguments, before anything is fetched for
 // them, or returns the releases the first one names.
-func checkArgs(known, betas []release, args []string, current, index func() ([]release, error)) (selected []release, note error, err error) {
+func checkArgs(known, betas []release, builtIn string, args []string, current, index func() ([]release, error)) (selected []release, note error, err error) {
 	if len(args) < 2 {
 		return nil, nil, fmt.Errorf("expected a release and a guest executable, got %d argument(s)", len(args))
 	}
@@ -65,7 +65,7 @@ func checkArgs(known, betas []release, args []string, current, index func() ([]r
 	if err := checkExecutable(args[1]); err != nil {
 		return nil, nil, fmt.Errorf("guest executable: %w", err)
 	}
-	return selectReleases(known, betas, args[0], current, index)
+	return selectReleases(known, betas, builtIn, args[0], current, index)
 }
 
 // checkExecutable says what is wrong with the path of an executable on the host, or of a source
@@ -227,8 +227,8 @@ func checkPerRelease(releases int, flag, value string) error {
 }
 
 // parseMounts reads each --mount as <guest dir>=<host dir>, and refuses one that several releases
-// would share or that the emulator would not take.
-func parseMounts(releases int, values []string) (mounts []emulator.Mount, err error) {
+// would share or that the emulator would not take beside the guest's home.
+func parseMounts(releases int, values []string, home string) (mounts []emulator.Mount, err error) {
 	for _, value := range values {
 		guest, host, ok := strings.Cut(value, "=")
 		if !ok || host == "" {
@@ -239,7 +239,7 @@ func parseMounts(releases int, values []string) (mounts []emulator.Mount, err er
 		}
 		mounts = append(mounts, emulator.Mount{Guest: guest, Host: host})
 	}
-	if err := emulator.CheckMounts(mounts); err != nil {
+	if err := emulator.CheckMounts(mounts, home); err != nil {
 		return nil, fmt.Errorf("--mount: %w", err)
 	}
 	return mounts, nil
@@ -816,7 +816,7 @@ several of these separated by commas. With an iPhone or iPad --device (iPhone11,
 releases of iOS for it.`)
 		flag.PrintDefaults()
 	}
-	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
+	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+" ("+emulator.GuestHomeIOS+" on iOS); {build} and {version} in it become the release's (default: a temporary one)")
 	var env, system, mountValues, services, daemonValues, agentValues list
 	flag.Var(&agentValues, "agent", "<service>[,<service>...]=<executable> [arguments]: another guest, started beside the first as the same user, that provides these Mach services to it; its executable may be a source file, as the first's may (repeatable)")
 	flag.Var(&daemonValues, "daemon", "like --agent, for a guest that runs as root, as a daemon of the system does (repeatable)")
@@ -838,11 +838,15 @@ releases of iOS for it.`)
 	listReleases := flag.Bool("releases", false, "print the releases all stands for (version, build, URL): the first and last of each major version, and the one Apple currently offers")
 	flag.Parse()
 
-	known := parseReleases(releasesText)
+	known, builtIn := parseReleases(releasesText), macBuiltIn
 	current := func() ([]release, error) { return fetchCurrent(*device) }
 	index := func() ([]release, error) { return fetchIndex(*device) }
 	guestOS := osOf(*device)
 	if guestOS == iOS {
+		if err := checkDevice(*device); err != nil {
+			fmt.Fprintf(os.Stderr, "ipswrun: %v\n", err)
+			return 2, nil
+		}
 		// Apple names no iOS release in its feed of Macs', and ipswrun has none built in: every
 		// one is the index's, the newest of them the current one. It is asked only for a name
 		// that is not a restore image.
@@ -854,13 +858,13 @@ releases of iOS for it.`)
 			}
 			return every[len(every)-1:], nil
 		}
-		known = nil
+		known, builtIn = nil, "the releases api.ipsw.me lists for "+*device
 		if *listReleases || (flag.NArg() > 0 && needsIndex(flag.Arg(0))) {
 			every, err := index()
 			if err != nil {
 				return 0, fmt.Errorf("the releases of %s are those api.ipsw.me lists, which %w: %w", *device, errSource, err)
 			}
-			known = every
+			known = filter(every, func(r release) bool { return supportedIOS(r.Version) })
 		}
 	}
 	if *listReleases {
@@ -886,12 +890,15 @@ releases of iOS for it.`)
 			err = fmt.Errorf("--jobs must be at least 1, got %d", *jobs)
 		}
 		if err == nil {
-			releases, note, err = checkArgs(known, parseBetas(betasText, *device), flag.Args(), current, index)
+			releases, note, err = checkArgs(known, parseBetas(betasText, *device), builtIn, flag.Args(), current, index)
 		}
 		if err == nil && guestOS == iOS {
 			// Every iOS release named other than by its image is the index's, and as for one of
 			// macOS, the index is followed only to Apple's hosts.
 			err = offApple(filter(releases, func(r release) bool { return r.Build != "" }))
+			if err == nil {
+				err = checkIOSReleases(releases)
+			}
 		}
 		if err == nil {
 			feedNote(note)
@@ -902,7 +909,7 @@ releases of iOS for it.`)
 				err = cmp.Or(checkPerRelease(len(releases), "home", *home), checkPerRelease(len(releases), "report", *reportPath))
 			}
 			if err == nil {
-				mounts, err = parseMounts(len(releases), mountValues)
+				mounts, err = parseMounts(len(releases), mountValues, emulator.HomeOf(platformOf(guestOS)))
 			}
 			if err == nil {
 				daemons, err = parseDaemons("agent", agentValues)
@@ -911,6 +918,12 @@ releases of iOS for it.`)
 				var more []emulator.Guest
 				more, err = parseDaemons("daemon", daemonValues)
 				daemons = append(daemons, more...)
+			}
+			if err == nil {
+				err = checkBuiltFor(flag.Arg(1), guestOS)
+			}
+			for i := 0; err == nil && i < len(daemons); i++ {
+				err = checkBuiltFor(daemons[i].Executable, guestOS)
 			}
 		}
 		if errors.Is(err, errSource) {

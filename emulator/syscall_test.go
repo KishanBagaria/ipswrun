@@ -343,6 +343,14 @@ func TestBugFixes(t *testing.T) {
 			t.Errorf("hw.model = %q, want Mac16,1", got)
 		}
 
+		// open_dprotected_np creates a file as open does, whatever the protection class.
+		p.write(dataAddr, str(GuestHome+"/protected"))
+		if fd, carry, stopped := p.trap(number(t, "open_dprotected_np"), dataAddr, 0x201, 4, 0, 0o600); stopped != "" || carry || fd < 3 {
+			t.Errorf("open_dprotected_np: fd=%d carry=%v stopped=%q", fd, carry, stopped)
+		} else {
+			p.trap(number(t, "close"), fd)
+		}
+
 		// chdir, fchdir, relative paths, AT_FDCWD, and F_GETPATH (getcwd).
 		p.write(dataAddr, str(GuestHome+"/sub"))
 		if x0, carry, _ := p.trap(number(t, "mkdir"), dataAddr, 0o755); carry || x0 != 0 {

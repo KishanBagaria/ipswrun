@@ -1,0 +1,7 @@
+{
+  "build": "20A362",
+  "cache_uuid": "D3709648-CA48-3851-A382-5C1018B102DE",
+  "exit_code": 0,
+  "output": "group    100 tasks: squares 338350 actor 5050\nlet      884\nsleep    at least 50 ms true, under 5 s true\nresume   7\ndetached 81\ncancel   true\n",
+  "version": "16.0"
+}

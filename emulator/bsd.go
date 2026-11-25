@@ -28,7 +28,7 @@ func init() {
 	bsdHandlers = map[string]handler{
 		// files
 		"stat64": {2, sysStat64}, "lstat64": {2, sysLstat64}, "fstatat64": {4, sysFstatat64}, "fstat64": {2, sysFstat64},
-		"open": {3, sysOpen}, "openat": {4, sysOpenat}, "guarded_open_np": {5, sysGuardedOpen}, "guarded_close_np": {2, sysGuardedClose},
+		"open": {3, sysOpen}, "openat": {4, sysOpenat}, "guarded_open_np": {5, sysGuardedOpen}, "open_dprotected_np": {5, sysOpenDprotected}, "guarded_close_np": {2, sysGuardedClose},
 		"guarded_write_np": {4, sysGuardedWrite}, "guarded_pwrite_np": {5, sysGuardedPwrite}, "close": {1, sysClose},
 		"read": {3, sysRead}, "pread": {4, sysPread}, "write": {3, sysWrite}, "writev": {3, sysWritev}, "pwrite": {4, sysPwrite}, "lseek": {3, sysLseek},
 		"ftruncate": {2, sysFtruncate}, "fsync": {1, constant(0)}, "access": {2, sysAccess}, "unlink": {1, sysUnlink},
@@ -588,6 +588,10 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			p.sysctls["hw.machine"], p.sysctls["hw.model"] = os("model", "iPhone"), board
 			p.sysctls["hw.targettype"] = strings.TrimSuffix(board, "AP")
 			p.sysctls["kern.osvariant_status"] = n(osVariantIOS)
+			// What a Mac says of the macOS version it reports to old programs (10.16) and of the
+			// iOS its Catalyst apps see: an iPhone has neither.
+			delete(p.sysctls, "kern.osproductversioncompat")
+			delete(p.sysctls, "kern.iossupportversion")
 		}
 	}
 	if v, ok := p.sysctls[name]; ok {

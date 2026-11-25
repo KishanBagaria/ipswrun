@@ -10,6 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "darwin.h"
 #include "xpc_request.h"
 
 #define NAME "com.example.ipswrun.echo"

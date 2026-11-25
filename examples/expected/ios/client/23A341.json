@@ -1,0 +1,7 @@
+{
+  "build": "23A341",
+  "cache_uuid": "B6D1ECB5-FCB8-39E7-A76B-52B31415C52A",
+  "exit_code": 0,
+  "output": "echo 1: \"HELLO, SERVER\", the server's request 1; it is another process: 1, and it knows this one: 1\necho 2: \"AND AGAIN\", the server's request 2; it is another process: 1, and it knows this one: 1\nreverse: answer 101 with 70000 bytes, reversed: 1, in memory of its own: 1; the server knows this process: 1\n",
+  "version": "26.0"
+}

@@ -9,11 +9,11 @@
 #include <ctype.h>
 #include <dispatch/dispatch.h>
 #include <mach/mach.h>
-#include <servers/bootstrap.h>
 #include <stdio.h>
 #include <string.h>
 #include <xpc/xpc.h>
 
+#include "darwin.h"
 #include "service.h"
 
 static void reverse(mach_port_t port) {

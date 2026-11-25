@@ -1,0 +1,7 @@
+{
+  "build": "23A341",
+  "cache_uuid": "B6D1ECB5-FCB8-39E7-A76B-52B31415C52A",
+  "exit_code": 0,
+  "output": "iOS 26.0 (23A341)\nloaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking\nsqlite 3.51.0: 1 row(s) in /var/mobile/guest.sqlite\n",
+  "version": "26.0"
+}

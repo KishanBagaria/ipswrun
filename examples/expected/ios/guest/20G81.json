@@ -1,0 +1,7 @@
+{
+  "build": "20G81",
+  "cache_uuid": "6F4A2F64-C38E-3E44-AE7A-FD7877D4022E",
+  "exit_code": 0,
+  "output": "iOS 16.6.1 (20G81)\nloaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking\nsqlite 3.39.5: 1 row(s) in /var/mobile/guest.sqlite\n",
+  "version": "16.6.1"
+}

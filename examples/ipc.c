@@ -15,6 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "darwin.h"
 #include "xpc_request.h"
 
 // Not in any header: a port to be answered on, and the timers CFRunLoop itself used to be built on.

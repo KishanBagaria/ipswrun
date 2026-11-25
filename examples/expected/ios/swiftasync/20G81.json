@@ -1,0 +1,7 @@
+{
+  "build": "20G81",
+  "cache_uuid": "6F4A2F64-C38E-3E44-AE7A-FD7877D4022E",
+  "exit_code": 0,
+  "output": "group    100 tasks: squares 338350 actor 5050\nlet      884\nsleep    at least 50 ms true, under 5 s true\nresume   7\ndetached 81\ncancel   true\n",
+  "version": "16.6.1"
+}

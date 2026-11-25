@@ -56,6 +56,10 @@ func (r release) compressed() bool {
 	return strings.HasPrefix(r.Version, "13.") || strings.HasPrefix(r.Version, "14.")
 }
 
+// macBuiltIn is what the releases selectReleases knows without asking are for macOS, as its
+// errors say: those of releases.tsv. For iOS, which has none there, they are the index's.
+const macBuiltIn = "the releases built in"
+
 // iOS is the OS of a release for an iPhone, iPad or iPod touch.
 const iOS = "iOS"
 
@@ -68,6 +72,28 @@ func osOf(device string) string {
 		}
 	}
 	return ""
+}
+
+// oldestIOS is the first major version of iOS that ipswrun runs. The system volume of iOS 12 and
+// 13 cannot be read by range (its root directory ends early), so they are left out of the
+// releases of the index, and refused when named.
+const oldestIOS = 14
+
+// supportedIOS reports whether ipswrun runs an iOS version.
+func supportedIOS(version string) bool {
+	first, _, _ := strings.Cut(version, ".")
+	major, err := strconv.Atoi(first)
+	return err != nil || major >= oldestIOS
+}
+
+// checkIOSReleases refuses the first selected iOS release before oldestIOS.
+func checkIOSReleases(rs []release) error {
+	for _, r := range rs {
+		if r.Version != "" && !supportedIOS(r.Version) {
+			return fmt.Errorf("iOS %s (%s) is not supported: ipswrun runs iOS %d and later, as the system volume of iOS 12 and 13 cannot be read by range yet", r.Version, r.Build, oldestIOS)
+		}
+	}
+	return nil
 }
 
 // splitSelector is the comma-separated parts of a release selector. The URL or path of an iOS
@@ -309,7 +335,7 @@ func filter(pool []release, keep func(release) bool) []release {
 // Apple offers now, and a version or build that this does not settle either asks index, at most
 // once, for every release there has been. When current fails and the names can do without it, the
 // failure comes back as note.
-func selectReleases(known, betas []release, selector string, current, index func() ([]release, error)) (out []release, note error, err error) {
+func selectReleases(known, betas []release, builtIn, selector string, current, index func() ([]release, error)) (out []release, note error, err error) {
 	current, index = sync.OnceValues(current), sync.OnceValues(index)
 	seen := map[string]bool{}
 	for _, part := range splitSelector(selector) {
@@ -365,7 +391,7 @@ func selectReleases(known, betas []release, selector string, current, index func
 			matched = filter(pool, func(r release) bool { return strings.HasPrefix(r.Version, prefix) })
 			note = cmp.Or(note, feedErr)
 			if len(matched) == 0 {
-				return nil, nil, noRelease("the releases built in")
+				return nil, nil, noRelease(builtIn)
 			}
 		case part == "latest":
 			if matched = offered(); feedErr != nil {

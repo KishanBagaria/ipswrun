@@ -1,0 +1,7 @@
+{
+  "build": "22A3354",
+  "cache_uuid": "4D95BD3E-6831-3A99-A66C-B4DDB316E2E0",
+  "exit_code": 0,
+  "output": "group    100 tasks: squares 338350 actor 5050\nlet      884\nsleep    at least 50 ms true, under 5 s true\nresume   7\ndetached 81\ncancel   true\n",
+  "version": "18.0"
+}

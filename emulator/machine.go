@@ -16,6 +16,7 @@ import (
 // exits.
 type Machine struct {
 	cfg      Config
+	user     user      // whom the guests run as, and who owns the home: the platform's (see userOf)
 	dyld     []byte    // the build's dyld, as the emulated CPU runs it
 	mounts   []mounted // the home among them; longest guest path first
 	procs    []*Process
@@ -50,14 +51,15 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dyld: %w", err)
 	}
-	if err := CheckMounts(cfg.Mounts); err != nil {
+	u := userOf(cfg.Cache.Platform)
+	if err := CheckMounts(cfg.Mounts, u.home); err != nil {
 		return nil, err
 	}
-	mounts, err := openMounts(append([]Mount{{GuestHome, cfg.Home}}, cfg.Mounts...))
+	mounts, err := openMounts(append([]Mount{{u.home, cfg.Home}}, cfg.Mounts...))
 	if err != nil {
 		return nil, err
 	}
-	return &Machine{cfg: cfg, dyld: dyld, mounts: mounts, services: map[string]*service{}, named: map[string]*sharedMemory{}, clock: newClock()}, nil
+	return &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, named: map[string]*sharedMemory{}, clock: newClock()}, nil
 }
 
 // Spawn makes a process of a guest, ready to run from dyld's entry point. Two guests may not
