@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -153,30 +154,30 @@ func TestWrongRangeIsRefused(t *testing.T) {
 }
 
 func TestCacheDirectory(t *testing.T) {
-	o, url := serve(t, 300000)
+	o, url := serve(t, 1<<20)
 	dir := t.TempDir()
 	r, err := newRangeReader(url, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	read(t, r, o, 5100, 100)
-	read(t, r, o, 5000, 100) // adjacent non-sequential: coalesces in memory without read-ahead
-	if len(r.disk.spans) != 1 || r.disk.spans[0] != (span{off: 5000, end: 5200}) {
-		t.Fatalf("spans = %v, want [{5000 5200}]", r.disk.spans)
-	}
-	if _, err := os.Stat(filepath.Join(r.dir, "data")); err != nil {
-		t.Fatalf("missing sparse data file: %v", err)
+	// Scattered reads at high and low remote offsets pack sequentially in data without sparse holes.
+	read(t, r, o, 900000, 100)
+	read(t, r, o, 5000, 100)
+	if st, err := os.Stat(filepath.Join(r.dir, "data")); err != nil || st.Size() != 200 {
+		t.Fatalf("packed data file stat = %v (err %v), want exact 200 bytes", st, err)
 	}
 	if _, err := os.Stat(filepath.Join(r.dir, "index")); err != nil {
 		t.Fatalf("missing index file: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(r.dir, extentName(5000, 100))); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unexpected legacy extent file: %v", err)
-	}
-	// Append enough touching non-sequential chunks to trigger index compaction on reopen.
+	// Sequential fetches append contiguously in both remote and file space, coalescing into one span
+	// and triggering index compaction on reopen.
 	for i := 0; i < compactSlack+4; i++ {
-		off := int64(200000 - i*100)
-		read(t, r, o, off, 100)
+		off := int64(10000 + i*(smallRead+100))
+		read(t, r, o, off, smallRead+100)
+	}
+	wantDataSize := int64(200 + (compactSlack+4)*(smallRead+100))
+	if st, err := os.Stat(filepath.Join(r.dir, "data")); err != nil || st.Size() != wantDataSize {
+		t.Fatalf("packed data size = %v (err %v), want %d", st, err, wantDataSize)
 	}
 	cacheSubdir := r.dir
 	r.Close()
@@ -194,68 +195,73 @@ func TestCacheDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
-	read(t, r, o, 5000, 200)
-	read(t, r, o, 200000-int64(compactSlack+3)*100, int64(compactSlack+4)*100)
+	read(t, r, o, 900000, 100)
+	read(t, r, o, 5000, 100)
+	read(t, r, o, 10000, int64(compactSlack+4)*(smallRead+100))
 	if len(o.ranges) != 0 {
 		t.Fatalf("expected cache hits, got ranges %v", o.ranges)
 	}
-	// Index should have been compacted down to header + 2 coalesced spans.
+	// Index should have been compacted down to header + 3 spans (5000, coalesced 10000.., 900000).
 	st, err := os.Stat(filepath.Join(cacheSubdir, "index"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := int64(indexHeaderSize + 2*indexRecordSize); st.Size() != want {
+	if want := int64(indexHeaderSize + 3*indexRecordSize); st.Size() != want {
 		t.Fatalf("compacted index size = %d, want %d", st.Size(), want)
 	}
 
 	// Truncating data below a cached span causes re-fetch on read.
-	if err := os.Truncate(filepath.Join(cacheSubdir, "data"), 5050); err != nil {
+	if err := os.Truncate(filepath.Join(cacheSubdir, "data"), 150); err != nil {
 		t.Fatal(err)
 	}
-	read(t, r, o, 5000, 200)
+	read(t, r, o, 5000, 100)
 	if len(o.ranges) == 0 {
 		t.Fatalf("expected re-fetch after data truncation")
 	}
-}
+	r.Close()
 
-func TestCacheMigratesLegacyFiles(t *testing.T) {
-	o, url := serve(t, 300000)
-	dir := t.TempDir()
-	// Open once to learn the release cache dir path, then close and seed legacy files.
-	r, err := newRangeReader(url, dir)
-	if err != nil {
+	// An incompatible/older index magic resets data to empty and starts clean.
+	if err := os.WriteFile(filepath.Join(cacheSubdir, "index"), []byte("IRFC\x00\x00\x00\x01xxxxxxxx"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sub := r.dir
-	r.Close()
-	os.Remove(filepath.Join(sub, "data"))
-	os.Remove(filepath.Join(sub, "index"))
-
-	os.WriteFile(filepath.Join(sub, extentName(5000, 100)), o.data[5000:5100], 0o644)
-	os.WriteFile(filepath.Join(sub, extentName(5100, 100)), o.data[5100:5200], 0o644)
-	// Invalid legacy files and a streamed member file that must not be touched.
-	os.WriteFile(filepath.Join(sub, "00000000"), o.data[:1000], 0o644)
-	os.WriteFile(filepath.Join(sub, extentName(9000, 50)), o.data[:49], 0o644)
-	os.WriteFile(filepath.Join(sub, "member-00000000-x.dmg"), o.data[:10], 0o644)
-
 	o.ranges = nil
 	r, err = newRangeReader(url, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	read(t, r, o, 5000, 200)
-	read(t, r, o, 9000, 50)
-	want := [][2]int64{{9000, 50}}
-	if fmt.Sprint(o.ranges) != fmt.Sprint(want) {
-		t.Fatalf("requested %v, want %v", o.ranges, want)
+	if st, err := os.Stat(filepath.Join(cacheSubdir, "data")); err != nil || st.Size() != 0 {
+		t.Fatalf("stale-version data size = %v (err %v), want 0", st, err)
 	}
-	if _, err := os.Stat(filepath.Join(sub, extentName(5000, 100))); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("legacy extent file was not removed after migration: %v", err)
+	read(t, r, o, 900000, 100)
+	if len(o.ranges) != 1 {
+		t.Fatalf("expected re-fetch after version reset, got %v", o.ranges)
 	}
-	if _, err := os.Stat(filepath.Join(sub, "member-00000000-x.dmg")); err != nil {
-		t.Fatalf("streamed member file was removed: %v", err)
+}
+
+func TestInsertSpanOverlapAndCoalesce(t *testing.T) {
+	var spans []span
+	// Adjacent in remote and file space coalesces.
+	spans = insertSpan(spans, span{off: 100, end: 200, fileOff: 0})
+	spans = insertSpan(spans, span{off: 200, end: 300, fileOff: 100})
+	if len(spans) != 1 || spans[0] != (span{off: 100, end: 300, fileOff: 0}) {
+		t.Fatalf("contiguous coalesce = %v", spans)
+	}
+	// Adjacent in remote space but non-contiguous in file space stays two spans.
+	spans = insertSpan(spans, span{off: 300, end: 400, fileOff: 500})
+	if len(spans) != 2 {
+		t.Fatalf("non-contiguous adjacent = %v, want 2 spans", spans)
+	}
+	// Overlapping insert splits the covered span cleanly with adjusted fileOff.
+	spans = insertSpan(spans, span{off: 150, end: 250, fileOff: 900})
+	want := []span{
+		{off: 100, end: 150, fileOff: 0},
+		{off: 150, end: 250, fileOff: 900},
+		{off: 250, end: 300, fileOff: 150},
+		{off: 300, end: 400, fileOff: 500},
+	}
+	if !slices.Equal(spans, want) {
+		t.Fatalf("overlap split = %v, want %v", spans, want)
 	}
 }
 
@@ -546,5 +552,49 @@ func TestOpenLocalIPSW(t *testing.T) {
 	}
 	if _, err := Open(filepath.Join(t.TempDir(), "missing.ipsw"), "", "Macmini9,1"); err == nil {
 		t.Error("Open on a missing file succeeded")
+	}
+}
+
+func TestCacheSharedBetweenReaders(t *testing.T) {
+	o, url := serve(t, 1<<20)
+	dir := t.TempDir()
+	a, err := newRangeReader(url, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := newRangeReader(url, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	dataSize := func() int64 {
+		st, err := os.Stat(filepath.Join(a.dir, "data"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Size()
+	}
+
+	// What one reader fetched after the other opened the cache is a hit for the other.
+	read(t, a, o, 6000, 100)
+	o.ranges = nil
+	read(t, b, o, 6000, 100)
+	if len(o.ranges) != 0 || dataSize() != 100 {
+		t.Fatalf("shared hit: ranges %v, data size %d, want none and 100", o.ranges, dataSize())
+	}
+
+	// A put overlapping bytes another reader already stored appends only the missing parts.
+	read(t, a, o, 7000, 100)
+	if err := b.disk.put(6900, o.data[6900:7200]); err != nil {
+		t.Fatal(err)
+	}
+	if got := dataSize(); got != 400 {
+		t.Fatalf("data size after overlapping put = %d, want 400", got)
+	}
+	o.ranges = nil
+	read(t, a, o, 6900, 300)
+	if len(o.ranges) != 0 {
+		t.Fatalf("expected hits for the other reader's put, got ranges %v", o.ranges)
 	}
 }
