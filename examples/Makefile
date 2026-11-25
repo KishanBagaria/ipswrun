@@ -28,6 +28,7 @@ $(BIN)/crypto: LIBS = -framework Security
 $(BIN)/ipc: LIBS = -framework CoreFoundation
 $(BIN)/prefs: LIBS = -framework CoreFoundation
 $(BIN)/client $(BIN)/service $(BIN)/ipc $(BIN)/adi: xpc_request.h
+$(BIN)/client $(BIN)/service $(BIN)/ipc $(BIN)/adi $(BIN)/server: darwin.h
 $(BIN)/server $(BIN)/client: service.h
 $(BIN)/client: | $(BIN)/server
 
