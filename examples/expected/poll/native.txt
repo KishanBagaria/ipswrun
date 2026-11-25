@@ -1,0 +1,18 @@
+an empty pipe: to read 0, 0; to write 1, 0x4
+asked everything: the reading end 0, 0; the writing end 1, 0x104
+asked nothing: the reading end 0, 0; the writing end 0, 0
+with 5 in it: to read 1, 0x1; asked everything 1, 0xc3; the wrong way round: 0, 0 and 0, 0
+full: to write 0, 0; asked everything 0, 0
+with room for 600 more: to write 1, 0x4
+the writer gone, and nothing left: to read 1, 0x11; asked nothing 0, 0
+the writer gone, with 3 left: to read 1, 0x11
+the reader gone: to write 1, 0x10; asked nothing 0, 0
+a descriptor that is not open: 1, 0x20; a negative one: 0, 0
+an empty file: to read 1, 0x1; to write 1, 0x4; asked everything 1, 0x1c7
+select of it: 2, to read 1, to write 1
+a directory: to read 1, 0x20; asked everything 1, 0x20
+four at once: 2; 0 0x1 0 0x4
+waiting 30 ms for an empty pipe: 0, 0; it took at least that: 1
+waiting 30 ms for nothing: 0; it took at least that: 1
+waiting for a writer on its way: 1, 0x1
+waiting, and a signal comes: -1 (Interrupted system call)

@@ -211,6 +211,14 @@ func (p *Process) pipeChanged(q *pipe) {
 			}
 		}
 		for _, t := range owner.waiters(waitSelect, 0) {
+			if t.state == waiting && t.polling != nil {
+				if n, _ := owner.pollAll(t.polling, false); n > 0 {
+					t.polling = nil
+					t.answer = &result{x0: uint64(n)}
+					t.wake()
+				}
+				continue
+			}
 			if t.state != waiting || t.selecting == nil {
 				continue
 			}
@@ -314,10 +322,10 @@ func sysIoctl(p *Process, a []uint64) int64 {
 	return -eNOTTY
 }
 
-// selectPipes is select where it is asked about a pipe: it answers for the pipes, which are
-// ready or become ready, and waits as long as it is told to. Of the other descriptors it is asked
-// about it says what select says here of them all, that they are not ready. False if none is a
-// pipe.
+// selectPipes is select where it is asked about a pipe or a file: it answers for the pipes,
+// which are ready or become ready, and the files, which always are, and waits as long as it is
+// told to. Of the other descriptors it is asked about it says what select says here of them all,
+// that they are not ready. False if none is a pipe or a file.
 func (p *Process) selectPipes(a []uint64, nanoseconds uint64) (int64, bool) {
 	s := &selecting{sets: [3]uint64{a[1], a[2], a[3]}}
 	size, found := align(a[0], 32)/8, false
@@ -327,7 +335,7 @@ func (p *Process) selectPipes(a []uint64, nanoseconds uint64) (int64, bool) {
 		}
 		s.asked[i] = p.read(set, size)
 		for n := range a[0] {
-			if f := p.fds[n]; s.asked[i][n/8]>>(n%8)&1 != 0 && f != nil && f.kind == pipeFD {
+			if f := p.fds[n]; s.asked[i][n/8]>>(n%8)&1 != 0 && f != nil && (f.kind == pipeFD || f.isFile()) {
 				found = true
 			}
 		}
@@ -363,7 +371,7 @@ func (p *Process) selected(s *selecting) int64 {
 		out[i] = make([]byte, len(asked))
 		for n := range uint64(len(asked) * 8) {
 			f := p.fds[n]
-			if asked[n/8]>>(n%8)&1 == 0 || f == nil || f.kind != pipeFD || i == 2 || !f.pipeReady(i == 1) {
+			if asked[n/8]>>(n%8)&1 == 0 || f == nil || i == 2 || !(f.kind == pipeFD && f.pipeReady(i == 1) || f.isFile()) {
 				continue
 			}
 			out[i][n/8] |= 1 << (n % 8)
@@ -461,4 +469,127 @@ func (p *Process) watchedPipes(q *kqueue) {
 			q.pipes[key] = w
 		}
 	}
+}
+
+// What poll asks of a descriptor, and answers.
+const (
+	pollIn      = 0x1
+	pollPri     = 0x2
+	pollOut     = 0x4 // POLLWRNORM is the same
+	pollHangup  = 0x10
+	pollInvalid = 0x20
+	pollRdNorm  = 0x40
+	pollRdBand  = 0x80
+	pollWrBand  = 0x100
+
+	pollReading = pollIn | pollPri | pollRdNorm | pollRdBand
+	pollWriting = pollOut | pollWrBand
+)
+
+// isFile says whether a descriptor is of a file, which can always be read and written without
+// waiting: one of the host's that is no directory, or one of the build's.
+func (f *fd) isFile() bool {
+	switch f.kind {
+	case hostFD:
+		var st syscall.Stat_t
+		return syscall.Fstat(f.host, &st) == nil && st.Mode&syscall.S_IFMT == syscall.S_IFREG
+	case cacheFD:
+		return true
+	case dataFD:
+		return f.kq == nil
+	}
+	return false
+}
+
+// isDirectory says whether a descriptor is of a directory.
+func (f *fd) isDirectory() bool {
+	if f.kind == hostFD {
+		var st syscall.Stat_t
+		return syscall.Fstat(f.host, &st) == nil && st.Mode&syscall.S_IFMT == syscall.S_IFDIR
+	}
+	return f.kind == dirFD
+}
+
+// polled is what poll answers of one descriptor, for the events it was asked about; false if
+// nothing here says when the descriptor can be read or written (a terminal, a kqueue).
+func (p *Process) polled(n int32, events uint16) (uint16, bool) {
+	f := p.fds[uint64(n)]
+	switch {
+	case n < 0:
+		return 0, true
+	case f == nil, f.isDirectory():
+		return pollInvalid, true
+	case f.isFile():
+		return events & (pollReading | pollWriting), true
+	case f.kind != pipeFD:
+		return 0, false
+	}
+	// Each end of a pipe answers for what it is for, and says that the other has gone only to
+	// one who asked about that.
+	q := f.pipe
+	switch {
+	case !f.writing() && events&pollReading != 0:
+		var answer uint16
+		if len(q.data) > 0 || q.writers == 0 {
+			answer = events & pollReading
+		}
+		if q.writers == 0 {
+			answer |= pollHangup
+		}
+		return answer, true
+	case f.writing() && events&pollWriting != 0:
+		switch {
+		case q.readers == 0:
+			return pollHangup, true
+		case q.size-len(q.data) >= pipeBuf:
+			return events & pollWriting, true
+		}
+	}
+	return 0, true
+}
+
+// polling is a poll that waits: for which descriptors, and where to answer.
+type polling struct{ fds, count uint64 }
+
+// pollAll answers a poll's descriptors, and returns how many have something to say; false if
+// one of them is of a kind nothing here answers for.
+func (p *Process) pollAll(w *polling, write bool) (count int64, known bool) {
+	known = true
+	out := p.read(w.fds, w.count*8)
+	for i := uint64(0); i < w.count; i++ {
+		answer, ok := p.polled(int32(le.Uint32(out[8*i:])), le.Uint16(out[8*i+4:]))
+		known = known && ok
+		le.PutUint16(out[8*i+6:], answer)
+		if answer != 0 {
+			count++
+		}
+	}
+	if write || count > 0 {
+		p.write(w.fds, out)
+	}
+	return count, known
+}
+
+// sysPoll is poll(descriptors, how many, milliseconds to wait: none, or for good if negative).
+func sysPoll(p *Process, a []uint64) int64 {
+	w := &polling{fds: a[0], count: a[1]}
+	if w.count > maxFD {
+		return -eINVAL
+	}
+	count, known := p.pollAll(w, true)
+	timeout := int32(a[2])
+	if count > 0 || timeout == 0 {
+		return count
+	}
+	if !known {
+		p.unimplemented("poll that waits for a descriptor that is no pipe's and no file's", a)
+		return -eNOSYS
+	}
+	var deadline time.Time
+	if timeout > 0 {
+		deadline = p.m.clock.now().Add(time.Duration(timeout) * time.Millisecond)
+	}
+	p.current.polling = w
+	p.wait(waitSelect, 0, deadline, result{})
+	return 0
 }

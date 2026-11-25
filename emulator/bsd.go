@@ -41,7 +41,7 @@ func init() {
 		"setattrlist": {5, sysSetattrlist}, "fsetattrlist": {5, sysFsetattrlist}, "flock": {2, sysFlock},
 		"getxattr": {6, sysGetxattr}, "fgetxattr": {6, sysFgetxattr}, "setxattr": {6, sysSetxattr}, "fsetxattr": {6, sysFsetxattr},
 		"listxattr": {4, sysListxattr}, "flistxattr": {4, sysFlistxattr}, "removexattr": {3, sysRemovexattr}, "fremovexattr": {3, sysFremovexattr},
-		"ioctl": {3, sysIoctl}, "pipe": {0, sysPipe}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
+		"ioctl": {3, sysIoctl}, "pipe": {0, sysPipe}, "poll": {3, sysPoll}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
 		"getattrlist": {5, sysGetattrlist}, "getattrlistat": {6, sysGetattrlistat}, "fgetattrlist": {5, sysFgetattrlist},
 		"getattrlistbulk": {5, sysGetattrlistbulk}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen}, "shm_unlink": {1, sysShmUnlink},
 		"getfsstat64": {3, constant(0)}, "pathconf": {2, sysPathconf}, "fpathconf": {2, sysPathconf}, "getdirentries64": {4, sysGetdirentries64},

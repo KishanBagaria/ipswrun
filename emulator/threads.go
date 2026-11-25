@@ -70,6 +70,7 @@ type thread struct {
 	receiving *message    // of a thread waiting for a Mach message: where it wants it
 	pipeOp    *pipeOp     // of a thread waiting on a pipe: what it is in the middle of
 	selecting *selecting  // of a thread waiting in select: what it asked about
+	polling   *polling    // or in poll
 	kevent    *keventWait // of a thread waiting in kevent: on which kqueue, and where its events go
 	cwd       string      // its working directory, if it has one of its own (see sysPthreadChdir)
 	waiting4  *waiting4   // of a thread waiting for a child to end: which, and where to say how

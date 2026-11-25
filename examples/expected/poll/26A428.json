@@ -1,0 +1,7 @@
+{
+  "build": "26A428",
+  "cache_uuid": "EA2C265E-297C-39C2-8646-7D8A2DFF648A",
+  "exit_code": 0,
+  "output": "an empty pipe: to read 0, 0; to write 1, 0x4\nasked everything: the reading end 0, 0; the writing end 1, 0x104\nasked nothing: the reading end 0, 0; the writing end 0, 0\nwith 5 in it: to read 1, 0x1; asked everything 1, 0xc3; the wrong way round: 0, 0 and 0, 0\nfull: to write 0, 0; asked everything 0, 0\nwith room for 600 more: to write 1, 0x4\nthe writer gone, and nothing left: to read 1, 0x11; asked nothing 0, 0\nthe writer gone, with 3 left: to read 1, 0x11\nthe reader gone: to write 1, 0x10; asked nothing 0, 0\na descriptor that is not open: 1, 0x20; a negative one: 0, 0\nan empty file: to read 1, 0x1; to write 1, 0x4; asked everything 1, 0x1c7\nselect of it: 2, to read 1, to write 1\na directory: to read 1, 0x20; asked everything 1, 0x20\nfour at once: 2; 0 0x1 0 0x4\nwaiting 30 ms for an empty pipe: 0, 0; it took at least that: 1\nwaiting 30 ms for nothing: 0; it took at least that: 1\nwaiting for a writer on its way: 1, 0x1\nwaiting, and a signal comes: -1 (Interrupted system call)\n",
+  "version": "27.0"
+}
