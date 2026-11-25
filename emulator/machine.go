@@ -150,7 +150,11 @@ func (m *Machine) Run(timeout time.Duration) (err error) {
 			return nil
 		}
 		if p.exited {
-			m.exit(p, fmt.Sprintf("with status %d", p.exitCode))
+			how := fmt.Sprintf("with status %d", p.exitCode)
+			if p.endSignal != 0 {
+				how = fmt.Sprintf("by signal %d", p.endSignal)
+			}
+			m.exit(p, how)
 		}
 		if (p.exited || p.reschedule()) && !m.schedule() {
 			return nil

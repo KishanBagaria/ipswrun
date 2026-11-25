@@ -182,7 +182,7 @@ func (p *Process) brokenPipe(f *fd) int64 {
 	switch handler := p.sigactions[sigPipe].handler; {
 	case f.noSigpipe || handler == sigIgnore:
 	case handler == 0:
-		stopf("the guest wrote to a pipe that nobody reads, and SIGPIPE, which that raises, ends a process that has not said otherwise")
+		p.endBySignal(sigPipe)
 	default:
 		p.unimplemented("SIGPIPE to a process with a handler for it", nil)
 	}

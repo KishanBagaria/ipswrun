@@ -264,6 +264,7 @@ type Process struct {
 	exited    bool
 	early     bool // it exited while the guest the run is for was still running
 	exitCode  int
+	endSignal int // the signal that ended it, if one did (see signals.go)
 	fault     string
 	faultKind StopKind // of the stop that set fault, carried out of the hook it happened in
 	resume    bool
@@ -495,7 +496,12 @@ func (p *Process) Close() {
 func (p *Process) Label() string { return p.label }
 
 // ExitCode is the guest's exit status; ok is false if it never exited.
-func (p *Process) ExitCode() (code int, ok bool) { return p.exitCode, p.exited }
+func (p *Process) ExitCode() (code int, ok bool) {
+	if p.endSignal != 0 { // as a shell reports a program that a signal ended
+		return 128 + p.endSignal, p.exited
+	}
+	return p.exitCode, p.exited
+}
 
 // LeftEarly reports whether a guest that was started beside the main one exited before it did:
 // not when it was asked to, at the end, but while it may still have been needed.

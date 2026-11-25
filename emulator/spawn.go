@@ -341,7 +341,7 @@ func (w *waiting4) wants(child *Process) bool { return w.pid <= 0 || uint32(w.pi
 // reapChild tells a parent how a child ended, which is the last that is heard of it.
 func (p *Process) reapChild(child *Process, w *waiting4) int64 {
 	if w.status != 0 {
-		p.write(w.status, le32(uint32(child.exitCode&0xFF)<<8))
+		p.write(w.status, le32(child.status()))
 	}
 	if w.rusage != 0 {
 		p.write(w.rusage, child.usageBytes())
@@ -517,7 +517,7 @@ func (m *Machine) exitWatched(ended *Process) {
 					event.fflags, event.data = noteExit, 0
 					if w.fflags&noteExitStatus != 0 {
 						event.fflags |= noteExitStatus
-						event.data = int64(ended.exitCode&0xFF) << 8
+						event.data = int64(ended.status())
 					}
 					q.ready = append(q.ready, event)
 					delete(q.procs, key)

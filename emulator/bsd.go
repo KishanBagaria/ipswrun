@@ -430,16 +430,6 @@ func sysSetitimer(p *Process, a []uint64) int64 {
 	return 0
 }
 
-func sysPthreadKill(p *Process, a []uint64) int64 {
-	stopf("guest raised signal %d", a[1])
-	return 0
-}
-
-func sysKill(p *Process, a []uint64) int64 {
-	stopf("guest kill signal %d", a[1])
-	return 0
-}
-
 func sysThreadSelfid(p *Process, a []uint64) int64 { return 0x4242 + int64(p.current.id) }
 
 // sysGetentropy is reproducible, but never repeats: corecrypto's health checks reject identical

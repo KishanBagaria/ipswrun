@@ -307,7 +307,7 @@ func (p *Process) pollNotes(q *userKqueue, room int) []kevent {
 			event.flags |= evEOF | evOneshot | evClear
 			if event.fflags = noteExit; n.flags&noteExitStatus != 0 {
 				event.fflags |= noteExitStatus
-				event.data = int64(ended.exitCode&0xFF) << 8
+				event.data = int64(ended.status())
 			}
 		}
 		if gone || event.flags&evOneshot != 0 {

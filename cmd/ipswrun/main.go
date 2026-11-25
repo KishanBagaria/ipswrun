@@ -513,6 +513,9 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		return failed(err)
 	}
 	out.code, _ = machine.Main().ExitCode()
+	if sig := machine.Main().Signal(); sig != 0 {
+		out.stderr += fmt.Sprintf("ipswrun: %s: the guest was ended by signal %d\n", out.name, sig)
+	}
 	if o.Report != "" {
 		requests, fetched := image.Stats()
 		data, _ := json.MarshalIndent(report{Version: image.Version(), Build: image.Build(), CacheUUID: formatUUID(dyldCache.UUID), ExitCode: out.code,
