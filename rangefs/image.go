@@ -56,6 +56,7 @@ func Open(location, cacheDir, device string) (*Image, error) {
 	}
 	archive, parsed, err := openArchive(remote, remote.size)
 	if err != nil {
+		remote.Close()
 		return nil, err
 	}
 	return &Image{remote: remote, source: remote, cacheDir: cacheDir, archive: archive, info: parsed, device: device, volumes: map[string]*apfs.Reader{}}, nil
@@ -106,7 +107,7 @@ func openArchive(source io.ReaderAt, size int64) (*zip.Reader, *info.Info, error
 	return archive, parsed, nil
 }
 
-// Close releases any local image file and inflated member files opened for this image.
+// Close releases any local image file, disk cache file, and inflated member files opened for this image.
 func (m *Image) Close() error {
 	var errs []error
 	for _, f := range m.opened {
@@ -116,6 +117,9 @@ func (m *Image) Close() error {
 	if m.file != nil {
 		errs = append(errs, m.file.Close())
 		m.file = nil
+	}
+	if m.remote != nil {
+		errs = append(errs, m.remote.Close())
 	}
 	return errors.Join(errs...)
 }
@@ -135,6 +139,20 @@ func (m *Image) Stats() (requests, bytes int64) {
 		return 0, 0
 	}
 	return m.remote.requests.Load(), m.remote.bytes.Load()
+}
+
+// StreamProgress reports bytes downloaded and total compressed bytes while a deflate-compressed
+// ZIP member is being streamed; total is 0 when no member is streaming.
+func (m *Image) StreamProgress() (done, total int64) {
+	if m.remote == nil {
+		return 0, 0
+	}
+	total = m.remote.streamTotal.Load()
+	if total <= 0 {
+		return 0, 0
+	}
+	done = min(max(m.remote.bytes.Load()-m.remote.streamStart.Load(), 0), total)
+	return done, total
 }
 
 // image opens a disk image member as an APFS container, through AEA, UDIF and GPT as needed.

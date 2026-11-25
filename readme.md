@@ -129,7 +129,8 @@ The run is the first guest's: its output and its exit status. When it exits, the
 | `--daemon <service>[,<service>…]=<executable> [arguments]` | the same, as root |
 | `--env KEY=VALUE` | added to the environment of every guest (repeatable). `--env KEY` takes a variable out of it |
 | `--system <path>` | system-volume file, or directory ending in `/`, the guest may read (repeatable). The default is feature flags, `SystemVersion.plist`, ICU data in `/usr/share/icu/` and `/usr/lib/libobjc-trampolines.dylib`; giving any replaces the default |
-| `--cache <dir>` | where downloads are kept between runs (default: `ipswrun-<uid>` in the system temporary directory, so cleared on reboot) |
+| `--cache <dir>` | where downloads are kept between runs (default: `ipswrun/cache` in the user cache directory) |
+| `--prune-cache` | remove cached restore image downloads from `--cache`, then exit |
 | `--stream-compressed` | allow downloading one compressed disk image member front to back, for macOS 13 and 14 |
 | `--report <file>` | write a JSON summary: version, build, shared cache UUID, exit code, pages mapped, requests, bytes and seconds. `{build}` and `{version}` as in `--home` |
 | `--timeout <seconds>` | how long the guest may run on each release, counted from when it starts (default 900). Time the host spends fetching is not counted, here or on any clock the guests see |

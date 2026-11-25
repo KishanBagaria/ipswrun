@@ -4,18 +4,12 @@
 package rangefs
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,7 +19,7 @@ const (
 	smallRead  = 32 << 10  // a read this small that continues the previous one earns read-ahead
 	readAhead  = 256 << 10 // what such a read fetches
 	maxRequest = 8 << 20   // longest range asked for at once
-	memBytes   = 64 << 20  // fetched data kept in memory
+	memBytes   = 64 << 20  // fetched data kept in memory when no disk cache is used
 
 	// A range is given up after this many requests in a row that brought nothing, or this many
 	// requests in all.
@@ -33,29 +27,33 @@ const (
 	rangeRequests   = 32
 )
 
-// extent is a run of remote bytes that has been fetched: held in memory, kept in a file of the
-// cache directory, or both.
+// extent is a run of remote bytes held in memory when no disk cache is configured.
 type extent struct {
 	off, n int64
-	file   string
 	data   []byte
 }
 
 // rangeReader is an HTTP io.ReaderAt. A read fetches the bytes it asks for and no more, unless it
 // is small and starts where the previous read ended: scattered lookups stay exact, and only a
-// sequential stream of small reads is read ahead. What was fetched is kept as extents, in memory
-// and optionally on disk. A response that is not exactly the requested range is an error.
+// sequential stream of small reads is read ahead. With a cache directory, fetched bytes are kept
+// in a single sparse file plus a compact binary index; without one, they are kept in memory up to
+// memBytes. A response that is not exactly the requested range is an error.
 type rangeReader struct {
-	mu              sync.Mutex
-	client          *http.Client
-	url             string
-	size            int64
-	dir             string
-	extents         []*extent // by offset; none lies inside another, so ends are ordered too
-	loaded          []*extent // those holding data, oldest first
-	held            int64
-	lastEnd         int64 // where the previous read ended
-	requests, bytes atomic.Int64
+	mu          sync.Mutex
+	client      *http.Client
+	url         string
+	size        int64
+	dir         string
+	disk        *diskCache
+	spans       []span    // coalesced cached intervals on disk (when disk != nil)
+	extents     []*extent // in-memory extents by offset (when disk == nil)
+	loaded      []*extent // in-memory extents, oldest first (when disk == nil)
+	held        int64
+	lastEnd     int64 // where the previous read ended
+	requests    atomic.Int64
+	bytes       atomic.Int64
+	streamStart atomic.Int64
+	streamTotal atomic.Int64
 }
 
 // StatusError is a restore image URL that did not answer the opening request with its size.
@@ -76,57 +74,45 @@ func newRangeReader(url, cacheDir string) (*rangeReader, error) {
 	req.Header.Set("Accept-Encoding", "identity")
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, err
+		// Fall back to cached Content-Length so warm caches remain usable offline.
+		if cached, ok := readCachedSize(cacheDir, url); ok {
+			r.size = cached
+		} else {
+			return nil, err
+		}
+	} else {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.ContentLength <= 0 {
+			return nil, &StatusError{URL: url, Status: resp.Status}
+		}
+		if resp.Header.Get("Accept-Ranges") != "bytes" {
+			return nil, errors.New("server does not advertise byte ranges")
+		}
+		r.size = resp.ContentLength
+		writeCachedSize(cacheDir, url, r.size)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || resp.ContentLength <= 0 {
-		return nil, &StatusError{URL: url, Status: resp.Status}
-	}
-	if resp.Header.Get("Accept-Ranges") != "bytes" {
-		return nil, errors.New("server does not advertise byte ranges")
-	}
-	r.size = resp.ContentLength
 	if cacheDir != "" {
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%s\n%d", url, r.size)))
-		r.dir = filepath.Join(cacheDir, hex.EncodeToString(sum[:8]))
-		if err := os.MkdirAll(r.dir, 0o755); err != nil {
+		dc, spans, err := openDiskCache(cacheDir, url, r.size)
+		if err != nil {
 			return nil, err
 		}
-		if err := r.index(); err != nil {
-			return nil, err
-		}
+		r.disk, r.dir, r.spans = dc, dc.dir, spans
 	}
 	return r, nil
 }
 
-// index lists what the cache directory already holds. An extent is a file named by its offset
-// and length in hex, "00000c0ffee0-1000". Anything else, and any file whose size is not what its
-// name says, is left alone.
-func (r *rangeReader) index() error {
-	entries, err := os.ReadDir(r.dir)
-	if err != nil {
+func (r *rangeReader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.disk != nil {
+		err := r.disk.close()
+		r.disk = nil
 		return err
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		first, second, _ := strings.Cut(name, "-")
-		off, err1 := strconv.ParseInt(first, 16, 64)
-		n, err2 := strconv.ParseInt(second, 16, 64)
-		if err1 != nil || err2 != nil || name != extentName(off, n) {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() || n <= 0 || off < 0 || n > r.size-off || info.Size() != n {
-			continue
-		}
-		r.add(&extent{off: off, n: n, file: filepath.Join(r.dir, name)})
 	}
 	return nil
 }
 
-func extentName(off, n int64) string { return fmt.Sprintf("%012x-%x", off, n) }
-
-// add files e in the index unless a known extent already covers it, dropping those it covers.
+// add files e in the in-memory index unless a known extent already covers it, dropping those it covers.
 func (r *rangeReader) add(e *extent) {
 	i := sort.Search(len(r.extents), func(i int) bool { return r.extents[i].off >= e.off })
 	if i > 0 && r.extents[i-1].off+r.extents[i-1].n >= e.off+e.n {
@@ -148,7 +134,7 @@ func (r *rangeReader) drop(e *extent) {
 	}
 }
 
-// find returns the extent holding the byte at pos, or nil and where the next extent begins.
+// find returns the in-memory extent holding the byte at pos, or nil and where the next extent begins.
 func (r *rangeReader) find(pos int64) (*extent, int64) {
 	i := sort.Search(len(r.extents), func(i int) bool { return r.extents[i].off > pos })
 	if i > 0 && pos < r.extents[i-1].off+r.extents[i-1].n {
@@ -160,21 +146,7 @@ func (r *rangeReader) find(pos int64) (*extent, int64) {
 	return nil, r.size
 }
 
-// contents returns e's bytes, or nil when its file is no longer usable; e is then forgotten.
-func (r *rangeReader) contents(e *extent) []byte {
-	if e.data == nil {
-		b, err := os.ReadFile(e.file)
-		if err != nil || int64(len(b)) != e.n {
-			r.drop(e)
-			return nil
-		}
-		r.hold(e, b)
-	}
-	return e.data
-}
-
-// hold keeps e's bytes in memory, releasing the oldest held to stay within memBytes. An extent
-// that is in no file is forgotten when its bytes are released.
+// hold keeps e's bytes in memory, releasing the oldest held to stay within memBytes.
 func (r *rangeReader) hold(e *extent, b []byte) {
 	e.data = b
 	r.loaded = append(r.loaded, e)
@@ -184,13 +156,11 @@ func (r *rangeReader) hold(e *extent, b []byte) {
 		r.loaded = r.loaded[1:]
 		r.held -= oldest.n
 		oldest.data = nil
-		if oldest.file == "" {
-			r.drop(oldest)
-		}
+		r.drop(oldest)
 	}
 }
 
-// fetch downloads [start, end) and keeps it as one extent.
+// fetch downloads [start, end) and stores it in the disk cache (or in memory when uncached).
 func (r *rangeReader) fetch(start, end int64) error {
 	b := make([]byte, end-start)
 	body := r.open(r.client, start, end)
@@ -199,22 +169,14 @@ func (r *rangeReader) fetch(start, end int64) error {
 	if err != nil {
 		return err
 	}
-	e := &extent{off: start, n: end - start}
-	if r.dir != "" {
-		// Another process may be filling the same directory: only complete files get a name.
-		if tmp, err := os.CreateTemp(r.dir, "partial-*"); err == nil {
-			name := filepath.Join(r.dir, extentName(e.off, e.n))
-			_, err := tmp.Write(b)
-			if err = errors.Join(err, tmp.Close()); err == nil {
-				err = os.Rename(tmp.Name(), name)
-			}
-			if err == nil {
-				e.file = name
-			} else {
-				os.Remove(tmp.Name())
-			}
+	if r.disk != nil {
+		if err := r.disk.put(start, b); err != nil {
+			return fmt.Errorf("write cache: %w", err)
 		}
+		r.spans = insertSpan(r.spans, span{off: start, end: end})
+		return nil
 	}
+	e := &extent{off: start, n: end - start}
 	r.add(e)
 	r.hold(e, b)
 	return nil
@@ -231,6 +193,28 @@ func (r *rangeReader) ReadAt(p []byte, off int64) (int, error) {
 	r.lastEnd = end
 	n := 0
 	for pos := off; pos < end; {
+		if r.disk != nil {
+			s, next := findSpan(r.spans, pos, r.size)
+			if s.end > pos {
+				take := min(end, s.end) - pos
+				if err := r.disk.readAt(p[n:n+int(take)], pos); err == nil {
+					n += int(take)
+					pos += take
+					continue
+				}
+				// Cache read failed (e.g. external truncation): drop stale span and re-fetch.
+				r.spans = slices.DeleteFunc(r.spans, func(x span) bool { return x == s })
+				continue
+			}
+			stop := min(end, next)
+			if ahead {
+				stop = min(max(stop, pos+readAhead), next)
+			}
+			if err := r.fetch(pos, min(stop, pos+maxRequest)); err != nil {
+				return n, err
+			}
+			continue
+		}
 		e, next := r.find(pos)
 		if e == nil {
 			// Exactly the gap this read needs, or up to readAhead of it; never what is already here.
@@ -243,11 +227,9 @@ func (r *rangeReader) ReadAt(p []byte, off int64) (int, error) {
 			}
 			continue
 		}
-		if b := r.contents(e); b != nil {
-			c := copy(p[n:], b[pos-e.off:])
-			n += c
-			pos += int64(c)
-		}
+		c := copy(p[n:], e.data[pos-e.off:])
+		n += c
+		pos += int64(c)
 	}
 	if n < len(p) {
 		return n, io.EOF

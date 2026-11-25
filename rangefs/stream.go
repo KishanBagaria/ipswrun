@@ -39,20 +39,28 @@ func (r *rangeReader) inflated(member *zip.File) (*os.File, error) {
 		if err != nil {
 			return nil, err
 		}
-		end := offset + int64(member.CompressedSize64)
+		total := int64(member.CompressedSize64)
+		end := offset + total
 		client := *r.client
 		client.Timeout = 0 // gigabytes; the transfer is bounded by its length instead
 		body := r.open(&client, offset, end)
-		return &inflateBody{ReadCloser: flate.NewReader(body), underlying: body}, nil
+		r.streamStart.Store(r.bytes.Load())
+		r.streamTotal.Store(total)
+		return &inflateBody{ReadCloser: flate.NewReader(body), underlying: body, onClose: func() { r.streamTotal.Store(0) }}, nil
 	})
 }
 
 type inflateBody struct {
 	io.ReadCloser
 	underlying io.Closer
+	onClose    func()
 }
 
 func (b *inflateBody) Close() error {
+	if b.onClose != nil {
+		b.onClose()
+		b.onClose = nil
+	}
 	return errors.Join(b.ReadCloser.Close(), b.underlying.Close())
 }
 
