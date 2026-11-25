@@ -35,13 +35,17 @@ func init() {
 		"mkdir": {2, sysMkdir}, "rename": {2, sysRename}, "readlink": {3, sysReadlink}, "readlinkat": {4, sysReadlinkat},
 		"mkdirat": {3, sysMkdirat}, "rmdir": {1, sysRmdir}, "unlinkat": {3, sysUnlinkat}, "renameat": {4, sysRenameat},
 		"renameatx_np": {5, sysRenameatx}, "faccessat": {4, sysFaccessat}, "truncate": {2, sysTruncate}, "fcntl": {3, sysFcntl}, "dup": {1, sysDup}, "dup2": {2, sysDup2},
-		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir},
+		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir}, "chmod": {2, sysChmod}, "fchmod": {2, sysFchmod}, "chown": {3, sysChown},
+		"lchown": {3, sysLchown}, "fchown": {3, sysFchown}, "utimes": {2, sysUtimes}, "futimes": {2, sysFutimes},
+		"setattrlist": {5, sysSetattrlist}, "fsetattrlist": {5, sysFsetattrlist}, "flock": {2, sysFlock},
+		"getxattr": {6, sysGetxattr}, "fgetxattr": {6, sysFgetxattr}, "setxattr": {6, sysSetxattr}, "fsetxattr": {6, sysFsetxattr},
+		"listxattr": {4, sysListxattr}, "flistxattr": {4, sysFlistxattr}, "removexattr": {3, sysRemovexattr}, "fremovexattr": {3, sysFremovexattr},
 		"ioctl": {3, constant(-eNOTTY)}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
 		"getattrlist": {5, sysGetattrlist}, "getattrlistat": {6, sysGetattrlistat}, "fgetattrlist": {5, sysFgetattrlist},
 		"getattrlistbulk": {5, sysGetattrlistbulk}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen}, "shm_unlink": {1, sysShmUnlink},
 		"getfsstat64": {3, constant(0)}, "pathconf": {2, sysPathconf}, "fpathconf": {2, sysPathconf}, "getdirentries64": {4, sysGetdirentries64},
 		// memory
-		"mmap": {6, sysMmap}, "munmap": {2, sysMunmap}, "mprotect": {3, constant(0)}, "madvise": {3, constant(0)},
+		"mmap": {6, sysMmap}, "munmap": {2, sysMunmap}, "mprotect": {3, sysMprotect}, "madvise": {3, constant(0)},
 		"mremap_encrypted": {0, constant(0)}, "shared_region_check_np": {1, sysSharedRegionCheck},
 		"shared_region_map_and_slide_2_np": {4, sysSharedRegionMap}, "map_with_linking_np": {4, constant(-eNOTSUP)},
 		// process
@@ -49,10 +53,10 @@ func init() {
 		"geteuid": {0, sysGetuid}, "getgid": {0, sysGetgid}, "getegid": {0, sysGetgid}, "gettid": {2, constant(-eSRCH)},
 		"issetugid": {0, constant(0)}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
 		"__pthread_sigmask": {3, sysSigprocmask}, "__pthread_kill": {2, sysPthreadKill}, "kill": {3, sysKill},
-		"sigaltstack": {2, constant(0)}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
+		"sigaltstack": {2, sysSigaltstack}, "setitimer": {3, sysSetitimer}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
 		"bsdthread_register": {6, sysBsdthreadRegister}, "bsdthread_create": {5, sysBsdthreadCreate},
 		"bsdthread_terminate": {4, sysBsdthreadTerminate}, "__semwait_signal": {6, sysSemwaitSignal},
-		"sigsuspend": {1, sysSigsuspend}, "__sigwait": {2, sysSigsuspend}, "kevent_qos": {8, sysKeventQos}, "kevent_id": {8, sysKeventID}, "psynch_mutexwait": {5, sysPsynchMutexwait}, "psynch_mutexdrop": {5, sysPsynchMutexdrop}, "psynch_cvwait": {8, sysPsynchCvwait},
+		"sigsuspend": {1, sysSigsuspend}, "__sigwait": {2, sysSigsuspend}, "kevent_qos": {8, sysKeventQos}, "kevent": {6, sysKevent}, "kevent64": {7, sysKevent64}, "kevent_id": {8, sysKeventID}, "psynch_mutexwait": {5, sysPsynchMutexwait}, "psynch_mutexdrop": {5, sysPsynchMutexdrop}, "psynch_cvwait": {8, sysPsynchCvwait},
 		"psynch_cvsignal": {8, sysPsynchCvsignal}, "psynch_cvbroad": {7, sysPsynchCvbroad}, "psynch_cvclrprepost": {7, constant(0)},
 		"psynch_rw_rdlock": {5, sysPsynchRWRdlock}, "psynch_rw_wrlock": {5, sysPsynchRWWrlock}, "psynch_rw_unlock": {5, sysPsynchRWUnlock}, "bsdthread_ctl": {4, constant(0)}, "workq_open": {0, constant(0)},
 		"workq_kernreturn": {4, sysWorkqKernreturn}, "kdebug_trace64": {0, constant(0)}, "kdebug_trace": {0, constant(0)},
@@ -71,13 +75,12 @@ func init() {
 // trivial are more calls answered with a constant (negative: errno) and no side effects.
 var trivial = map[string]int64{
 	"objc_bp_assist_cfg_np": 0, "iopolicysys": 0, "work_interval_ctl": -eNOTSUP, "memorystatus_control": 0, "proc_rlimit_control": 0,
-	"thread_selfusage": 0, "crossarch_trap": -eNOTSUP, "kevent64": 0, "kevent": 0,
+	"thread_selfusage": 0, "crossarch_trap": -eNOTSUP,
 	"kqueue_workloop_ctl": 0, "necp_open": -eNOSYS, "socket": -eACCES, "umask": 0o22,
 	"audit_session_self": 0, "getaudit_addr": -eNOSYS, "coalition_info": -eNOSYS, "persona": -eNOSYS,
-	"debug_syscall_reject_config": 0, "debug_syscall_reject": 0, "setattrlist": 0, "fsetattrlist": 0, "chmod": 0, "fchmod": 0,
-	"flock": 0, "setxattr": 0, "fsetxattr": 0, "getxattr": -eNOATTR, "fgetxattr": -eNOATTR, "listxattr": 0, "flistxattr": 0,
+	"debug_syscall_reject_config": 0, "debug_syscall_reject": 0,
 	"memorystatus_get_level": 0, "record_system_event": 0, "log_data": 0, "oslog_coproc_reg": 0, "oslog_coproc": 0, "setpriority": 0,
-	"getpriority": 0, "setsid": 0, "setitimer": 0, "utimes": 0, "futimes": 0, "fchown": 0, "chown": 0, "sync": 0,
+	"getpriority": 0, "setsid": 0, "sync": 0,
 }
 
 // call runs a handler; touching unmapped guest memory yields onFault instead of ending the run.
@@ -120,12 +123,13 @@ func (p *Process) bsd(n int64) {
 
 func sysMmap(p *Process, a []uint64) int64 {
 	addr, length, flags, fdn, off := a[0], a[1], a[3], a[4], a[5]
+	deny := protAll &^ uint32(a[2]&protAll)
 	fixed := flags&0x10 != 0
 	if fixed && addr&tbiMask+length > vaLimit {
 		return -eNOMEM
 	}
 	if flags&0x1000 != 0 || fdn >= 1<<31 { // MAP_ANON, or no descriptor
-		start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, name: "mmap"})
+		start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, name: "mmap", deny: deny})
 		if !ok {
 			return -eNOMEM
 		}
@@ -139,13 +143,17 @@ func sysMmap(p *Process, a []uint64) int64 {
 		return -eACCES
 	}
 	if f.shared != nil && flags&mapShared != 0 {
-		return p.mapShared(f.shared, addr, length, off, fixed)
+		start := p.mapShared(f.shared, addr, length, off, fixed)
+		if start >= 0 {
+			p.protect(uint64(start), uint64(start)+align(length, pageSize), protAll&^deny)
+		}
+		return start
 	}
 	name := "?"
 	if f.path != "" {
 		name = f.path
 	}
-	what := allocation{addr: addr, fixed: fixed, kind: fileRegion, name: "mmap:" + name}
+	what := allocation{addr: addr, fixed: fixed, kind: fileRegion, name: "mmap:" + name, deny: deny}
 	if f.kind == cacheFD { // fetched by range, so only the pages the guest touches
 		what.file, what.off = f.cache, off
 	} else {
@@ -159,6 +167,19 @@ func sysMmap(p *Process, a []uint64) int64 {
 		return -eNOMEM
 	}
 	return int64(start)
+}
+
+// sysMprotect changes what a range of pages may be accessed for. An access they do not allow
+// ends the run, as the fault ends a process whose signal nothing handles.
+func sysMprotect(p *Process, a []uint64) int64 {
+	addr := a[0] & tbiMask
+	if addr%pageSize != 0 {
+		return -eINVAL
+	}
+	if !p.protect(addr, addr+align(a[1], pageSize), uint32(a[2]&protAll)) {
+		return -eNOMEM
+	}
+	return 0
 }
 
 func sysMunmap(p *Process, a []uint64) int64 {
@@ -213,7 +234,7 @@ func sysSharedRegionMap(p *Process, a []uint64) int64 {
 		p.unmap(addr, addr+align(size, pageSize))
 		if !backing {
 			// Not file backed: dyld hands over a buffer (its dynamic config) to copy in.
-			r := &region{start: addr, end: addr + align(size, pageSize), name: "shared-region"}
+			r := &region{start: addr, end: addr + align(size, pageSize), name: "shared-region", deny: protAll &^ (prot & protAll)}
 			if f == nil && p.findRegion(fileOff) != nil {
 				if r.data = p.read(fileOff, size); len(r.data) > 0 {
 					r.kind = fileRegion
@@ -227,7 +248,7 @@ func sysSharedRegionMap(p *Process, a []uint64) int64 {
 			stopf("inconsistent shared region slide")
 		}
 		p.slide, p.slideSet = slide, true
-		p.addRegion(&region{start: addr, end: addr + size, kind: cacheRegion, name: "cache"})
+		p.addRegion(&region{start: addr, end: addr + size, kind: cacheRegion, name: "cache", deny: protAll &^ (prot & protAll)})
 	}
 	return 0
 }
@@ -251,16 +272,113 @@ func sysGethostuuid(p *Process, a []uint64) int64 {
 	return 0
 }
 
+// Signals are never delivered: the calls that would send one (kill, pthread_kill, a CPU fault, a
+// timer) end the run instead. What a process says about signals is kept and read back as a
+// kernel does, which is all a process can see of it until one arrives.
+
+const (
+	sigKill    = 9
+	sigStop    = 17
+	numSignals = 32
+	ssDisable  = 4     // SS_DISABLE: no alternate signal stack
+	minSigStk  = 32768 // MINSIGSTKSZ
+	// saUser is SA_USERSPACE_MASK: the flags a process reads back. libc also passes SA_USERTRAMP,
+	// which the kernel keeps to itself.
+	saUser = 0x7f
+)
+
+// sigAction is a signal's disposition, as struct sigaction says it: handler, mask, flags.
+type sigAction struct {
+	handler uint64
+	mask    uint32
+	flags   uint32
+}
+
+// sysSigaction sets and reads a signal's disposition. The kernel's argument is struct
+// __sigaction, which has libc's trampoline after the handler; what it hands back is the plain
+// struct sigaction.
 func sysSigaction(p *Process, a []uint64) int64 {
-	if a[2] != 0 {
-		p.write(a[2], make([]byte, 16))
+	sig, act, old := a[0], a[1], a[2]
+	if sig == 0 || sig >= numSignals || act != 0 && (sig == sigKill || sig == sigStop) {
+		return -eINVAL
+	}
+	if old != 0 {
+		was := p.sigactions[sig]
+		p.write(old, append(le64(was.handler), le32(was.mask, was.flags)...))
+	}
+	if act != 0 {
+		b := p.read(act, 24)
+		p.sigactions[sig] = sigAction{handler: le.Uint64(b), mask: le.Uint32(b[16:]), flags: le.Uint32(b[20:]) & saUser}
 	}
 	return 0
 }
 
+// sysSigprocmask sets and reads the calling thread's mask of blocked signals: sigprocmask and
+// pthread_sigmask alike, since Darwin keeps the mask per thread.
 func sysSigprocmask(p *Process, a []uint64) int64 {
-	if a[2] != 0 {
-		p.write(a[2], make([]byte, 4))
+	how, set, old := a[0], a[1], a[2]
+	t := p.current
+	was := t.sigmask
+	if set != 0 {
+		mask := p.u32(set) &^ (1<<(sigKill-1) | 1<<(sigStop-1))
+		switch how {
+		case 1: // SIG_BLOCK
+			t.sigmask |= mask
+		case 2: // SIG_UNBLOCK
+			t.sigmask &^= mask
+		case 3: // SIG_SETMASK
+			t.sigmask = mask
+		default:
+			return -eINVAL
+		}
+	}
+	if old != 0 {
+		p.write(old, le32(was))
+	}
+	return 0
+}
+
+// sysSigaltstack sets and reads the calling thread's alternate signal stack (stack_t).
+func sysSigaltstack(p *Process, a []uint64) int64 {
+	set, old := a[0], a[1]
+	t := p.current
+	if old != 0 {
+		flags := uint32(ssDisable)
+		if t.altstack[1] != 0 {
+			flags = 0
+		}
+		p.write(old, append(le64(t.altstack[0], t.altstack[1]), le32(flags, 0)...))
+	}
+	if set != 0 {
+		b := p.read(set, 24)
+		switch sp, size, flags := le.Uint64(b), le.Uint64(b[8:]), le.Uint32(b[16:]); {
+		case flags&ssDisable != 0:
+			t.altstack = [2]uint64{}
+		case flags != 0:
+			return -eINVAL
+		case size < minSigStk:
+			return -eNOMEM
+		default:
+			t.altstack = [2]uint64{sp, size}
+		}
+	}
+	return 0
+}
+
+// sysSetitimer reads an interval timer, which is never running, and stops it. Starting one would
+// mean a signal later, which nothing delivers.
+func sysSetitimer(p *Process, a []uint64) int64 {
+	which, set, old := a[0], a[1], a[2]
+	if which > 2 {
+		return -eINVAL
+	}
+	if set != 0 && slices.ContainsFunc(p.read(set+16, 16), func(b byte) bool { return b != 0 }) {
+		if p.unimplemented("setitimer that starts a timer", a) {
+			return -eNOSYS
+		}
+	}
+	if old != 0 {
+		p.write(old, make([]byte, 32))
 	}
 	return 0
 }

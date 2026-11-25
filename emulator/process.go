@@ -135,7 +135,10 @@ type region struct {
 	shared     *sharedMemory
 	off        uint64
 	name       string
+	deny       uint32 // what of protAll its pages may not be accessed for (mprotect)
 }
+
+func (r *region) prot() uint32 { return protAll &^ r.deny }
 
 // stop is the panic value that ends a run: the guest did something the emulator cannot carry on
 // from. fault is the panic value for a system call touching unmapped guest memory, which the
@@ -257,7 +260,8 @@ type Process struct {
 	named       map[*port]uint32  // the name it has for a port it can receive from or send to
 	eventData   uint64            // where a kevent says a message it did not deliver is
 	ignored     map[int]int       // kevent filters nothing emulates, and how many changes each was sent
-	threadStart uint64            // libpthread's entry points, and what it said of a pthread
+	sigactions  [numSignals]sigAction
+	threadStart uint64 // libpthread's entry points, and what it said of a pthread
 	wqThread    uint64
 	pthreadSize uint64
 	tsdOffset   uint64
@@ -543,7 +547,8 @@ type allocation struct {
 	shared    *sharedMemory  // instead of either: the mapping is this memory, from off
 	off       uint64
 	name      string
-	keepOther bool // a fixed request fails instead of replacing what is there
+	keepOther bool   // a fixed request fails instead of replacing what is there
+	deny      uint32 // see region
 }
 
 // alloc reserves guest address space; false when a fixed request cannot be honored.
@@ -563,8 +568,48 @@ func (p *Process) alloc(size uint64, a allocation) (uint64, bool) {
 		start = align(p.brk, max(a.mask+1, pageSize))
 		p.brk = start + size + pageSize
 	}
-	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, file: a.file, shared: a.shared, off: a.off, name: a.name})
+	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, file: a.file, shared: a.shared, off: a.off, name: a.name, deny: a.deny})
 	return start, true
+}
+
+// split makes at, if it is inside a region, the start of one.
+func (p *Process) split(at uint64) {
+	if r := p.findRegion(at); r != nil && r.start < at {
+		tail := *r
+		tail.start, tail.off = at, r.off+(at-r.start)
+		r.end = at
+		p.addRegion(&tail)
+	}
+}
+
+// protect gives the pages of [start, end) the protection prot (of protAll), as mprotect does;
+// false if any of them is not mapped. Pages Unicorn has get it now, the others when touched.
+func (p *Process) protect(start, end uint64, prot uint32) bool {
+	for a := start; a < end; {
+		r := p.findRegion(a)
+		if r == nil {
+			return false
+		}
+		a = r.end
+	}
+	p.split(start)
+	p.split(end)
+	for _, r := range p.overlaps(start, end) {
+		r.deny = protAll &^ prot
+	}
+	for a := start; a < end; {
+		if !p.isMapped(a) {
+			a += pageSize
+			continue
+		}
+		b := a
+		for b < end && p.isMapped(b) {
+			b += pageSize
+		}
+		p.uc.memProtect(a, b-a, prot)
+		a = b
+	}
+	return true
 }
 
 // materialize gives Unicorn the 16-page block around addr, filled from the region's backing.
@@ -586,11 +631,11 @@ func (p *Process) materialize(addr uint64) bool {
 		}
 		if r.kind == sharedRegion {
 			o := r.off + (a - r.start)
-			p.uc.memMapHost(a, r.shared.data[o:o+(b-a)])
+			p.uc.memMapHost(a, r.shared.data[o:o+(b-a)], r.prot())
 			a = b
 			continue
 		}
-		p.uc.memMap(a, b-a)
+		p.uc.memMap(a, b-a, r.prot())
 		switch r.kind {
 		case cacheRegion:
 			data, err := away(p.m.clock, func() ([]byte, error) { return p.cache.Page(a-p.slide, b-a, p.slide) })
@@ -625,6 +670,15 @@ func (p *Process) unmapped(addr uint64, size int) (ok bool) {
 		p.fault = fmt.Sprintf("unmapped access %#x size %d", addr, size)
 	}
 	return ok
+}
+
+// protected is an access the page's protection does not allow: the end of the run, as a fault
+// would be the end of the process with no handler for its signal.
+func (p *Process) protected(kind int32, addr uint64, size int) bool {
+	defer p.hookGuard(nil)
+	what := map[int32]string{22: "write to", 23: "read of", 24: "instruction fetch from"}[kind]
+	p.fault = fmt.Sprintf("%s protected memory %#x size %d (%s)", what, addr, size, p.where(addr))
+	return false
 }
 
 func (p *Process) invalid() bool {
@@ -722,7 +776,7 @@ func (p *Process) u64(addr uint64) uint64 { return le.Uint64(p.read(addr, 8)) }
 func (p *Process) setupMMU() error {
 	const l0, n = uint64(pageTables), uint64(vaLimit >> 39)
 	size := align((n+2)*4096, pageSize)
-	p.uc.memMap(l0, size)
+	p.uc.memMap(l0, size, protAll)
 	p.addRegion(&region{start: l0, end: l0 + size, name: "pagetables"})
 	for a := l0; a < l0+size; a += pageSize {
 		p.mapped[a/pageSize] = struct{}{}
@@ -785,7 +839,7 @@ func (p *Process) setupCommpage() {
 			le.PutUint32(page[0x20:], uint32(caps))
 			page[0x22], page[0x34], page[0x35], page[0x36] = 1, 1, 1, 1
 		}
-		p.uc.memMap(base, pageSize)
+		p.uc.memMap(base, pageSize, protAll)
 		p.uc.memWrite(base, page)
 		p.mapped[base/pageSize] = struct{}{}
 		p.addRegion(&region{start: base, end: base + pageSize, name: "commpage"})

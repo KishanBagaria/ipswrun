@@ -19,15 +19,16 @@ var machNames = map[int64]string{
 
 // Kernel and message return codes.
 const (
-	kernNoSpace      = 3
-	kernInvalidArg   = 4
-	kernFailure      = 5
-	kernNotSupported = 46
-	sendInvalidDest  = 0x10000003
-	sendTooSmall     = 0x10000008
-	rcvTimedOut      = 0x10004003
-	bootstrapPort    = 0x707
-	hostPort         = 0x303
+	kernInvalidAddress = 1
+	kernNoSpace        = 3
+	kernInvalidArg     = 4
+	kernFailure        = 5
+	kernNotSupported   = 46
+	sendInvalidDest    = 0x10000003
+	sendTooSmall       = 0x10000008
+	rcvTimedOut        = 0x10004003
+	bootstrapPort      = 0x707
+	hostPort           = 0x303
 )
 
 var machHandlers map[string]handler
@@ -37,7 +38,7 @@ func init() {
 		"task_self": {0, constant(0x203)}, "thread_self": {0, machThreadSelf}, "host_self": {0, constant(hostPort)},
 		"reply_port": {0, machNewReceive}, "thread_get_special_reply_port": {0, machSpecialReplyPort},
 		"vm_allocate": {4, machVMAllocate}, "vm_map": {6, machVMMap}, "vm_deallocate": {3, machVMDeallocate},
-		"vm_protect": {5, constant(0)}, "vm_purgable_control": {4, constant(0)},
+		"vm_protect": {5, machVMProtect}, "vm_purgable_control": {4, constant(0)},
 		"port_allocate": {3, machPortAllocate}, "port_construct": {4, machPortConstruct}, "port_deallocate": {2, machPortDeallocate},
 		"port_mod_refs": {4, machPortModRefs}, "port_insert_right": {4, machPortInsertRight}, "port_destruct": {4, machPortDestruct},
 		"port_guard": {4, machPortGuard}, "port_unguard": {3, constant(0)}, "port_insert_member": {3, machPortInsertMember},
@@ -82,8 +83,8 @@ func (p *Process) vmMap(addr, size, mask, flags uint64, what allocation) (uint64
 	return p.alloc(size, what)
 }
 
-func (p *Process) vmAllocate(addrp, size, mask, flags uint64, name string) int64 {
-	start, ok := p.vmMap(p.u64(addrp), size, mask, flags, allocation{name: name})
+func (p *Process) vmAllocate(addrp, size, mask, flags uint64, prot uint32, name string) int64 {
+	start, ok := p.vmMap(p.u64(addrp), size, mask, flags, allocation{name: name, deny: protAll &^ prot})
 	if !ok {
 		return kernNoSpace
 	}
@@ -92,11 +93,32 @@ func (p *Process) vmAllocate(addrp, size, mask, flags uint64, name string) int64
 }
 
 func machVMAllocate(p *Process, a []uint64) int64 {
-	return p.vmAllocate(a[1], a[2], 0, a[3], "vm_allocate")
+	return p.vmAllocate(a[1], a[2], 0, a[3], vmProtDefault, "vm_allocate")
 }
-func machVMMap(p *Process, a []uint64) int64 { return p.vmAllocate(a[1], a[2], a[3], a[4], "vm_map") }
+
+func machVMMap(p *Process, a []uint64) int64 {
+	return p.vmAllocate(a[1], a[2], a[3], a[4], uint32(a[5]&protAll), "vm_map")
+}
+
+const vmProtDefault = 3 // VM_PROT_DEFAULT: read and write
 
 func machVMDeallocate(p *Process, a []uint64) int64 { return sysMunmap(p, a[1:]) }
+
+// machVMProtect is mprotect by the Mach name, of whole pages. Setting the maximum protection,
+// which nothing here keeps, can only take away from the current one.
+func machVMProtect(p *Process, a []uint64) int64 {
+	start, prot := a[1]&tbiMask&^(pageSize-1), uint32(a[4]&protAll)
+	end := align(a[1]&tbiMask+a[2], pageSize)
+	if a[3] != 0 { // set_maximum
+		if r := p.findRegion(start); r != nil {
+			prot &= r.prot()
+		}
+	}
+	if !p.protect(start, end, prot) {
+		return kernInvalidAddress
+	}
+	return 0
+}
 
 func machPortType(p *Process, a []uint64) int64 {
 	p.write(a[2], le32(0x20000))

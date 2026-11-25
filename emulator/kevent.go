@@ -40,8 +40,10 @@ const (
 	evEnable   = 0x4
 	evDisable  = 0x8
 	evOneshot  = 0x10
+	evReceipt  = 0x40  // answer the change at once, as an event with EV_ERROR set
 	evDispatch = 0x80  // disabled once it has happened, until enabled again
 	evVanished = 0x200 // asked for: to be told if what is watched goes away. In an event: it did
+	evError    = 0x4000
 
 	// Units and clocks of a timer.
 	noteSeconds  = 0x1
@@ -131,6 +133,54 @@ func sysKeventQos(p *Process, a []uint64) int64 {
 }
 
 func sysKeventID(p *Process, a []uint64) int64 { return p.kevents(p.kqueue(a[0]), a) }
+
+// kevent and kevent64 are the calls of a kqueue a guest made with kqueue(), which nothing
+// emulates (see sysKqueue). A change is taken, and its filter counted among those whose events
+// never happen. A wait for events stops the run as unimplemented, since what would have happened
+// cannot be known; a receipt for each change (EV_RECEIPT) is all that can be answered.
+func sysKevent(p *Process, a []uint64) int64 { return p.fdKevents(a, 32) }
+
+func sysKevent64(p *Process, a []uint64) int64 {
+	if a[5] != 0 { // KEVENT_FLAG_IMMEDIATE and the like
+		p.unimplemented("kevent64 with flags", a)
+		return -eNOSYS
+	}
+	return p.fdKevents(a, 48)
+}
+
+func (p *Process) fdKevents(a []uint64, size uint64) int64 {
+	kq, changes, nchanges, events, nevents := a[0], a[1], int(int32(a[2])), a[3], int(int32(a[4]))
+	if p.fds[kq] == nil {
+		return -eBADF
+	}
+	if nchanges < 0 || nevents < 0 {
+		return -eINVAL
+	}
+	var receipts []byte
+	for i := range nchanges {
+		b := p.read(changes+uint64(i)*size, size)
+		filter, flags := int16(le.Uint16(b[8:])), le.Uint16(b[10:])
+		p.note("  kevent on descriptor %d: filter %d ident %#x flags %#x", kq, filter, le.Uint64(b), flags)
+		if flags&evAdd != 0 {
+			p.ignored[int(filter)]++
+		}
+		if flags&evReceipt != 0 {
+			le.PutUint16(b[10:], evError)
+			clear(b[16:24]) // data: no error
+			receipts = append(receipts, b...)
+		}
+	}
+	if nevents == 0 {
+		return 0
+	}
+	if uint64(len(receipts)) == uint64(nchanges)*size && nchanges > 0 {
+		n := min(nchanges, nevents)
+		p.write(events, receipts[:uint64(n)*size])
+		return int64(n)
+	}
+	p.unimplemented("kevent that waits for events", a)
+	return -eNOSYS
+}
 
 // kevents applies the changes at a[1], then gives the caller what is ready, if it asked.
 func (p *Process) kevents(q *kqueue, a []uint64) int64 {

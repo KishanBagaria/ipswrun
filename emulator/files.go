@@ -518,6 +518,7 @@ func (p *Process) closeFD(n uint64) int64 {
 	delete(p.fds, n)
 	if f.kind == hostFD {
 		closeHost(f.host)
+		p.m.retryLocks() // its locks went with it, if it was the last descriptor of its file
 	}
 	if f.shared != nil {
 		f.shared.release()
@@ -763,6 +764,7 @@ func (p *Process) doUnlink(path string, dir bool) int64 {
 	case !dir && fi.IsDir():
 		return -ePERM
 	}
+	p.forgetFile(t)
 	return hostCall(t.root.Remove(t.rel))
 }
 
@@ -794,6 +796,7 @@ func (p *Process) doRename(from, to string) int64 {
 	if t1.root != t2.root {
 		return -eXDEV
 	}
+	p.forgetFile(t2) // what it replaces, if anything
 	return hostCall(t1.root.Rename(t1.rel, t2.rel))
 }
 

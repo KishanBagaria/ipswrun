@@ -35,6 +35,7 @@ const (
 	ctlRead       = 2 << 30
 	hookInterrupt = 1 << 0
 	hookUnmapped  = 1<<4 | 1<<5 | 1<<6 // read, write, fetch
+	hookProtected = 1<<7 | 1<<8 | 1<<9 // likewise, of memory mapped without the permission
 	hookInvalid   = 1 << 14
 )
 
@@ -52,6 +53,7 @@ var api struct {
 	memMap   func(uc uintptr, address, size uint64, protection uint32) int32
 	memPtr   func(uc uintptr, address, size uint64, protection uint32, memory unsafe.Pointer) int32
 	memUnmap func(uc uintptr, address, size uint64) int32
+	memProt  func(uc uintptr, address, size uint64, protection uint32) int32
 	memRead  func(uc uintptr, address uint64, bytes unsafe.Pointer, size uint64) int32
 	memWrite func(uc uintptr, address uint64, bytes unsafe.Pointer, size uint64) int32
 	emuStart func(uc uintptr, begin, until, timeoutMicros, count uint64) int32
@@ -67,7 +69,7 @@ var api struct {
 	contextFree     func(context uintptr) int32
 
 	// C entry points of the hook callbacks; user is a key of targets.
-	onInterrupt, onUnmapped, onInvalid uintptr
+	onInterrupt, onUnmapped, onProtected, onInvalid uintptr
 }
 
 // symbol is a C function to bind: its library, its name and a pointer to the Go func variable.
@@ -102,7 +104,7 @@ func loadUnicorn(path string) error {
 		{library, "uc_ctl", &ucCtl.set}, {library, "uc_ctl", &ucCtl.get},
 		{library, "uc_reg_read", &api.regRead}, {library, "uc_reg_write", &api.regWrite},
 		{library, "uc_mem_map", &api.memMap}, {library, "uc_mem_unmap", &api.memUnmap},
-		{library, "uc_mem_map_ptr", &api.memPtr},
+		{library, "uc_mem_map_ptr", &api.memPtr}, {library, "uc_mem_protect", &api.memProt},
 		{library, "uc_mem_read", &api.memRead}, {library, "uc_mem_write", &api.memWrite},
 		{library, "uc_emu_start", &api.emuStart}, {library, "uc_emu_stop", &api.emuStop},
 		{library, "uc_hook_add", &api.hookAdd},
@@ -127,6 +129,9 @@ func loadUnicorn(path string) error {
 	api.onUnmapped = purego.NewCallback(func(_ uintptr, _ int32, address uint64, size int32, _ int64, user uintptr) uintptr {
 		return truth(hooksFor(user).unmapped(address, int(size)))
 	})
+	api.onProtected = purego.NewCallback(func(_ uintptr, kind int32, address uint64, size int32, _ int64, user uintptr) uintptr {
+		return truth(hooksFor(user).protected(kind, address, int(size)))
+	})
 	api.onInvalid = purego.NewCallback(func(_, user uintptr) uintptr {
 		return truth(hooksFor(user).invalid())
 	})
@@ -145,6 +150,7 @@ func truth(b bool) uintptr {
 type hooks interface {
 	interrupt(number uint32)
 	unmapped(address uint64, size int) bool
+	protected(kind int32, address uint64, size int) bool
 	invalid() bool
 }
 
@@ -218,6 +224,7 @@ func (e *engine) setup() error {
 	var hook uintptr
 	return errors.Join(check(api.hookAdd(e.uc, &hook, hookInterrupt, api.onInterrupt, e.id, 1, 0)),
 		check(api.hookAdd(e.uc, &hook, hookUnmapped, api.onUnmapped, e.id, 1, 0)),
+		check(api.hookAdd(e.uc, &hook, hookProtected, api.onProtected, e.id, 1, 0)),
 		check(api.hookAdd(e.uc, &hook, hookInvalid, api.onInvalid, e.id, 1, 0)))
 }
 
@@ -271,14 +278,18 @@ func (e *engine) setCPReg(crn, crm, op0, op1, op2 uint32, v uint64) {
 	must(api.regWrite(e.uc, regCPReg, unsafe.Pointer(&reg)), "reg_write")
 }
 
-func (e *engine) memMap(addr, size uint64) {
-	must(api.memMap(e.uc, addr, size, protAll), fmt.Sprintf("mem_map %#x+%#x", addr, size))
+func (e *engine) memMap(addr, size uint64, prot uint32) {
+	must(api.memMap(e.uc, addr, size, prot), fmt.Sprintf("mem_map %#x+%#x", addr, size))
 }
 
 // memMapHost maps host memory, which every engine that maps it then shares. Its length is a
 // whole number of pages.
-func (e *engine) memMapHost(addr uint64, memory []byte) {
-	must(api.memPtr(e.uc, addr, uint64(len(memory)), protAll, unsafe.Pointer(&memory[0])), fmt.Sprintf("mem_map_ptr %#x+%#x", addr, len(memory)))
+func (e *engine) memMapHost(addr uint64, memory []byte, prot uint32) {
+	must(api.memPtr(e.uc, addr, uint64(len(memory)), prot, unsafe.Pointer(&memory[0])), fmt.Sprintf("mem_map_ptr %#x+%#x", addr, len(memory)))
+}
+
+func (e *engine) memProtect(addr, size uint64, prot uint32) {
+	must(api.memProt(e.uc, addr, size, prot), fmt.Sprintf("mem_protect %#x+%#x", addr, size))
 }
 
 func (e *engine) memUnmap(addr, size uint64) {
