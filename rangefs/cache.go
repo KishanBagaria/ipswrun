@@ -24,10 +24,12 @@ const (
 
 // diskCache stores fetched remote extents for one image in a single sparse file ("data") plus a
 // small append-only binary index ("index"). All index reads and writes coordinate across
-// concurrent processes via an exclusive flock on the data file.
+// concurrent processes via an exclusive flock on the data file. While open, it holds a shared
+// flock on "lock" so PruneCache leaves the directory alone.
 type diskCache struct {
 	dir       string
 	size      int64
+	lockFile  *os.File
 	dataFile  *os.File
 	indexPath string
 	spans     []span // coalesced intervals present in the data file
@@ -41,27 +43,58 @@ type span struct {
 func openDiskCache(cacheDir, url string, size int64) (*diskCache, error) {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\n%d", url, size)))
 	dir := filepath.Join(cacheDir, hex.EncodeToString(sum[:8]))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	lockFile, err := lockInUse(dir)
+	if err != nil {
 		return nil, err
 	}
 	dataFile, err := os.OpenFile(filepath.Join(dir, "data"), os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
+		lockFile.Close()
 		return nil, err
 	}
 	dc := &diskCache{
 		dir:       dir,
 		size:      size,
+		lockFile:  lockFile,
 		dataFile:  dataFile,
 		indexPath: filepath.Join(dir, "index"),
 	}
 	if err := dc.load(); err != nil {
-		dataFile.Close()
+		dc.close()
 		return nil, err
 	}
 	return dc, nil
 }
 
-func (c *diskCache) close() error { return c.dataFile.Close() }
+// lockInUse creates dir if needed and takes a shared flock on its "lock" file, which is released
+// when the returned file is closed. If PruneCache removed dir while this waited for the lock, it
+// starts over with a fresh directory.
+func lockInUse(dir string) (*os.File, error) {
+	path := filepath.Join(dir, "lock")
+	for {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+			f.Close()
+			return nil, err
+		}
+		held, err1 := f.Stat()
+		named, err2 := os.Stat(path)
+		if err1 == nil && err2 == nil && os.SameFile(held, named) {
+			return f, nil
+		}
+		f.Close()
+	}
+}
+
+func (c *diskCache) close() error {
+	return errors.Join(c.dataFile.Close(), c.lockFile.Close())
+}
 
 func (c *diskCache) lock(how int) error {
 	return syscall.Flock(int(c.dataFile.Fd()), how)
@@ -311,23 +344,28 @@ func writeCachedSize(cacheDir, url string, size int64) {
 }
 
 // PruneCache removes every cached restore image under cacheDir, and the remembered sizes, leaving
-// anything else there alone. It reports how many images it removed and the disk bytes they held.
-func PruneCache(cacheDir string) (removed int, freed int64, err error) {
+// anything else there alone. An image another process has open is skipped. It reports how many
+// images it removed, how many it skipped, and the disk bytes it freed.
+func PruneCache(cacheDir string) (removed, inUse int, freed int64, err error) {
 	entries, err := os.ReadDir(cacheDir)
 	if errors.Is(err, os.ErrNotExist) {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	for _, entry := range entries {
 		name := entry.Name()
 		path := filepath.Join(cacheDir, name)
 		switch {
 		case entry.IsDir() && (isCacheHashDir(name) || name == "local"):
-			bytes := dirAllocatedBytes(path)
-			if err := os.RemoveAll(path); err != nil {
-				return removed, freed, err
+			bytes, ok, err := removeUnused(path)
+			if err != nil {
+				return removed, inUse, freed, err
+			}
+			if !ok {
+				inUse++
+				continue
 			}
 			removed++
 			freed += bytes
@@ -335,7 +373,25 @@ func PruneCache(cacheDir string) (removed int, freed int64, err error) {
 			_ = os.Remove(path)
 		}
 	}
-	return removed, freed, nil
+	return removed, inUse, freed, nil
+}
+
+// removeUnused removes dir unless an open diskCache holds its lock, reporting the bytes it held.
+// The exclusive lock is kept until dir is gone, so a process opening it meanwhile waits and then
+// starts a fresh directory.
+func removeUnused(dir string) (int64, bool, error) {
+	f, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_RDONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return 0, false, err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); errors.Is(err, syscall.EWOULDBLOCK) {
+		return 0, false, nil
+	} else if err != nil {
+		return 0, false, err
+	}
+	bytes := dirAllocatedBytes(dir)
+	return bytes, true, os.RemoveAll(dir)
 }
 
 func isCacheHashDir(name string) bool {

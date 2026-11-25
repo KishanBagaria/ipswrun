@@ -311,12 +311,30 @@ func TestPruneCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	removed, freed, err := PruneCache(dir)
+	// An image another reader has open is left alone.
+	open, err := newRangeReader(url2, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if removed != 2 || freed <= 0 {
-		t.Fatalf("prune: removed=%d freed=%d, want 2 and >0", removed, freed)
+	removed, inUse, freed, err := PruneCache(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 || inUse != 1 || freed <= 0 {
+		t.Fatalf("prune while open: removed=%d inUse=%d freed=%d, want 1, 1 and >0", removed, inUse, freed)
+	}
+	if _, err := os.Stat(dir2); err != nil {
+		t.Fatalf("open dir2 was removed: %v", err)
+	}
+	read(t, open, o2, 0, 128<<10)
+	open.Close()
+
+	removed, inUse, freed, err = PruneCache(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 || inUse != 0 || freed <= 0 {
+		t.Fatalf("prune: removed=%d inUse=%d freed=%d, want 1, 0 and >0", removed, inUse, freed)
 	}
 	if _, err := os.Stat(dir1); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("dir1 still exists after prune: %v", err)
