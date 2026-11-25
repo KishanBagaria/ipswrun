@@ -51,6 +51,7 @@ let pdata = try PropertyListEncoder().encode(doc)
 print("plist", try PropertyListDecoder().decode(Doc.self, from: pdata).tags)
 print("bridge", (["k": [1, 2, 3]] as NSDictionary).value(forKeyPath: "k.@sum.self") ?? "nil", NSString(string: s).length)
 print("measure", Measurement(value: 3, unit: UnitLength.kilometers).converted(to: .meters).value)
-let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("swift.json")
+// NSHomeDirectory, as homeDirectoryForCurrentUser is not in iOS.
+let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("swift.json")
 try data.write(to: url)
 print("file", try Data(contentsOf: url).count == data.count)
