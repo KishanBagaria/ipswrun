@@ -114,7 +114,7 @@ Every Mach-O executable in `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` and `/usr/li
 | Ran until it was a service waiting for a client, which is how a daemon run alone ends | 45 | 63 |
 | Ended with a crash of its own (an abort or a trap) | 71 | 68 |
 
-What is asked for most that is still not there, by programs asking: `getrusage` (21), launchd's routine in message 1073742225 (16), the kqueue filter for user events (13), `pipe` (9), the properties of the registry's root (9, the kext tools), `kqueue_workloop_ctl`, `memorystatus_control` and `mach_port_get_attributes` (5 each).
+What is asked for most that is still not there, by programs asking: `getrusage` (21), launchd's routine in message 1073742225 (16), the kqueue filter for user events (13), `pipe` (9), the properties of the registry's root (9, the kext tools), `kqueue_workloop_ctl`, `memorystatus_control` and `mach_port_get_attributes` (5 each; the last is [there now](#a-ports-status)).
 
 One run of it filled the disk: `/usr/bin/yes` writes without end, and a guest's output is kept until it ends, with no limit on how much (27 GB in its 60 seconds).
 
@@ -125,8 +125,13 @@ Added after it, each answered as macOS 27.2.1 answers a process that is not root
 Left as they were, still stopping or listed by name:
 
 - **`getrusage`** (21 programs: the shells, and net-snmp's tools through libc). There is no account of the CPU time a process has used to answer it with.
-- **`mach_port_get_attributes`** (5 programs, and the release's `dirhelper` as it checks in). A port's status counts the rights to send once that exist for it, which is not kept. What a Mac answers is recorded and waits for that count.
-- **Starting `dirhelper` when it is looked up.** `confstr(_CS_DARWIN_USER_CACHE_DIR)` fails without it (some ten daemons end on that), and it cannot check in until the call above is there. It is one case of limit 2.
+- **Starting `dirhelper` when it is looked up.** `confstr(_CS_DARWIN_USER_CACHE_DIR)` fails without it (15 programs say so as they end). Started by hand (`--daemon com.apple.bsd.dirhelper=system:/usr/libexec/dirhelper`) it now checks in and takes the request, and then fails on `/var/folders`, which is on a device's data volume and so in no restore image: there is no such directory here unless `--mount` gives one. It is one case of limit 2, and of files outside the home.
+
+## A port's status
+
+`mach_port_get_attributes` answers a receive right's status and its queue's limit as macOS 27.2.1 does: [examples/portstatus.c](examples/portstatus.c) prints the same natively on a Mac as under ipswrun ([native.txt](examples/expected/portstatus/native.txt)), through messages sent and received, rights to send once made, used, given up and kept by the kernel for a notification, limits, sets and guards. For it the kernel here now keeps, of every port, the rights to send once that exist for it, how many messages were received from it (which a message's trailer says too: it said 0), the limit of its queue, and its guard. A reply now arrives through the right it was given to answer with, where it used to arrive as if through a right to send once whatever it was given.
+
+What is not known for sure stops as unimplemented: the other flavors (the owner, importance, the guard's own info, throttling), and the status of a name that is no port's here, which may be a name that is gone (an invalid name to a Mac) or a right the kernel keeps of another kind, such as a thread's (an invalid right). Not checked against a Mac: unguarding a port with a value that is not its guard, for which a Mac's kernel ends the process, also stops as unimplemented. The limit of a queue is kept and read back, and holds no sender to it. `mach_port_type` still answers that every name is a send right.
 
 ## Sysctls left out
 

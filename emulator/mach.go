@@ -23,25 +23,29 @@ const (
 	kernNoSpace        = 3
 	kernInvalidArg     = 4
 	kernFailure        = 5
+	kernInvalidName    = 15
+	kernInvalidRight   = 17
+	kernInvalidValue   = 18
 	kernNotSupported   = 46
 	sendInvalidDest    = 0x10000003
 	sendTooSmall       = 0x10000008
 	rcvTimedOut        = 0x10004003
 	bootstrapPort      = 0x707
 	hostPort           = 0x303
+	taskPort           = 0x203
 )
 
 var machHandlers map[string]handler
 
 func init() {
 	machHandlers = map[string]handler{
-		"task_self": {0, constant(0x203)}, "thread_self": {0, machThreadSelf}, "host_self": {0, constant(hostPort)},
+		"task_self": {0, constant(taskPort)}, "thread_self": {0, machThreadSelf}, "host_self": {0, constant(hostPort)},
 		"reply_port": {0, machNewReceive}, "thread_get_special_reply_port": {0, machSpecialReplyPort},
 		"vm_allocate": {4, machVMAllocate}, "vm_map": {6, machVMMap}, "vm_deallocate": {3, machVMDeallocate},
 		"vm_protect": {5, machVMProtect}, "vm_purgable_control": {4, constant(0)},
 		"port_allocate": {3, machPortAllocate}, "port_construct": {4, machPortConstruct}, "port_deallocate": {2, machPortDeallocate},
 		"port_mod_refs": {4, machPortModRefs}, "port_insert_right": {4, machPortInsertRight}, "port_destruct": {4, machPortDestruct},
-		"port_guard": {4, machPortGuard}, "port_unguard": {3, constant(0)}, "port_insert_member": {3, machPortInsertMember},
+		"port_guard": {4, machPortGuard}, "port_unguard": {3, machPortUnguard}, "port_get_attributes": {5, machPortGetAttributes}, "port_insert_member": {3, machPortInsertMember},
 		"port_move_member": {3, machPortInsertMember}, "port_extract_member": {3, machPortExtractMember}, "port_type": {3, machPortType},
 		"port_request_notification":         {7, machPortRequestNotification},
 		"task_dyld_process_info_notify_get": {2, constant(kernFailure)}, // nobody is watching
@@ -252,6 +256,11 @@ func (p *Process) send(m message) int64 {
 		}
 		p.note("  mach_msg id %d to port %#x: %d bytes queued%s", m.id, m.remote, len(sent.data), said)
 		switch r := p.names[m.remote]; {
+		case m.bits&0x1F == makeSendOnce: // made for this message, and used up by it
+			q.onces++
+			sent.once = true
+		case m.bits&0x1F == moveSendOnce:
+			sent.once = true
 		case m.bits&0x1F == makeSend:
 			q.made++
 		case m.bits&0x1F == moveSend && r != nil && r.sends > 0:
@@ -329,18 +338,22 @@ func migPortData(name uint32, data []byte) migReply {
 
 // answer queues the reply to a message on the port its sender gave for one, if it gave one.
 func (p *Process) answer(m message, id uint32, reply migReply, sender uint32) {
-	to := p.takeIn(m.local, m.bits>>8&0x1F).port
+	c := p.takeIn(m.local, m.bits>>8&0x1F)
+	to := c.port
 	if to == nil {
 		if m.local != 0 {
 			p.note("  no port %#x to answer on", m.local)
 		}
 		return
 	}
-	bits := uint32(moveSendOnce << 8)
+	// It arrives through the right it was given to answer with, which that uses up: a right to
+	// send once, as a rule.
+	bits := c.disposition << 8
 	if reply.complex {
 		bits |= bitsComplex
 	}
-	enqueue(to, bits, id, reply.body, sender, reply.memory...)
+	post(to, machMessage{data: append(header(bits, uint32(24+len(reply.body)), 0, id), reply.body...), memory: reply.memory, sender: sender,
+		once: c.disposition == moveSendOnce, moved: c.disposition == moveSend})
 }
 
 var migRoutines map[uint32]func(p *Process, body []byte) migReply
@@ -359,7 +372,7 @@ func init() {
 		412:  migHostGetSpecialPort,
 		1000: migClockGetTime,
 		3405: migTaskInfo,
-		3218: ok, // mach_port_set_attributes: limits and importance, which nothing here enforces
+		3218: migPortSetAttributes,
 		3228: migPortGetContext,
 		3240: func(*Process, []byte) migReply { return migData(le64(0)) }, // mach_port_is_connection_for_service: it is, under no sandbox filter
 		3409: migTaskGetSpecialPort,

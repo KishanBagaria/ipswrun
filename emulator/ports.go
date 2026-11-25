@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"cmp"
+	"fmt"
 	"maps"
 	"slices"
 	"time"
@@ -33,6 +34,34 @@ type port struct {
 	sends     int    // send rights there are, in every process and in messages not yet received
 	made      uint32 // send rights ever made from the receive right
 	noSenders *port  // told when the last send right goes, if anyone asked
+	destroyed bool   // someone asked to be told of its destruction, which nothing here tells
+
+	// What its owner can ask of it besides (mach_port_get_attributes).
+	onces   int    // rights to send to it once: held, in a message, or kept by the kernel for a notification
+	seqno   uint32 // messages received from it
+	limit   uint32 // how many may wait in its queue, where it was told; nothing here holds a sender to it
+	guarded bool   // only the holder of its context may give it up, or
+	strict  bool   // change it at all
+	flags   uint32 // what it was made as, as its status has it
+}
+
+// What a port's status says of how it was made.
+const (
+	statusTempOwner  = 0x1 // MACH_PORT_STATUS_FLAG_TEMPOWNER
+	statusGuarded    = 0x2
+	statusStrict     = 0x4
+	statusImportance = 0x8 // it receives the importance of those who send to it
+
+	queueLimit    = 5    // MACH_PORT_QLIMIT_DEFAULT
+	queueLimitMax = 1024 // MACH_PORT_QLIMIT_MAX
+)
+
+// queueLimit is how many messages may wait in its queue.
+func (q *port) queueLimit() uint32 {
+	if q.limit != 0 {
+		return q.limit
+	}
+	return queueLimit
 }
 
 // right is what a name stands for in one process.
@@ -74,6 +103,7 @@ type machMessage struct {
 	sender uint32
 	from   *Process
 	moved  bool // the send right it was sent with was given up for it, and ends when it is received
+	once   bool // it was sent with a right to send once, which ends when it is received
 }
 
 const (
@@ -105,9 +135,10 @@ const (
 	rightSendOnce = 2
 	rightPortSet  = 3
 
-	notifyNoSenders = 70
-	notifySendOnce  = 71
-	notifyDeadName  = 72
+	notifyPortDestroyed = 69
+	notifyNoSenders     = 70
+	notifySendOnce      = 71
+	notifyDeadName      = 72
 
 	insertSendRight = 0x10 // MPO_INSERT_SEND_RIGHT
 )
@@ -185,6 +216,7 @@ func (p *Process) takeIn(name, disposition uint32) carried {
 	case disposition == moveSendOnce && r.once:
 		delete(p.names, name)
 	case disposition == makeSendOnce && r.receive:
+		q.onces++
 	case disposition == makeSend && r.receive:
 		q.sends++
 		q.made++
@@ -244,7 +276,7 @@ func (p *Process) sendRight(q *port) uint32 {
 
 // enqueue queues on q a message that is not a guest's own: the kernel's (sender 0) or launchd's.
 func enqueue(q *port, bits, id uint32, body []byte, sender uint32, memory ...outOfLine) {
-	post(q, machMessage{data: append(header(bits, uint32(24+len(body)), 0, id), body...), memory: memory, sender: sender})
+	post(q, machMessage{data: append(header(bits, uint32(24+len(body)), 0, id), body...), memory: memory, sender: sender, once: bits>>8&0x1F == moveSendOnce})
 }
 
 // notify sends q one of the kernel's notifications, if it is still there to be told.
@@ -324,6 +356,7 @@ func destroy(q *port) {
 			case r.port != q:
 			case r.once:
 				delete(other.names, name)
+				q.onces--
 			case r.deadName != nil:
 				told = append(told, name)
 			}
@@ -398,21 +431,138 @@ func machPortAllocate(p *Process, a []uint64) int64 {
 
 // machPortConstruct makes a port, with a send right too if asked, and keeps the context it is given.
 func machPortConstruct(p *Process, a []uint64) int64 {
+	const contextAsGuard, withLimit, tempOwner, importance, strict = 0x1, 0x2, 0x4, 0x8, 0x20 // MPO_…
+	options := p.u32(a[1])
+	limit := p.u32(a[1] + 4)
+	if options&withLimit != 0 && limit > queueLimitMax {
+		return kernInvalidValue
+	}
 	q := p.newReceive()
 	q.context = a[2]
-	if p.u32(a[1])&insertSendRight != 0 {
+	q.guarded = options&contextAsGuard != 0
+	q.strict = q.guarded && options&strict != 0
+	if options&withLimit != 0 {
+		q.limit = limit
+	}
+	if options&importance != 0 {
+		q.flags |= statusImportance
+	}
+	if options&tempOwner != 0 { // which receives importance too, as a Mac's status has it
+		q.flags |= statusTempOwner | statusImportance
+	}
+	if options&insertSendRight != 0 {
 		p.giveOut(p.takeIn(q.name, makeSend), p)
 	}
 	p.write(a[3], le32(q.name))
 	return 0
 }
 
-// machPortGuard guards a port with a value, which is also its context.
+// machPortGuard guards a port with a value, which is also its context: once, until it is
+// unguarded with the same value.
 func machPortGuard(p *Process, a []uint64) int64 {
-	if q := p.owned(uint32(a[1])); q != nil {
-		q.context = a[2]
+	q := p.owned(uint32(a[1]))
+	switch {
+	case q == nil:
+		return 0
+	case q.guarded:
+		return kernInvalidArg
 	}
+	q.context, q.guarded, q.strict = a[2], true, a[3] != 0
 	return 0
+}
+
+// machPortUnguard takes the guard off a port, for whoever has its value. With another value a
+// Mac's kernel ends the process (a guard exception), which is not implemented.
+func machPortUnguard(p *Process, a []uint64) int64 {
+	q := p.owned(uint32(a[1]))
+	switch {
+	case q == nil || !q.guarded:
+		return 0
+	case q.context != a[2]:
+		p.unimplemented("unguarding a port with a value that is not its guard", a)
+		return kernInvalidArg
+	}
+	q.context, q.guarded, q.strict = 0, false, false
+	return 0
+}
+
+// machPortGetAttributes is mach_port_get_attributes(task, name, flavor, info, &count) of a
+// receive right: its queue's limit (1), or its status (2).
+func machPortGetAttributes(p *Process, a []uint64) int64 {
+	const limits, status, statusCount = 1, 2, 10
+	name := uint32(a[1])
+	r := p.names[name]
+	switch {
+	case r == nil && (name == taskPort || name == hostPort):
+		return kernInvalidRight
+	case r == nil && name > p.nextPort:
+		return kernInvalidName
+	case r == nil:
+		// A name the process had, which is nothing now, or a right of another kind that the
+		// kernel keeps (a thread, a semaphore): which of them is not kept here.
+		p.unimplemented("mach_port_get_attributes of a name that is no port's", a)
+		return kernInvalidName
+	case !r.receive || r.port.set:
+		return kernInvalidRight
+	}
+	q, room := r.port, p.u32(a[4])
+	var info []uint32
+	switch a[2] {
+	case limits:
+		info = []uint32{q.queueLimit()}
+	case status:
+		flags := q.flags
+		if q.guarded {
+			flags |= statusGuarded
+		}
+		if q.strict {
+			flags |= statusStrict
+		}
+		var set uint32
+		if q.in != nil {
+			set = q.in.name
+		}
+		flag := func(b bool) uint32 {
+			if b {
+				return 1
+			}
+			return 0
+		}
+		info = []uint32{set, q.seqno, q.made, q.queueLimit(), uint32(len(q.queue)), uint32(q.onces), flag(q.sends > 0), flag(q.destroyed), flag(q.noSenders != nil), flags}
+	case 3, 4, 5, 7, 8, 9: // the sizes of its tables, its owner, importance, more of its status, its guard, its throttling
+		p.unimplemented(fmt.Sprintf("mach_port_get_attributes flavor %d", a[2]), a)
+		return kernInvalidArg
+	default:
+		return kernInvalidArg
+	}
+	if room < uint32(len(info)) {
+		return kernFailure
+	}
+	p.write(a[3], le32(info...))
+	p.write(a[4], le32(uint32(len(info))))
+	return 0
+}
+
+// migPortSetAttributes is mach_port_set_attributes: the limit of a queue is kept, to be read
+// back. What else can be set of a port (its importance, its owner) changes nothing here.
+func migPortSetAttributes(p *Process, body []byte) migReply {
+	r := ioReader{data: body, at: 32}
+	name, flavor, count := r.u32(), r.u32(), r.u32()
+	limit := r.u32()
+	if flavor != 1 { // MACH_PORT_LIMITS_INFO
+		return migCode(0)
+	}
+	q := p.owned(name)
+	switch {
+	case r.failed || count < 1:
+		return migCode(migBadArguments)
+	case q == nil || q.set:
+		return migCode(kernInvalidRight)
+	case limit > queueLimitMax:
+		return migCode(kernInvalidValue)
+	}
+	q.limit = limit
+	return migCode(0)
 }
 
 func migPortGetContext(p *Process, body []byte) migReply {
@@ -493,16 +643,29 @@ func machPortRequestNotification(p *Process, a []uint64) int64 {
 	if r == nil {
 		return 0
 	}
+	// What is asked for is a right to send once to the port to be told, which the kernel keeps
+	// until it tells it; an earlier request's is given up for it.
+	keep := func(old *port) *port {
+		if old != nil {
+			old.onces--
+		}
+		if to != nil {
+			to.onces++
+		}
+		return to
+	}
 	switch q := r.port; {
 	case a[2] == notifyNoSenders && r.receive:
-		q.noSenders = to
+		q.noSenders = keep(q.noSenders)
 		if to != nil && q.sends == 0 && uint64(q.made) >= a[3] {
 			release(q) // there are none already
 		}
+	case a[2] == notifyPortDestroyed && r.receive:
+		q.destroyed = keep(nil) != nil
 	case a[2] == notifyDeadName && q.dead:
-		notify(to, notifyDeadName, migCode(uint32(a[1])).body)
+		notify(keep(nil), notifyDeadName, migCode(uint32(a[1])).body)
 	case a[2] == notifyDeadName:
-		r.deadName = to
+		r.deadName = keep(r.deadName)
 	}
 	return 0
 }
@@ -714,6 +877,15 @@ func post(q *port, m machMessage) {
 	}
 }
 
+// taken is a message leaving q's queue, received or lost: the next has the next number, and a
+// right to send once that it was sent with is used up.
+func (q *port) taken(m machMessage) {
+	q.seqno++
+	if m.once {
+		q.onces--
+	}
+}
+
 // ---- receiving ----
 
 // trailerSize is how much the kernel adds after a message, by how much the receiver asked to be
@@ -735,6 +907,7 @@ func (p *Process) hand(q *port, m message) int64 {
 	if uint64(len(next.data)+trailer) > m.rcvSize {
 		if m.option&machRcvLarge == 0 {
 			q.queue = q.queue[1:] // lost, as the kernel loses it
+			q.taken(next)
 			discard(next)
 			return rcvTooLarge
 		}
@@ -755,6 +928,8 @@ func (p *Process) hand(q *port, m message) int64 {
 		p.ensure(m.auxRcv, 8)
 	}
 	q.queue = q.queue[1:]
+	seqno := q.seqno
+	q.taken(next)
 	if next.moved {
 		defer release(q)
 	}
@@ -780,7 +955,7 @@ func (p *Process) hand(q *port, m message) int64 {
 	}
 	// The format (0) and size; a sequence number; the sender's user and group; its audit token;
 	// the port's context; and nothing of the access checks the last words are for.
-	tail := append(append(le32(0, uint32(trailer), 0, uid, gid), auditToken(uid, gid, next.sender)...), le64(q.context, 0)...)
+	tail := append(append(le32(0, uint32(trailer), seqno, uid, gid), auditToken(uid, gid, next.sender)...), le64(q.context, 0)...)
 	p.write(m.rcvMsg, append(data, tail[:trailer]...))
 	switch {
 	case uint64(len(next.aux)) <= m.auxRcvSize && len(next.aux) > 0:
