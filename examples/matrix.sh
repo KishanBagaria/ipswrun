@@ -7,7 +7,7 @@
 #   --guest=NAME,...     of GUESTS in examples/Makefile, instead of guest; all for every one
 #   --device=PRODUCT     an iPhone or iPad (iPhone11,2) to run the iOS guests of examples/bin/ios
 #                        against its releases, recorded in examples/expected/ios (default: macOS)
-#   --jobs=N             releases run at once (default: one per processor)
+#   --jobs=N             runs at once, of any guest and release (default: one per processor)
 #   --stream-compressed  also run macOS 13 and 14, or iOS 16 and 17, which download a 1.1–4.5 GB member each
 #   --update             write the results to examples/expected instead of diffing against it
 #   version prefix       only the builds whose version starts with one of these (e.g. 15. 27.2)
@@ -68,7 +68,7 @@ while IFS=$'\t' read -r version build _; do
 done < <("$results/bin/ipswrun" ${device_flags[@]+"${device_flags[@]}"} --releases)
 
 # run_one runs $guest against one release and leaves its verdict, and what to show with it, in
-# $out/$build.verdict. Each release has its own cache directory, so several can run at once.
+# $out/$build.verdict. Each release has its own cache directory, which several runs can share.
 run_one() {
 	local version=$1 build=$2 flags=() verdict status
 	! compressed "$version" || flags=(--stream-compressed)
@@ -106,15 +106,13 @@ run_one() {
 	} >"$out/$build.verdict"
 }
 
-failed=0
+# Every guest's runs share the $jobs slots, so a guest with fewer releases than processors leaves
+# none idle: at most $jobs at once, and when that many are running, wait for the oldest.
+pids=()
 for guest in ${guests//,/ }; do
 	# adi asks the release's adid, which on iOS is another daemon, of FairPlay's, that needs more
 	# of an iPhone than there is.
-	if [ "$platform" = ios ] && [ "$guest" = adi ]; then
-		echo "== adi: not run on iOS"
-		continue
-	fi
-	[ "$guests" = "$guest" ] || echo "== $guest"
+	[ "$platform" != ios ] || [ "$guest" != adi ] || continue
 	if [ "$(uname)" = Darwin ]; then
 		make -s -C examples PLATFORM=$platform "${bin#examples/}/$guest" || exit
 	elif [ ! -x "$bin/$guest" ]; then
@@ -139,8 +137,6 @@ for guest in ${guests//,/ }; do
 		--system /System/Library/FeatureFlags/ --system /System/Library/CoreServices/SystemVersion.plist --system /usr/share/icu/
 		--system /usr/lib/libobjc-trampolines.dylib)
 
-	# At most $jobs at once: when that many are running, wait for the oldest.
-	pids=()
 	for release in ${releases[@]+"${releases[@]}"}; do
 		if [ ${#pids[@]} -ge "$jobs" ]; then
 			wait "${pids[0]}"
@@ -149,8 +145,17 @@ for guest in ${guests//,/ }; do
 		run_one $release &
 		pids+=($!)
 	done
-	wait
+done
+wait
 
+failed=0
+for guest in ${guests//,/ }; do
+	if [ "$platform" = ios ] && [ "$guest" = adi ]; then
+		echo "== adi: not run on iOS"
+		continue
+	fi
+	[ "$guests" = "$guest" ] || echo "== $guest"
+	out=$results/$guest
 	for release in ${releases[@]+"${releases[@]}"}; do
 		cat "$out/${release#* }.verdict"
 	done
