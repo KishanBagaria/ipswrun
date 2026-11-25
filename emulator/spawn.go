@@ -229,7 +229,7 @@ func (p *Process) inherit(parent *Process, actions []byte, closeAll bool) int64 
 			}
 			syscall.CloseOnExec(h)
 			f = &fd{kind: hostFD, host: h, path: f.path}
-		case f.kind == pipeFD:
+		case f.streams():
 			f.refs++
 		case f.shared != nil:
 			f.shared.retain()
@@ -625,7 +625,7 @@ func (p *Process) fork() *Process {
 			}
 			syscall.CloseOnExec(h)
 			f = &fd{kind: hostFD, host: h, path: f.path}
-		case f.kind == pipeFD:
+		case f.streams():
 			f.refs++
 		case f.shared != nil:
 			f.shared.retain()

@@ -46,12 +46,13 @@ const (
 type fdKind uint8
 
 const (
-	hostFD  fdKind = iota // a real descriptor: a file under the home or a mount, the guest exe, or a device
-	stdioFD               // guest stdin (0), stdout (1) or stderr (2), even when duplicated
-	dirFD                 // a directory that exists only as a name, or on the system volume
-	dataFD                // read-only bytes, or shm_open shared memory
-	cacheFD               // a file of the build read by range: of the dyld shared cache or the system volume
-	pipeFD                // one end of a pipe (see pipes.go)
+	hostFD   fdKind = iota // a real descriptor: a file under the home or a mount, the guest exe, or a device
+	stdioFD                // guest stdin (0), stdout (1) or stderr (2), even when duplicated
+	dirFD                  // a directory that exists only as a name, or on the system volume
+	dataFD                 // read-only bytes, or shm_open shared memory
+	cacheFD                // a file of the build read by range: of the dyld shared cache or the system volume
+	pipeFD                 // one end of a pipe (see pipes.go)
+	socketFD               // one of a pair of connected sockets (see sockets.go)
 )
 
 type fd struct {
@@ -68,6 +69,7 @@ type fd struct {
 	// Of an end of a pipe: the pipe, the flags fcntl reads of it, the writing end's among them,
 	// and whether a write with nobody to read it is to raise no signal.
 	pipe      *pipe
+	sock      *socket // of a socket: the socket, with the same flags
 	flags     uint32
 	noSigpipe bool
 	kq        *userKqueue // of a kqueue: what it watches (see kqueue.go)
@@ -414,6 +416,10 @@ func sysFstat64(p *Process, a []uint64) int64 {
 		p.write(a[1], p.pipeStat(f))
 		return 0
 	}
+	if f.kind == socketFD {
+		p.write(a[1], p.socketStat(f))
+		return 0
+	}
 	info, errno := p.describeFD(f)
 	return p.putStat(a[1], info, errno)
 }
@@ -617,6 +623,9 @@ func (p *Process) closeFD(n uint64) int64 {
 	if f.kind == pipeFD {
 		p.pipeClosed(f)
 	}
+	if f.kind == socketFD {
+		p.socketClosed(f)
+	}
 	return 0
 }
 
@@ -633,7 +642,9 @@ func sysRead(p *Process, a []uint64) int64 {
 	var data []byte
 	switch {
 	case f.kind == pipeFD:
-		return p.pipeRead(f, a[1], a[2])
+		return p.pipeRead(f, []stretch{{a[1], a[2]}})
+	case f.kind == socketFD:
+		return p.socketReceive(f, []stretch{{a[1], a[2]}}, 0)
 	case f.kind == hostFD || (f.kind == stdioFD && f.host == 0): // the host keeps the position
 		data = hostBuffer(a[2])
 		n, err := syscall.Read(f.host, data)
@@ -659,7 +670,7 @@ func sysPread(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	if f.kind == stdioFD || f.kind == pipeFD {
+	if f.kind == stdioFD || f.streams() {
 		return -eSPIPE
 	}
 	data, errno := p.pread(f, a[3], a[2])
@@ -681,6 +692,9 @@ func sysWrite(p *Process, a []uint64) int64 {
 	}
 	if f.kind == pipeFD {
 		return p.pipeWrite(f, p.read(a[1], a[2]))
+	}
+	if f.kind == socketFD {
+		return p.socketSend(f, p.read(a[1], a[2]), 0, true)
 	}
 	if f.kind == stdioFD {
 		if f.host != 1 && f.host != 2 {
@@ -722,15 +736,50 @@ func sysWrite(p *Process, a []uint64) int64 {
 	return int64(n)
 }
 
+// sysReadv reads into the pieces it is given one after another: of a pipe or a socket what one
+// read gives, and of anything else until a piece is not filled.
+func sysReadv(p *Process, a []uint64) int64 {
+	if a[2] > 1024 {
+		return -eINVAL
+	}
+	var into []stretch
+	for i := uint64(0); i < a[2]; i++ {
+		into = append(into, stretch{p.u64(a[1] + 16*i), p.u64(a[1] + 16*i + 8)})
+	}
+	switch f := p.fds[a[0]]; {
+	case f != nil && f.kind == pipeFD:
+		return p.pipeRead(f, into)
+	case f != nil && f.kind == socketFD:
+		return p.socketReceive(f, into, 0)
+	}
+	var got int64
+	for _, s := range into {
+		n := sysRead(p, []uint64{a[0], s.addr, s.size})
+		switch {
+		case n < 0 && got == 0:
+			return n
+		case n < 0:
+			return got
+		}
+		if got += n; uint64(n) < s.size {
+			break
+		}
+	}
+	return got
+}
+
 // sysWritev writes the pieces it is given one after another, and stops at one that is cut short.
 func sysWritev(p *Process, a []uint64) int64 {
 	if a[2] > 1024 {
 		return -eINVAL
 	}
-	if f := p.fds[a[0]]; f != nil && f.kind == pipeFD { // one write, which may wait
+	if f := p.fds[a[0]]; f != nil && f.streams() { // one write, which may wait
 		var all []byte
 		for i := uint64(0); i < a[2]; i++ {
 			all = append(all, p.read(p.u64(a[1]+16*i), p.u64(a[1]+16*i+8))...)
+		}
+		if f.kind == socketFD {
+			return p.socketSend(f, all, 0, true)
 		}
 		return p.pipeWrite(f, all)
 	}
@@ -753,7 +802,7 @@ func sysWritev(p *Process, a []uint64) int64 {
 
 func sysPwrite(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
-	if f != nil && f.kind == pipeFD {
+	if f != nil && f.streams() {
 		return -eSPIPE
 	}
 	if f == nil || f.kind != hostFD {
@@ -1190,7 +1239,7 @@ func sysFcntl(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	if f.kind == pipeFD {
+	if f.streams() {
 		if r, ok := p.pipeFcntl(f, a[1], a[2]); ok {
 			return r
 		}

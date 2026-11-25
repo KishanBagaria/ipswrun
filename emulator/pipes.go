@@ -47,11 +47,38 @@ type pipe struct {
 // pipeOp is what a thread that waits on a pipe is in the middle of.
 type pipeOp struct {
 	f    *fd
-	addr uint64 // of a read: where it goes, and
-	room uint64 // how much there is room for
-	data []byte // of a write: what is still to go in, and
-	done int64  // how much has
+	into []stretch // of a read: where it goes, and
+	room uint64    // how much there is room for in all
+	data []byte    // of a write: what is still to go in, and
+	done int64     // how much has
+	// Of a socket's (see sockets.go): that it sends, and how it was asked to.
+	sending bool
+	flags   uint64
 }
+
+// stretch is a piece of the guest's memory.
+type stretch struct{ addr, size uint64 }
+
+// put writes what was read to where a read wants it, after what it has been given already.
+func (p *Process) put(op *pipeOp, data []byte) {
+	skip := uint64(op.done)
+	for _, s := range op.into {
+		if skip >= s.size {
+			skip -= s.size
+			continue
+		}
+		n := min(s.size-skip, uint64(len(data)))
+		p.write(s.addr+skip, data[:n])
+		data, skip = data[n:], 0
+		if len(data) == 0 {
+			return
+		}
+	}
+}
+
+// streams says whether a descriptor is an end of a pipe or a socket: what is read and written
+// in order, and waited for.
+func (f *fd) streams() bool { return f.kind == pipeFD || f.kind == socketFD }
 
 // selecting is a select that waits: the descriptors it asked about, and where to say which are
 // ready.
@@ -93,14 +120,17 @@ func (p *Process) pipeClosed(f *fd) {
 // pipeRead reads from a pipe: what is there, up to what was asked for. With nothing there it is
 // the end if no writer is left, and otherwise a wait, or for a descriptor that does not wait an
 // error.
-func (p *Process) pipeRead(f *fd, addr, room uint64) int64 {
+func (p *Process) pipeRead(f *fd, into []stretch) int64 {
 	if f.writing() {
 		return -eBADF
 	}
-	if room == 0 {
+	op := &pipeOp{f: f, into: into}
+	for _, s := range into {
+		op.room += s.size
+	}
+	if op.room == 0 {
 		return 0
 	}
-	op := &pipeOp{f: f, addr: addr, room: room}
 	if r, ok := p.tryRead(op); ok {
 		return r
 	}
@@ -117,7 +147,7 @@ func (p *Process) tryRead(op *pipeOp) (int64, bool) {
 	n := min(uint64(len(q.data)), op.room)
 	switch {
 	case n > 0:
-		p.write(op.addr, q.data[:n])
+		p.put(op, q.data[:n])
 		q.data = q.data[n:]
 		q.read = p.m.clock.now()
 		p.pipeChanged(q)
@@ -154,7 +184,7 @@ func (p *Process) pipeWrite(f *fd, data []byte) int64 {
 func (p *Process) tryWrite(op *pipeOp) (int64, bool) {
 	q := op.f.pipe
 	if q.readers == 0 {
-		return p.brokenPipe(op.f), true
+		return p.brokenPipe(op.f, false), true
 	}
 	if len(op.data) == 0 {
 		return op.done, true
@@ -178,9 +208,9 @@ func (p *Process) tryWrite(op *pipeOp) (int64, bool) {
 // descriptor asked for none or the process ignores it. The signal ends a process that has not
 // said what to do with it. One that has a handler for it, which nothing here would run, is not
 // implemented.
-func (p *Process) brokenPipe(f *fd) int64 {
+func (p *Process) brokenPipe(f *fd, quiet bool) int64 {
 	switch handler := p.sigactions[sigPipe].handler; {
-	case f.noSigpipe || handler == sigIgnore:
+	case f.noSigpipe || quiet || handler == sigIgnore:
 	default:
 		p.sendSignal(pendingSignal{sig: sigPipe, status: sigPipe, pid: p.pid, uid: p.uid, to: p.current})
 	}
@@ -191,17 +221,27 @@ func (p *Process) brokenPipe(f *fd) int64 {
 // and the threads in select their answer: of every process, as a pipe's ends may be in two.
 func (p *Process) pipeChanged(q *pipe) {
 	q.changes++
-	for _, owner := range p.m.procs {
+	p.m.streamChanged(q.id)
+}
+
+// streamChanged does that for the pipe or the pair of sockets with a number.
+func (m *Machine) streamChanged(id uint64) {
+	for _, owner := range m.procs {
 		if owner.exited {
 			continue
 		}
-		for _, t := range owner.waiters(waitPipe, q.id) {
+		for _, t := range owner.waiters(waitPipe, id) {
 			op := t.pipeOp
 			if t.state != waiting || op == nil { // served meanwhile, by what an earlier one's turn set off
 				continue
 			}
 			try := owner.tryRead
-			if op.f.writing() {
+			switch {
+			case op.f.kind == socketFD && op.sending:
+				try = owner.trySend
+			case op.f.kind == socketFD:
+				try = owner.tryReceive
+			case op.f.writing():
 				try = owner.tryWrite
 			}
 			if r, ok := try(op); ok {
@@ -235,6 +275,9 @@ func (p *Process) pipeChanged(q *pipe) {
 // select has it. Each end is asked about itself: the writing end has nothing to read until its
 // reader has gone, and the reading end can always be written, though a write to it is refused.
 func (f *fd) pipeReady(writing bool) bool {
+	if f.kind == socketFD {
+		return f.sock.ready(writing)
+	}
 	q := f.pipe
 	switch {
 	case !writing && !f.writing():
@@ -301,13 +344,15 @@ func sysIoctl(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	if f.kind != pipeFD {
+	if !f.streams() {
 		return -eNOTTY
 	}
 	switch uint32(a[1]) {
 	case ioctlAvailable: // of its own end: nothing waits to be read from the end that is written
 		var n uint32
-		if !f.writing() {
+		if f.kind == socketFD {
+			n = uint32(len(f.sock.data))
+		} else if !f.writing() {
 			n = uint32(len(f.pipe.data))
 		}
 		p.write(a[2], le32(n))
@@ -335,7 +380,7 @@ func (p *Process) selectPipes(a []uint64, nanoseconds uint64) (int64, bool) {
 		}
 		s.asked[i] = p.read(set, size)
 		for n := range a[0] {
-			if f := p.fds[n]; s.asked[i][n/8]>>(n%8)&1 != 0 && f != nil && (f.kind == pipeFD || f.isFile()) {
+			if f := p.fds[n]; s.asked[i][n/8]>>(n%8)&1 != 0 && f != nil && (f.streams() || f.isFile()) {
 				found = true
 			}
 		}
@@ -371,7 +416,7 @@ func (p *Process) selected(s *selecting) int64 {
 		out[i] = make([]byte, len(asked))
 		for n := range uint64(len(asked) * 8) {
 			f := p.fds[n]
-			if asked[n/8]>>(n%8)&1 == 0 || f == nil || i == 2 || !(f.kind == pipeFD && f.pipeReady(i == 1) || f.isFile()) {
+			if asked[n/8]>>(n%8)&1 == 0 || f == nil || i == 2 || !(f.streams() && f.pipeReady(i == 1) || f.isFile()) {
 				continue
 			}
 			out[i][n/8] |= 1 << (n % 8)
@@ -409,7 +454,7 @@ func (p *Process) changePipe(q *kqueue, c kevent) bool {
 	case ok && c.flags&evAdd == 0 && c.flags&evDisable != 0:
 		w.flags |= evDisable
 		q.pipes[key] = w
-	case f == nil || f.kind != pipeFD:
+	case f == nil || !f.streams():
 		return ok
 	case c.flags&evAdd != 0:
 		q.pipes[key] = c
@@ -426,38 +471,27 @@ func (p *Process) watchedPipes(q *kqueue) {
 	for _, key := range keys {
 		w := q.pipes[key]
 		f := p.fds[key.ident]
-		if f == nil || f.kind != pipeFD { // closed since: what watched it went with it
+		if f == nil || !f.streams() { // closed since: what watched it went with it
 			delete(q.pipes, key)
 			continue
 		}
 		if w.flags&evDisable != 0 || slices.ContainsFunc(q.ready, func(e kevent) bool { return e.filter == key.filter && e.ident == key.ident && e.udata == key.udata }) {
 			continue
 		}
-		pipe, least := f.pipe, int64(1)
 		event := w
 		event.flags &^= evAdd | evEnable | evVanished // what was asked for, not what happened
 		event.fflags = 0
-		switch {
-		case key.filter == filterRead && !f.writing():
-			if w.fflags&noteLowWater != 0 {
-				least = max(w.data, 1)
-			}
-			if event.data = int64(len(pipe.data)); pipe.writers == 0 {
-				event.flags |= evEOF
-			} else if event.data < least {
-				continue
-			}
-		case key.filter == filterWrite && f.writing():
-			if event.data = int64(pipe.size - len(pipe.data)); pipe.readers == 0 {
-				event.flags |= evEOF
-			} else if event.data < pipeBuf {
-				continue
-			}
-		default:
+		data, ended, least, applies := f.filtered(key.filter, w)
+		if !applies {
 			// The end that is not read, or not written: what a Mac's kernel says of it to a
 			// kqueue was not measured.
 			p.unimplemented("a kqueue watching the wrong end of a pipe", nil)
 			delete(q.pipes, key)
+			continue
+		}
+		if event.data = data; ended {
+			event.flags |= evEOF
+		} else if data < least {
 			continue
 		}
 		q.ready = append(q.ready, event)
@@ -510,6 +544,37 @@ func (f *fd) isDirectory() bool {
 	return f.kind == dirFD
 }
 
+// filtered is what a kqueue's filter for reading or for writing has to say of an end of a pipe
+// or of a socket: how much there is to read, or room to write, whether the other end has gone,
+// and the least there has to be for that to be an event while it has not. Not applies is the
+// end of a pipe that is not the one read, or written.
+func (f *fd) filtered(filter int16, asked kevent) (data int64, ended bool, least int64, applies bool) {
+	least = 1
+	if filter == filterRead && asked.fflags&noteLowWater != 0 {
+		least = max(asked.data, 1)
+	}
+	switch {
+	case f.kind == socketFD && filter == filterRead:
+		return int64(len(f.sock.data)), f.sock.cantReceive, least, true
+	case f.kind == socketFD:
+		return int64(f.sock.space()), f.sock.cantSend, socketLeast, true
+	case filter == filterRead && !f.writing():
+		return int64(len(f.pipe.data)), f.pipe.writers == 0, least, true
+	case filter == filterWrite && f.writing():
+		return int64(f.pipe.size - len(f.pipe.data)), f.pipe.readers == 0, pipeBuf, true
+	}
+	return 0, false, 0, false
+}
+
+// changes is how often something has happened to the pipe or the pair of sockets a descriptor
+// is of.
+func (f *fd) changes() uint64 {
+	if f.kind == socketFD {
+		return f.sock.pair.changes
+	}
+	return f.pipe.changes
+}
+
 // polled is what poll answers of one descriptor, for the events it was asked about; false if
 // nothing here says when the descriptor can be read or written (a terminal, a kqueue).
 func (p *Process) polled(n int32, events uint16) (uint16, bool) {
@@ -521,6 +586,8 @@ func (p *Process) polled(n int32, events uint16) (uint16, bool) {
 		return pollInvalid, true
 	case f.isFile():
 		return events & (pollReading | pollWriting), true
+	case f.kind == socketFD:
+		return f.sock.polled(events), true
 	case f.kind != pipeFD:
 		return 0, false
 	}

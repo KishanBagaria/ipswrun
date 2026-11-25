@@ -1,0 +1,410 @@
+package emulator
+
+import (
+	"syscall"
+	"time"
+)
+
+// A pair of connected sockets (socketpair) is two descriptors with bytes in the kernel between
+// them each way: what is sent into one waits to be received from the other. A receiver with
+// nothing to receive waits for a sender, and a sender with no room for a receiver, as with a
+// pipe, and either can say that it will send no more. What a Mac's kernel does was measured with
+// examples/socketpair.c, for a pair of stream sockets of the local domain. There is no other
+// socket here: no datagrams, no names to connect to, no network.
+
+const (
+	socketSize  = 8192 // what waits to be received at most (SO_SNDBUF and SO_RCVBUF)
+	socketLeast = 2048 // the room there has to be before part of what is sent is taken (SO_SNDLOWAT)
+
+	domainLocal    = 1 // AF_UNIX
+	domainInternet = 2 // AF_INET
+	socketStream   = 1 // SOCK_STREAM
+
+	// How a send or a receive is asked for.
+	messagePeek     = 0x2     // MSG_PEEK: what is received stays to be received
+	messageWaitAll  = 0x40    // MSG_WAITALL: not less than was asked for, while more can come
+	messageDontWait = 0x80    // MSG_DONTWAIT
+	messageNoSignal = 0x80000 // MSG_NOSIGNAL
+
+	levelSocket = 0xFFFF // SOL_SOCKET
+
+	eNOTSOCK   = 38
+	eNOTCONN   = 57
+	eOPNOTSUPP = 102
+)
+
+// socketPair is what the two sockets of a pair have in common.
+type socketPair struct {
+	id      uint64 // among the pipes' (see Machine.pipes): what a thread that waits on either waits on
+	changes uint64 // how often something has happened to either
+}
+
+type socket struct {
+	pair *socketPair
+	peer *socket
+	data []byte // what was sent to it and waits to be received
+	// What it can no longer do: send, since it said so or the other has gone, and receive
+	// more than is there already, since the other said so or has gone.
+	cantSend, cantReceive bool
+	second                bool // of the two, the one made second
+}
+
+// space is how much can be sent from a socket before the other has received any.
+func (s *socket) space() int { return socketSize - len(s.peer.data) }
+
+// sysSocketpair is socketpair(domain, type, protocol, where the two descriptors go).
+func sysSocketpair(p *Process, a []uint64) int64 {
+	switch {
+	case a[0] == domainInternet:
+		return -eOPNOTSUPP
+	case a[0] != domainLocal || a[1] != socketStream || a[2] != 0:
+		p.unimplemented("socketpair of anything but stream sockets of the local domain", a)
+		return -eNOSYS
+	case p.allocFD(p.allocFD(0)+1) >= p.fdLimit():
+		return -eMFILE
+	}
+	p.m.pipes++
+	pair := &socketPair{id: p.m.pipes}
+	one, two := &socket{pair: pair}, &socket{pair: pair, second: true}
+	one.peer, two.peer = two, one
+	const readWrite = 2 // O_RDWR
+	first := p.newFD(&fd{kind: socketFD, sock: one, flags: readWrite, refs: 1})
+	second := p.newFD(&fd{kind: socketFD, sock: two, flags: readWrite, refs: 1})
+	p.write(a[3], le32(uint32(first), uint32(second)))
+	return 0
+}
+
+func (p *Process) socketChanged(s *socket) {
+	s.pair.changes++
+	p.m.streamChanged(s.pair.id)
+}
+
+// socketClosed is the last descriptor of a socket closing: what waited in it to be received is
+// gone, and the other can neither send nor receive more than it has.
+func (p *Process) socketClosed(f *fd) {
+	if f.refs--; f.refs > 0 {
+		return // a duplicate is still open, or another process's
+	}
+	s := f.sock
+	s.data = nil
+	s.cantSend, s.cantReceive = true, true
+	s.peer.cantSend, s.peer.cantReceive = true, true
+	p.socketChanged(s)
+}
+
+// socketReceive reads from a socket: what is there, up to what was asked for. With nothing there it is
+// the end if no more can come, and otherwise a wait, or for one that does not wait an error.
+func (p *Process) socketReceive(f *fd, into []stretch, flags uint64) int64 {
+	waits := f.flags&flagNonblock == 0 && flags&messageDontWait == 0
+	switch {
+	case flags&^(messagePeek|messageWaitAll|messageDontWait) != 0,
+		flags&messageWaitAll != 0 && (flags&messagePeek != 0 || !waits): // the second waits, on a Mac, and for how long was not measured
+		p.unimplemented("a receive from a socket asked for in a way that was not measured", []uint64{flags})
+		return -eNOSYS
+	}
+	op := &pipeOp{f: f, into: into, flags: flags}
+	for _, s := range into {
+		op.room += s.size
+	}
+	if op.room == 0 {
+		return 0
+	}
+	if r, ok := p.tryReceive(op); ok {
+		return r
+	}
+	if !waits {
+		return -eAGAIN
+	}
+	p.current.pipeOp = op
+	p.wait(waitPipe, f.sock.pair.id, time.Time{}, result{})
+	return 0
+}
+
+func (p *Process) tryReceive(op *pipeOp) (int64, bool) {
+	s := op.f.sock
+	if n := min(uint64(len(s.data)), op.room-uint64(op.done)); n > 0 {
+		p.put(op, s.data[:n])
+		if op.flags&messagePeek != 0 {
+			return int64(n), true
+		}
+		s.data = s.data[n:]
+		op.done += int64(n)
+		p.socketChanged(s)
+	}
+	switch {
+	case uint64(op.done) == op.room, op.done > 0 && op.flags&messageWaitAll == 0, s.cantReceive:
+		return op.done, true
+	}
+	return 0, false
+}
+
+// socketSend writes to a socket: all of it, waiting for room as often as it takes, or for one that
+// does not wait as much as there is room for. From one that can send no more it is an error, and
+// a signal. Written says that it came by write, which is remembered of the descriptor.
+func (p *Process) socketSend(f *fd, data []byte, flags uint64, written bool) int64 {
+	switch {
+	case flags&^(messageDontWait|messageNoSignal) != 0:
+		p.unimplemented("a send to a socket asked for in a way that was not measured", []uint64{flags})
+		return -eNOSYS
+	case len(data) == 0:
+		p.unimplemented("a send of nothing to a socket", nil)
+		return -eNOSYS
+	}
+	op := &pipeOp{f: f, data: data, sending: true, flags: flags}
+	r, ok := p.trySend(op)
+	if written && op.done > 0 {
+		f.flags |= flagWritten
+	}
+	if ok {
+		return r
+	}
+	if f.flags&flagNonblock != 0 || flags&messageDontWait != 0 {
+		if op.done > 0 {
+			return op.done
+		}
+		return -eAGAIN
+	}
+	p.current.pipeOp = op
+	p.wait(waitPipe, f.sock.pair.id, time.Time{}, result{})
+	return 0
+}
+
+// trySend puts in what there is room for, and says whether that is the end of the send. A
+// part of what is sent goes in only where there is room for the least a socket takes.
+func (p *Process) trySend(op *pipeOp) (int64, bool) {
+	s := op.f.sock
+	if s.cantSend {
+		return p.brokenPipe(op.f, op.flags&messageNoSignal != 0), true
+	}
+	for len(op.data) > 0 {
+		space := s.space()
+		if space < len(op.data) && space < socketLeast {
+			return 0, false
+		}
+		n := min(space, len(op.data))
+		s.peer.data = append(s.peer.data, op.data[:n]...)
+		op.data, op.done = op.data[n:], op.done+int64(n)
+		p.socketChanged(s)
+		if s.cantSend { // whoever that woke has closed the other
+			return p.brokenPipe(op.f, op.flags&messageNoSignal != 0), true
+		}
+	}
+	return op.done, true
+}
+
+// ready says whether a socket can be received from, or sent to, without waiting, as select has
+// it: also when it never will be again, which a receive or a send says at once.
+func (s *socket) ready(sending bool) bool {
+	if sending {
+		return s.cantSend || s.space() >= socketLeast
+	}
+	return len(s.data) > 0 || s.cantReceive
+}
+
+// polled is what poll answers of a socket for the events it was asked about. A Mac's kernel
+// asks a kqueue's two filters, the one for reading first: a filter that says the other end has
+// gone makes it a hangup, after which everything asked about reading is answered and nothing
+// about writing.
+func (s *socket) polled(events uint16) uint16 {
+	var answer uint16
+	if events&pollReading != 0 && s.ready(false) {
+		if answer |= events & (pollIn | pollRdNorm); s.cantReceive {
+			answer |= pollHangup | events&pollReading
+		}
+	}
+	if events&pollWriting != 0 && s.ready(true) {
+		if s.cantSend {
+			answer |= pollHangup
+		}
+		if answer&pollHangup == 0 {
+			answer |= events & pollWriting
+		}
+	}
+	return answer
+}
+
+// socketStat is the struct stat64 of a socket: it can be read while more can come or something
+// is there, and written while it can send.
+func (p *Process) socketStat(f *fd) []byte {
+	s := f.sock
+	mode := uint16(syscall.S_IFSOCK)
+	if !s.cantReceive || len(s.data) > 0 {
+		mode |= 0o444
+	}
+	if !s.cantSend {
+		mode |= 0o222
+	}
+	b := make([]byte, 144)
+	le.PutUint32(b, 0xFFFFFFFF) // of no device
+	le.PutUint16(b[4:], mode)
+	// Its number is one the kernel makes up for each socket.
+	le.PutUint64(b[8:], 0x9E3779B97F4A7C15*(2*s.pair.id+uint64(truth(s.second))))
+	le.PutUint32(b[16:], p.uid)
+	le.PutUint32(b[20:], p.gid)
+	le.PutUint64(b[96:], uint64(len(s.data)))
+	le.PutUint32(b[112:], socketSize)
+	return b
+}
+
+// socketOf is the socket a descriptor is of, or the error a call for sockets answers of one
+// that is none.
+func (p *Process) socketOf(n uint64) (*fd, int64) {
+	switch f := p.fds[n]; {
+	case f == nil:
+		return nil, -eBADF
+	case f.kind != socketFD:
+		return nil, -eNOTSOCK
+	default:
+		return f, 0
+	}
+}
+
+// sysSendto is sendto(socket, data, size, how, to whom, the size of that): to the other of the
+// pair, as these are connected.
+func sysSendto(p *Process, a []uint64) int64 {
+	f, errno := p.socketOf(a[0])
+	if errno != 0 {
+		return errno
+	}
+	if a[4] != 0 {
+		p.unimplemented("sendto with an address", a)
+		return -eNOSYS
+	}
+	return p.socketSend(f, p.read(a[1], a[2]), a[3], false)
+}
+
+// sysRecvfrom is recvfrom(socket, where, room, how, where to say from whom, and how long that is).
+func sysRecvfrom(p *Process, a []uint64) int64 {
+	f, errno := p.socketOf(a[0])
+	if errno != 0 {
+		return errno
+	}
+	if a[4] != 0 {
+		p.unimplemented("recvfrom asking whom it is from", a)
+		return -eNOSYS
+	}
+	return p.socketReceive(f, []stretch{{a[1], a[2]}}, a[3])
+}
+
+// sysShutdown is shutdown(socket, which way: receiving, sending or both). To send no more is
+// what was measured: the other then receives what was sent and the end. A socket that already
+// cannot is not connected, to a Mac's kernel.
+func sysShutdown(p *Process, a []uint64) int64 {
+	f, errno := p.socketOf(a[0])
+	if errno != 0 {
+		return errno
+	}
+	s := f.sock
+	const sending = 1 // SHUT_WR
+	switch {
+	case a[1] > 2:
+		return -eINVAL
+	case a[1] == sending && s.cantSend, a[1] != sending && s.cantReceive:
+		return -eNOTCONN
+	case a[1] != sending:
+		// What is sent to a socket that receives no more is taken and lost, on a Mac, and how
+		// much of it before a sender waits for good was not measured.
+		p.unimplemented("shutdown of a socket's receiving", a)
+		return -eNOSYS
+	}
+	s.cantSend, s.peer.cantReceive = true, true
+	p.socketChanged(s)
+	return 0
+}
+
+// What getsockopt and setsockopt are asked about a socket.
+const (
+	optionSendSize     = 0x1001 // SO_SNDBUF
+	optionReceiveSize  = 0x1002 // SO_RCVBUF
+	optionSendLeast    = 0x1003 // SO_SNDLOWAT
+	optionReceiveLeast = 0x1004 // SO_RCVLOWAT
+	optionError        = 0x1007 // SO_ERROR
+	optionType         = 0x1008 // SO_TYPE
+	optionToRead       = 0x1020 // SO_NREAD
+	optionNoSignal     = 0x1022 // SO_NOSIGPIPE
+	optionToSend       = 0x1024 // SO_NWRITE
+)
+
+// sysGetsockopt is getsockopt(socket, level, option, where its value goes, how much room there
+// is and then how much was used).
+func sysGetsockopt(p *Process, a []uint64) int64 {
+	f, errno := p.socketOf(a[0])
+	if errno != 0 {
+		return errno
+	}
+	var value uint32
+	switch {
+	case a[1] != levelSocket || p.u32(a[4]) != 4:
+	case a[2] == optionSendSize, a[2] == optionReceiveSize:
+		value = socketSize
+	case a[2] == optionSendLeast:
+		value = socketLeast
+	case a[2] == optionReceiveLeast:
+		value = 1
+	case a[2] == optionError: // nothing here goes wrong with a pair
+	case a[2] == optionType:
+		value = socketStream
+	case a[2] == optionToRead:
+		value = uint32(len(f.sock.data))
+	case a[2] == optionToSend: // what was sent waits in the other, not in this one
+	case a[2] == optionNoSignal:
+		value = uint32(truth(f.noSigpipe))
+	default:
+		a[1] = 0
+	}
+	if a[1] != levelSocket || p.u32(a[4]) != 4 {
+		p.unimplemented("getsockopt of an option that was not measured", a)
+		return -eNOSYS
+	}
+	p.write(a[3], le32(value))
+	return 0
+}
+
+// sysSetsockopt is setsockopt(socket, level, option, its value, the size of that). A socket
+// that can neither send nor receive takes none.
+func sysSetsockopt(p *Process, a []uint64) int64 {
+	f, errno := p.socketOf(a[0])
+	switch {
+	case errno != 0:
+		return errno
+	case f.sock.cantSend && f.sock.cantReceive:
+		return -eINVAL
+	case a[1] != levelSocket || a[2] != optionNoSignal || a[4] != 4:
+		p.unimplemented("setsockopt of an option that was not measured", a)
+		return -eNOSYS
+	}
+	f.noSigpipe = p.u32(a[3]) != 0
+	return 0
+}
+
+// socketName answers getsockname and getpeername: a socket of a pair has no name, and its
+// address is the 16 bytes that say so.
+func (p *Process) socketName(a []uint64) int64 {
+	if p.u32(a[2]) < 16 {
+		p.unimplemented("the name of a socket, with room for less than it takes", a)
+		return -eNOSYS
+	}
+	p.write(a[1], append([]byte{16, domainLocal}, make([]byte, 14)...))
+	p.write(a[2], le32(16))
+	return 0
+}
+
+func sysGetsockname(p *Process, a []uint64) int64 {
+	if _, errno := p.socketOf(a[0]); errno != 0 {
+		return errno
+	}
+	return p.socketName(a)
+}
+
+// sysGetpeername is the other's name, which a socket that can neither send nor receive has
+// none of.
+func sysGetpeername(p *Process, a []uint64) int64 {
+	f, errno := p.socketOf(a[0])
+	switch {
+	case errno != 0:
+		return errno
+	case f.sock.cantSend && f.sock.cantReceive:
+		return -eINVAL
+	}
+	return p.socketName(a)
+}

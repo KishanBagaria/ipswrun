@@ -208,9 +208,13 @@ func (p *Process) newNote(n *knote) int64 {
 		}
 		// Of a descriptor that is no pipe's, or the end of one that is not the one read, or
 		// written, nothing here says when it can be.
-		n.never = f.kind != pipeFD || f.writing() != (c.filter == filterWrite)
+		n.never = !f.streams()
 		if !n.never {
-			n.seen = f.pipe.changes
+			if _, _, _, applies := f.filtered(c.filter, c); !applies {
+				n.never = true
+			} else {
+				n.seen = f.changes()
+			}
 		}
 	case filterProc:
 		if p.m.process(uint32(c.ident)) == nil {
@@ -275,27 +279,18 @@ func (p *Process) pollNotes(q *userKqueue, room int) []kevent {
 			}
 		case filterRead, filterWrite:
 			f := p.fds[n.event.ident]
-			if f == nil || f.kind != pipeFD { // closed since: what watched it went with it
+			if f == nil || !f.streams() { // closed since: what watched it went with it
 				gone = true
 				break
 			}
-			pipe, ended := f.pipe, false
-			if n.event.filter == filterRead {
-				event.data, ended = int64(len(pipe.data)), pipe.writers == 0
-				least := int64(1)
-				if n.event.fflags&noteLowWater != 0 {
-					least = max(n.event.data, 1)
-				}
-				if !ended && event.data < least {
-					continue
-				}
-			} else if event.data, ended = int64(pipe.size-len(pipe.data)), pipe.readers == 0; !ended && event.data < pipeBuf {
+			data, ended, least, _ := f.filtered(n.event.filter, n.event)
+			if event.data = data; !ended && data < least {
 				continue
 			}
-			if edge && n.seen == pipe.changes {
+			if edge && n.seen == f.changes() {
 				continue // nothing new
 			}
-			n.seen = pipe.changes
+			n.seen = f.changes()
 			if ended {
 				event.flags |= evEOF
 			}
