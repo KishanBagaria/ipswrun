@@ -20,6 +20,15 @@ import (
 // CacheName is the file name of the arm64e dyld shared cache; subcaches add a suffix.
 const CacheName = "dyld_shared_cache_arm64e"
 
+// cacheLocations are where a restore image may keep its dyld shared cache, in the order they are
+// looked in: macOS 13 and later and iOS 16 and later have it in the SystemOS cryptex, earlier
+// releases on the system volume. macOS keeps it in /System/Library/dyld, iOS in the directory
+// macOS used before 11.
+var cacheLocations = []struct{ volume, dir string }{
+	{rangefs.SystemOS, "/System/Library/dyld"}, {rangefs.SystemOS, "/System/Library/Caches/com.apple.dyld"},
+	{rangefs.FileSystem, "/System/Library/dyld"}, {rangefs.FileSystem, "/System/Library/Caches/com.apple.dyld"},
+}
+
 // BaseEnv is the environment every guest gets: no preference daemon, no allocator features that
 // need address space or kernel support the emulator lacks, and the emulated home. A run that
 // has what one of these stands in for takes it out again (see Run.Env).
@@ -108,20 +117,24 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		notes = os.Stderr
 	}
 	var main *rangefs.File
-	var volume, guestDir string
+	var volume, dir, guestDir string
 	var skipped []error
-	for _, candidate := range [][2]string{{rangefs.SystemOS, cryptex + "/System/Library/dyld"}, {rangefs.FileSystem, "/System/Library/dyld"}} {
-		f, err := image.Open(candidate[0], "/System/Library/dyld/"+CacheName)
+	for _, candidate := range cacheLocations {
+		f, err := image.Open(candidate.volume, candidate.dir+"/"+CacheName)
 		if err != nil {
-			// A release from before the cryptex has nothing to say about lacking one.
-			if candidate[0] != rangefs.SystemOS || !errors.Is(err, rangefs.ErrNoSystemOS) {
+			// A release from before the cryptex has nothing to say about lacking one, and one
+			// volume's failure is said once, not for each directory looked in there.
+			if !errors.Is(err, rangefs.ErrNoSystemOS) && !slices.ContainsFunc(skipped, func(e error) bool { return e.Error() == err.Error() }) {
 				fmt.Fprintf(notes, "note: %v\n", err)
 			}
 			skipped = append(skipped, err)
 			continue
 		}
 		if f != nil {
-			main, volume, guestDir = f, candidate[0], candidate[1]
+			main, volume, dir, guestDir = f, candidate.volume, candidate.dir, candidate.dir
+			if volume == rangefs.SystemOS {
+				guestDir = cryptex + dir
+			}
 			break
 		}
 	}
@@ -133,9 +146,9 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		if suffix == "" {
 			return main, nil
 		}
-		f, err := image.Open(volume, "/System/Library/dyld/"+CacheName+suffix)
+		f, err := image.Open(volume, dir+"/"+CacheName+suffix)
 		if err == nil && f == nil {
-			err = fmt.Errorf("%s:/System/Library/dyld/%s%s is missing", volume, CacheName, suffix)
+			err = fmt.Errorf("%s:%s/%s%s is missing", volume, dir, CacheName, suffix)
 		}
 		if err != nil {
 			return nil, err
@@ -218,7 +231,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 
 	build := image.Build()
 	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, System: system, Trace: run.Trace, Survey: run.Survey,
-		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device()}})
+		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device(), "board": image.Board()}})
 	if err != nil {
 		return nil, cache, err
 	}

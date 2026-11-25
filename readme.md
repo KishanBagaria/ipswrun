@@ -2,7 +2,7 @@
 
 ipswrun runs an arm64 Mach-O binary against the system libraries of any macOS release since 11, fetching only the parts it needs from Apple's restore image (IPSW) for that release. You don't need a Mac running that release, a VM, or the ~26 GB ipsw image downloaded on disk.
 
-Use it to see what a framework does or what a private API returns on every macOS release across history.
+Use it to see what a framework does or what a private API returns on every macOS release across history. It runs a guest against [iOS](#ios) too.
 
 ## Try it
 
@@ -118,6 +118,24 @@ The other guest can be one of the release's own daemons, which decides whom it s
 
 The run is the first guest's: its output and its exit status. When it exits, the others are sent SIGTERM if they watch for it and have five seconds to finish. What they wrote is shown on standard error under their names, and `--trace` shows every guest's calls and what the messages between them say.
 
+## iOS
+
+An iPhone or iPad `--device` runs the guest against iOS instead, from that device's restore images:
+
+```sh
+./ipswrun --device iPhone11,2 --home out 18.7.12 system:/usr/bin/truncate -s 12345 /Users/emu/made-on-ios
+```
+
+The release is named as for macOS: a version or build, `latest`, `all`, `18`, `18.*`, a range, or an image's URL or path, commas in its name and all. Every iOS release is looked up in the [ipsw.me](https://ipsw.me) index for the device, with the same checks as a macOS one; none are built in. `--releases` lists them.
+
+A guest built for iOS is an ordinary iOS executable. Pass a source file and ipswrun builds it against the iOS SDK, which needs Xcode, not only its command line tools; to build it yourself:
+
+```sh
+xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=14.0 -Wl,-no_fixup_chains -o guest guest.c
+```
+
+What the guest gets is what it gets on macOS, with the same home. What iOS has that macOS does not is not there: no SpringBoard or backboardd, so no UIKit app, and with no IOKit services MobileGestalt answers nothing. iOS 16 and 17 need [`--stream-compressed`](#what-does-not-work), for the same reason as macOS 13 and 14.
+
 ## Options
 
 | Flag | What it does |
@@ -130,14 +148,14 @@ The run is the first guest's: its output and its exit status. When it exits, the
 | `--env KEY=VALUE` | added to the environment of every guest (repeatable). `--env KEY` takes a variable out of it |
 | `--system <path>` | system-volume file, or directory ending in `/`, the guest may read (repeatable). The default is feature flags, `SystemVersion.plist`, ICU data in `/usr/share/icu/` and `/usr/lib/libobjc-trampolines.dylib`; giving any replaces the default |
 | `--cache <dir>` | where downloads are kept between runs (default: `ipswrun-<uid>` in the system temporary directory, so cleared on reboot) |
-| `--stream-compressed` | allow downloading one compressed disk image member front to back, for macOS 13 and 14 |
+| `--stream-compressed` | allow downloading one compressed disk image member front to back, for macOS 13 and 14 and iOS 16 and 17 |
 | `--report <file>` | write a JSON summary: version, build, shared cache UUID, exit code, pages mapped, requests, bytes and seconds. `{build}` and `{version}` as in `--home` |
 | `--timeout <seconds>` | how long the guest may run on each release, counted from when it starts (default 900). Time the host spends fetching is not counted, here or on any clock the guests see |
 | `--bisect` | binary-search the selected releases for where the guest's output or exit status changed (exits 0 when found, 1 when both endpoints match, 70 on failure) |
 | `--jobs <n>` | releases to run concurrently when running several (default 1); output is still printed in release order |
 | `--trace` | print every emulated system call |
 | `--missing` | answer a system call or Mach trap that is not implemented with an error instead of stopping, and list them all, with how often each was made and from where, when the guest ends |
-| `--device <product>` | Mac model the disk images and the releases looked up are picked for (default `Macmini9,1`) |
+| `--device <product>` | device the disk images and the releases looked up are picked for (default `Macmini9,1`); an iPhone or iPad, such as `iPhone11,2`, runs [iOS](#ios) |
 | `--unicorn <dir>` | where the pinned `libunicorn` is kept (default: the user cache directory) |
 | `--releases` | print the releases `all` stands for (version, build, URL), then exit |
 | `--setup` | only fetch and verify `libunicorn`, then exit |
@@ -157,7 +175,7 @@ The run is the first guest's: its output and its exit status. When it exits, the
 - **Memory sent in a message** arrives as a copy. Memory mapped a second time is one memory (`shm_open`, `mach_make_memory_entry`, `mach_vm_remap`), in one guest or several, except memory of the shared cache or already shared in part.
 - **Anything that needs a daemon that is not there.** Without `cfprefsd`, `NSUserDefaults` reads back nothing. With it, preferences are set and read back but never reach the home, for a reason not yet found, and on macOS 11 to 12.0.1 synchronizing reports failure. `SecKeyCreateRandomKey` fails unless the key is made the iOS way (`kSecUseDataProtectionKeychain`, not permanent), because the macOS default is the legacy CDSA stack behind `securityd`.
 - **Files outside the home.** What the guest writes outside `--home` and the `--mount` directories never reaches the host, and it can read system files only from the `--system` allowlist.
-- **macOS 13 and 14 by range.** Their images keep the shared cache in a deflate-compressed ZIP member, which cannot be read by range. `--stream-compressed` downloads that one member (3.6–4.5 GB).
+- **macOS 13 and 14, and iOS 16 and 17, by range.** Their images keep the shared cache in a deflate-compressed ZIP member, which cannot be read by range. `--stream-compressed` downloads that one member (3.6–4.5 GB for macOS, 1.1–1.4 GB for iOS).
 - **`mach_vm_remap` of a file's memory.** It copies instead of sharing: enough for code (the Objective-C block trampolines), wrong for a mapped file that is written afterwards.
 - **Some CPU features.** The emulated core has a 44-bit address space and reports no DIT, SHA-3 or SHA-512 instructions.
 - **System calls nobody has needed yet.** An unimplemented call stops the run with a message and a guest backtrace instead of guessing. `--missing` carries on past them, to find in one run everything a guest needs.
@@ -165,6 +183,8 @@ The run is the first guest's: its output and its exit status. When it exits, the
 ## What is tested
 
 Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency, Mach messages with what is built on them (libdispatch sources, `CFRunLoop`, XPC), a Mach service with its client in one process and in two, and daemons of the release's own serving a client. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
+
+iOS so far only with executables of the release's own (`truncate`, `vm_stat`): iOS 14.8, 15.6.1, 17.7 and 18.7.12 for an iPhone11,2 and 27.2.1 for an iPhone15,2 start them and run them into `main`, and those of 18 and 27 run `truncate` through to writing a file in the home. The guests in `examples` are not yet built for iOS.
 
 ## How it works
 

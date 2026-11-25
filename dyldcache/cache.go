@@ -24,6 +24,24 @@ type File interface {
 	Pread(off, n int64) ([]byte, error)
 }
 
+// Platform is the system a cache was built for, as the LC_BUILD_VERSION of a Mach-O names it.
+type Platform uint8
+
+const (
+	MacOS Platform = 1
+	IOS   Platform = 2
+)
+
+func (p Platform) String() string {
+	switch p {
+	case MacOS:
+		return "macOS"
+	case IOS:
+		return "iOS"
+	}
+	return fmt.Sprintf("platform %d", uint8(p))
+}
+
 // Mapping is one region of the cache's address space and the file range behind it.
 type Mapping struct {
 	File      File
@@ -50,6 +68,7 @@ type Cache struct {
 	Files    map[string]File // by file name suffix; "" is the main file
 	UUID     [16]byte
 	Base     uint64
+	Platform Platform // of the system the cache was built for
 
 	textsOff, textsCount uint64
 	texts                []imageText // sorted by address; read on first use
@@ -77,6 +96,7 @@ func Open(opener func(suffix string) (File, error)) (*Cache, error) {
 	c := &Cache{Files: map[string]File{"": main}, textsOff: le.Uint64(h[0x88:]), textsCount: le.Uint64(h[0x90:])}
 	headerSize := le.Uint32(h[0x10:])
 	copy(c.UUID[:], h[0x58:0x68])
+	c.Platform = Platform(h[0xD8]) // the low 8 bits of the header's platform bitfield
 	if err := c.add(main, h); err != nil {
 		return nil, err
 	}

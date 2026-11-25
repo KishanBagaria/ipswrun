@@ -83,34 +83,40 @@ func checkExecutable(path string) error {
 		return err
 	case st.IsDir():
 		return fmt.Errorf("%s is a directory", path)
-	case compiler(path) != nil && runtime.GOOS != "darwin":
+	case compiler(path, "") != nil && runtime.GOOS != "darwin":
 		return fmt.Errorf("compiling %s requires macOS; pass a prebuilt arm64 Mach-O on this host", path)
 	}
 	return nil
 }
 
-// compiler is the command that builds an executable from a single source file, or nil for a path
-// that is not one. The flags are those of examples/Makefile, and are to be kept the same as its.
-func compiler(path string) []string {
+// compiler is the command xcrun runs to build an executable for system (see osOf) from a single
+// source file, or nil for a path that is not one. The flags are those of examples/Makefile, and
+// are to be kept the same as its. An iOS guest is built against the iOS SDK, which comes with
+// Xcode and not with the command line tools alone.
+func compiler(path, system string) []string {
 	if strings.HasPrefix(path, emulator.SystemPrefix) {
 		return nil
 	}
-	clang := []string{"clang", "-arch", "arm64", "-mmacosx-version-min=11.0", "-Wl,-no_fixup_chains"}
+	sdk, minimum, target := []string{}, "-mmacosx-version-min=11.0", "arm64-apple-macos11.0"
+	if system == iOS {
+		sdk, minimum, target = []string{"--sdk", "iphoneos"}, "-mios-version-min=14.0", "arm64-apple-ios14.0"
+	}
+	clang := append(sdk, "clang", "-arch", "arm64", minimum, "-Wl,-no_fixup_chains")
 	switch filepath.Ext(path) {
 	case ".c":
 		return clang
 	case ".m":
 		return append(clang, "-fobjc-arc", "-O1", "-framework", "Foundation")
 	case ".swift":
-		return []string{"swiftc", "-target", "arm64-apple-macos11.0", "-O", "-Xlinker", "-no_fixup_chains"}
+		return append(sdk, "swiftc", "-target", target, "-O", "-Xlinker", "-no_fixup_chains")
 	}
 	return nil
 }
 
-// compile returns the path of an executable built from path, if that is a source file, and path
-// itself if not. It is built once, for every release it is to run on.
-func compile(path string) (string, error) {
-	build := compiler(path)
+// compile returns the path of an executable built for system from path, if that is a source file,
+// and path itself if not. It is built once, for every release it is to run on.
+func compile(path, system string) (string, error) {
+	build := compiler(path, system)
 	if build == nil {
 		return path, nil
 	}
@@ -123,7 +129,7 @@ func compile(path string) (string, error) {
 	cmd := exec.Command("xcrun", append(build, "-o", binary, path)...)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("compiling %s with %s: %w", path, build[0], err)
+		return "", fmt.Errorf("compiling %s with %s: %w", path, strings.Join(build, " "), err)
 	}
 	return binary, nil
 }
@@ -263,7 +269,7 @@ func fix(err error, timeout float64, stream bool) string {
 	case errors.As(err, &status):
 		return "fix: pass the direct https URL of a restore image (.ipsw), like those ipswrun --releases prints; retrying this URL will not help"
 	case errors.Is(err, rangefs.ErrCompressedMember) && !stream:
-		return "fix: rerun with --stream-compressed, which downloads that member whole (3.6-4.5 GB for macOS 13 and 14)"
+		return "fix: rerun with --stream-compressed, which downloads that member whole (3.6-4.5 GB for macOS 13 and 14, 1.1-1.4 GB for iOS 16 and 17)"
 	case errors.As(err, &stopped) && stopped.Kind == emulator.StopTimeout:
 		return fmt.Sprintf("fix: rerun with a larger --timeout (it was %g seconds); the guest had all of it, as time spent fetching its pages is not counted", timeout)
 	case errors.As(err, &stopped) && stopped.Kind == emulator.StopUnimplemented:
@@ -417,7 +423,7 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	if o.Stream {
 		image.AllowStreaming()
 	}
-	out.name = release{Version: image.Version(), Build: image.Build()}.name()
+	out.name = release{Version: image.Version(), Build: image.Build(), OS: r.OS}.name()
 	perRelease := strings.NewReplacer("{build}", image.Build(), "{version}", image.Version())
 	home := perRelease.Replace(o.Home)
 	if home == "" {
@@ -542,7 +548,7 @@ func (o *options) runAll(releases []release) (int, error) {
 		})
 	}
 	if len(skipped) > 0 {
-		err := fmt.Errorf("not run: %s: the image of a macOS 13 or 14 release %w", strings.Join(skipped, ", "), rangefs.ErrCompressedMember)
+		err := fmt.Errorf("not run: %s: the image keeps its shared cache in a compressed ZIP member, which %w", strings.Join(skipped, ", "), rangefs.ErrCompressedMember)
 		if len(releases) == 0 {
 			return 0, fmt.Errorf("%w\n%s", err, fix(err, o.Timeout, o.Stream))
 		}
@@ -806,7 +812,8 @@ func run() (int, error) {
 <release> is the version or build of any macOS release since 11 (15.2, 24C101), latest, all (the first
 and last release of each major version), a major version (15, for those of all under it, or 15.* for
 every release of it), a range (15.0..15.6.1), the https URL or local path of any restore image, or
-several of these separated by commas.`)
+several of these separated by commas. With an iPhone or iPad --device (iPhone11,2) they are the
+releases of iOS for it.`)
 		flag.PrintDefaults()
 	}
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+"; {build} and {version} in it become the release's (default: a temporary one)")
@@ -817,7 +824,7 @@ several of these separated by commas.`)
 	flag.Var(&mountValues, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
 	flag.Var(&env, "env", "KEY=VALUE added to the environment of every guest, or KEY alone taken out of it (repeatable)")
 	flag.Var(&system, "system", "system-volume file, or directory ending in /, the guest may read (repeatable; default: feature flags, SystemVersion.plist, /usr/share/icu/ and libobjc-trampolines.dylib; giving any replaces the default)")
-	device := flag.String("device", "Macmini9,1", "BuildManifest product used to pick disk images")
+	device := flag.String("device", "Macmini9,1", "BuildManifest product used to pick disk images and the releases looked up; an iPhone or iPad (iPhone11,2) runs iOS")
 	cache := flag.String("cache", "", "directory that keeps what was downloaded between runs (default: one in the system temporary directory, cleared on reboot)")
 	stream := flag.Bool("stream-compressed", false, "download a compressed disk image member front to back when it cannot be read by range")
 	timeout := flag.Float64("timeout", 900, "seconds the guest may run on each release, counted from when it starts (opening the image and fetching its pages are not counted)")
@@ -834,6 +841,28 @@ several of these separated by commas.`)
 	known := parseReleases(releasesText)
 	current := func() ([]release, error) { return fetchCurrent(*device) }
 	index := func() ([]release, error) { return fetchIndex(*device) }
+	guestOS := osOf(*device)
+	if guestOS == iOS {
+		// Apple names no iOS release in its feed of Macs', and ipswrun has none built in: every
+		// one is the index's, the newest of them the current one. It is asked only for a name
+		// that is not a restore image.
+		index = sync.OnceValues(index)
+		current = func() ([]release, error) {
+			every, err := index()
+			if err != nil {
+				return nil, err
+			}
+			return every[len(every)-1:], nil
+		}
+		known = nil
+		if *listReleases || (flag.NArg() > 0 && needsIndex(flag.Arg(0))) {
+			every, err := index()
+			if err != nil {
+				return 0, fmt.Errorf("the releases of %s are those api.ipsw.me lists, which %w: %w", *device, errSource, err)
+			}
+			known = every
+		}
+	}
 	if *listReleases {
 		offered, err := current()
 		feedNote(err)
@@ -858,6 +887,11 @@ several of these separated by commas.`)
 		}
 		if err == nil {
 			releases, note, err = checkArgs(known, parseBetas(betasText, *device), flag.Args(), current, index)
+		}
+		if err == nil && guestOS == iOS {
+			// Every iOS release named other than by its image is the index's, and as for one of
+			// macOS, the index is followed only to Apple's hosts.
+			err = offApple(filter(releases, func(r release) bool { return r.Build != "" }))
 		}
 		if err == nil {
 			feedNote(note)
@@ -886,11 +920,14 @@ several of these separated by commas.`)
 			fmt.Fprintf(os.Stderr, "ipswrun: %v\nusage: %s (--help lists the flags)\n", err, usage)
 			return 2, nil
 		}
-		if guest, err = compile(flag.Arg(1)); err != nil {
+		for i := range releases {
+			releases[i].OS = guestOS
+		}
+		if guest, err = compile(flag.Arg(1), guestOS); err != nil {
 			return 0, err
 		}
 		for i := range daemons {
-			if daemons[i].Executable, err = compile(daemons[i].Executable); err != nil {
+			if daemons[i].Executable, err = compile(daemons[i].Executable, guestOS); err != nil {
 				return 0, err
 			}
 		}

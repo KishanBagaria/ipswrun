@@ -3,7 +3,7 @@ module github.com/KishanBagaria/ipswrun
 go 1.27
 
 require (
-	github.com/blacktop/go-apfs v1.0.31
+	github.com/blacktop/go-apfs v1.0.33
 	github.com/blacktop/go-macho v1.1.298
 	github.com/blacktop/go-plist v1.0.2
 	github.com/blacktop/ipsw v0.0.0-20261117074031-5d96e8d73a66

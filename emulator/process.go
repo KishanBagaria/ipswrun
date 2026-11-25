@@ -39,8 +39,12 @@ const (
 	stackSize  = 8 << 20
 	exeBase    = 0x100000000
 	dyldBase   = 0x120000000
-	heapBase   = 0x20000000000 // anonymous mappings grow up from 2 TB, clear of anything the guest places itself
-	deviceID   = 0x1000004
+	// Anonymous mappings grow up from here, clear of anything the guest places itself: from 2 TB
+	// on macOS, and on iOS from 16 GB, above the largest shared region, as iOS's Objective-C
+	// runtime keeps a class's data pointer in 39 bits.
+	heapBase    = 0x20000000000
+	heapBaseIOS = 0x400000000
+	deviceID    = 0x1000004
 
 	// GuestHome is the emulated user's home directory; it is backed by Config.Home on the host.
 	GuestHome = "/Users/emu"
@@ -337,13 +341,21 @@ func guard(err *error) {
 	}
 }
 
+// heapStart is where anonymous mappings start for a process of the platform's.
+func heapStart(platform dyldcache.Platform) uint64 {
+	if platform == dyldcache.IOS {
+		return heapBaseIOS
+	}
+	return heapBase
+}
+
 // newProcess gives the machine a process with a stack, the commpage and the MMU set up, ready for
 // load.
 func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Process, err error) {
 	cfg := m.cfg
 	p = &Process{m: m, pid: guestPID + uint32(len(m.procs)), uid: guestUID, gid: guestGID, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cwd: "/", cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
 		system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
-		mapped: map[uint64]struct{}{}, brk: heapBase, nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
+		mapped: map[uint64]struct{}{}, brk: heapStart(cfg.Cache.Platform), nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},
 		fds:      map[uint64]*fd{0: {kind: stdioFD, host: 0}, 1: {kind: stdioFD, host: 1}, 2: {kind: stdioFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{path: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}

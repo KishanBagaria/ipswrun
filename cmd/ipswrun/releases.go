@@ -33,6 +33,7 @@ var releasesText string
 // version or build until its image has been opened.
 type release struct {
 	Version, Build, URL string
+	OS                  string `json:",omitempty"` // "iOS", or empty for macOS
 }
 
 func (r release) local() bool {
@@ -43,13 +44,63 @@ func (r release) name() string {
 	if r.Build == "" {
 		return r.URL
 	}
-	return fmt.Sprintf("macOS %s (%s)", r.Version, r.Build)
+	return fmt.Sprintf("%s %s (%s)", cmp.Or(r.OS, "macOS"), r.Version, r.Build)
 }
 
 // compressed reports whether the release keeps its shared cache in a deflated ZIP member, which
-// only --stream-compressed can read: macOS 13 and 14.
+// only --stream-compressed can read: macOS 13 and 14, and iOS 16 and 17.
 func (r release) compressed() bool {
+	if r.OS == iOS {
+		return strings.HasPrefix(r.Version, "16.") || strings.HasPrefix(r.Version, "17.")
+	}
 	return strings.HasPrefix(r.Version, "13.") || strings.HasPrefix(r.Version, "14.")
+}
+
+// iOS is the OS of a release for an iPhone, iPad or iPod touch.
+const iOS = "iOS"
+
+// osOf is the OS of the releases for a --device: iOS for an iPhone, iPad or iPod touch, and
+// otherwise macOS, written as empty.
+func osOf(device string) string {
+	for _, prefix := range []string{"iPhone", "iPad", "iPod"} {
+		if strings.HasPrefix(device, prefix) {
+			return iOS
+		}
+	}
+	return ""
+}
+
+// splitSelector is the comma-separated parts of a release selector. The URL or path of an iOS
+// image has commas of its own (iPhone11,2,iPhone11,4_18.7_22H20_Restore.ipsw): a part that is
+// one runs on to the next that ends in .ipsw, if one does.
+func splitSelector(selector string) []string {
+	parts := strings.Split(selector, ",")
+	var out []string
+	for i := 0; i < len(parts); i++ {
+		part := parts[i]
+		if image := strings.Contains(part, "/") || strings.HasPrefix(part, "file:"); image && !strings.HasSuffix(part, ".ipsw") {
+			for j := i + 1; j < len(parts); j++ {
+				if strings.HasSuffix(parts[j], ".ipsw") {
+					part, i = strings.Join(parts[i:j+1], ","), j
+					break
+				}
+			}
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+// needsIndex reports whether a selector names an iOS release by anything but its image, which
+// only the index can turn into one.
+func needsIndex(selector string) bool {
+	for _, part := range splitSelector(selector) {
+		if !strings.HasPrefix(part, "https://") && !strings.HasPrefix(part, "http://") && !strings.HasPrefix(part, "file://") &&
+			!strings.Contains(part, "/") && !strings.HasSuffix(part, ".ipsw") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseReleases reads releases.tsv: a line of column names, then one release a line.
@@ -57,7 +108,7 @@ func parseReleases(text string) []release {
 	var out []release
 	for _, line := range strings.Split(text, "\n")[1:] {
 		if fields := strings.Split(line, "\t"); len(fields) == 3 {
-			out = append(out, release{fields[0], fields[1], fields[2]})
+			out = append(out, release{Version: fields[0], Build: fields[1], URL: fields[2]})
 		}
 	}
 	return out
@@ -142,7 +193,7 @@ func parseIndex(data []byte) ([]release, error) {
 	var out []release
 	for _, f := range reply.Firmwares {
 		if f.Version != "" && f.Build != "" && f.URL != "" {
-			out = append(out, release{f.Version, f.Build, f.URL})
+			out = append(out, release{Version: f.Version, Build: f.Build, URL: f.URL})
 		}
 	}
 	if len(out) == 0 {
@@ -217,7 +268,7 @@ func parseBetas(text, device string) []release {
 	var out []release
 	for _, line := range strings.Split(text, "\n")[1:] {
 		if fields := strings.Split(line, "\t"); len(fields) == 4 && slices.Contains(strings.Fields(fields[3]), device) {
-			out = append(out, release{fields[0], fields[1], fields[2]})
+			out = append(out, release{Version: fields[0], Build: fields[1], URL: fields[2]})
 		}
 	}
 	return out
@@ -261,7 +312,7 @@ func filter(pool []release, keep func(release) bool) []release {
 func selectReleases(known, betas []release, selector string, current, index func() ([]release, error)) (out []release, note error, err error) {
 	current, index = sync.OnceValues(current), sync.OnceValues(index)
 	seen := map[string]bool{}
-	for _, part := range strings.Split(selector, ",") {
+	for _, part := range splitSelector(selector) {
 		exactly := named(part)
 		under := func(r release) bool { return strings.HasPrefix(r.Version, part+".") }
 		var feedErr error

@@ -129,6 +129,21 @@ func (m *Image) Build() string { return m.info.Plists.BuildManifest.ProductBuild
 // Device is the BuildManifest product type or device class used to pick disk images.
 func (m *Image) Device() string { return m.device }
 
+// Board is the device class of the build identity Device picks, as the system reports it in
+// hw.model: "D321AP" for an iPhone11,2. Empty when the manifest names none.
+func (m *Image) Board() string {
+	selected, err := m.info.ForDevice(m.device)
+	if err != nil {
+		return ""
+	}
+	for _, identity := range selected.Plists.BuildIdentities {
+		if class := identity.Info.DeviceClass; class != "" {
+			return strings.ToUpper(class)
+		}
+	}
+	return ""
+}
+
 // Stats reports the range requests made so far and the bytes they returned.
 func (m *Image) Stats() (requests, bytes int64) {
 	if m.remote == nil {

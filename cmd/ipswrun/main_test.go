@@ -90,8 +90,61 @@ func TestCompilerBySuffix(t *testing.T) {
 		"guest": "", "bin/guest.o": "", "system:/usr/share/x.c": "",
 		"guest.c": "clang", "dir.d/guest.m": "clang", "guest.swift": "swiftc",
 	} {
-		if got := append(compiler(path), "")[0]; got != want {
+		if got := append(compiler(path, ""), "")[0]; got != want {
 			t.Errorf("compiler(%q) runs %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestCompilerForIOS(t *testing.T) {
+	for path, want := range map[string][]string{
+		"guest.c":     {"--sdk", "iphoneos", "clang", "-arch", "arm64", "-mios-version-min=14.0", "-Wl,-no_fixup_chains"},
+		"guest.swift": {"--sdk", "iphoneos", "swiftc", "-target", "arm64-apple-ios14.0", "-O", "-Xlinker", "-no_fixup_chains"},
+	} {
+		if got := compiler(path, iOS); !slices.Equal(got, want) {
+			t.Errorf("compiler(%q, iOS) = %q, want %q", path, got, want)
+		}
+	}
+	if got := compiler("guest.c", ""); slices.Contains(got, "iphoneos") {
+		t.Errorf("a macOS guest is built against the iOS SDK: %q", got)
+	}
+}
+
+func TestOSOfDevice(t *testing.T) {
+	for device, want := range map[string]string{"Macmini9,1": "", "MacBookPro18,3": "", "VirtualMac2,1": "", "iPhone11,2": iOS, "iPad13,1": iOS, "iPod9,1": iOS} {
+		if got := osOf(device); got != want {
+			t.Errorf("osOf(%q) = %q, want %q", device, got, want)
+		}
+	}
+}
+
+func TestSplitSelectorKeepsCommasOfImages(t *testing.T) {
+	const ios = "https://updates.cdn-apple.com/x/iPhone11,2,iPhone11,4,iPhone11,6_18.7.12_22H390_Restore.ipsw"
+	for selector, want := range map[string][]string{
+		"15.2,27.2.1":                      {"15.2", "27.2.1"},
+		ios:                                {ios},
+		"15.2," + ios + ",latest":          {"15.2", ios, "latest"},
+		"/tmp/iPhone15,2_27.2.1.ipsw,26.1": {"/tmp/iPhone15,2_27.2.1.ipsw", "26.1"},
+		// A path that never ends in .ipsw is only up to its comma, as before.
+		"/tmp/image,15.2": {"/tmp/image", "15.2"},
+	} {
+		if got := splitSelector(selector); !slices.Equal(got, want) {
+			t.Errorf("splitSelector(%q) = %q, want %q", selector, got, want)
+		}
+	}
+	if needsIndex(ios) || !needsIndex(ios+",18.7") || !needsIndex("latest") {
+		t.Error("needsIndex is wrong about which selectors only the index can turn into releases")
+	}
+}
+
+func TestIOSReleases(t *testing.T) {
+	r := release{Version: "17.7", Build: "21H16", OS: iOS}
+	if r.name() != "iOS 17.7 (21H16)" || (release{Version: "15.6", Build: "24G84"}).name() != "macOS 15.6 (24G84)" {
+		t.Errorf("names: %q", r.name())
+	}
+	for version, want := range map[string]bool{"15.8": false, "16.0": true, "17.7": true, "18.0": false, "26.1": false} {
+		if got := (release{Version: version, OS: iOS}).compressed(); got != want {
+			t.Errorf("iOS %s compressed() = %v, want %v", version, got, want)
 		}
 	}
 }
@@ -109,7 +162,7 @@ func TestReleasesByName(t *testing.T) {
 		builds[r.Build] = true
 	}
 	// What Apple offers once a release newer than the list is out, and a feed that cannot be read.
-	newer := release{"27.3", "26D50", "https://example.invalid/UniversalMac_27.3_26D50_Restore.ipsw"}
+	newer := release{Version: "27.3", Build: "26D50", URL: "https://example.invalid/UniversalMac_27.3_26D50_Restore.ipsw"}
 	const url = "https://example.invalid/UniversalMac_Restore.ipsw"
 	const everything = "20B29 20G165 21A559 21G115 22A380 22G120 23A344 23G93 24A335 24G90 25A354 25G83 26A428 26B131"
 	data, err := os.ReadFile("testdata/index.json") // api.ipsw.me's reply for Macmini9,1 of 2026-11-19, the fields read
@@ -137,7 +190,7 @@ func TestReleasesByName(t *testing.T) {
 		}
 	}
 	// What the index has once a release newer than those built in has come and gone.
-	every = append(every, release{"27.2.2", "26B140", "https://updates.cdn-apple.com/x/UniversalMac_27.2.2_26B140_Restore.ipsw"})
+	every = append(every, release{Version: "27.2.2", Build: "26B140", URL: "https://updates.cdn-apple.com/x/UniversalMac_27.2.2_26B140_Restore.ipsw"})
 	for _, c := range []struct {
 		selector, want             string
 		asks, down, looks, noIndex bool
@@ -219,7 +272,7 @@ func TestReleasesByName(t *testing.T) {
 	// The index is someone else's: an image it places anywhere but on Apple's hosts is not fetched.
 	for _, bad := range []string{"http://updates.cdn-apple.com/x.ipsw", "https://example.invalid/x.ipsw", "https://updates.cdn-apple.com.example.invalid/x.ipsw", "https://apple.com@example.invalid/x.ipsw"} {
 		_, _, err := selectReleases(known, nil, "27.2.2", func() ([]release, error) { return nil, nil },
-			func() ([]release, error) { return []release{{"27.2.2", "26B140", bad}}, nil })
+			func() ([]release, error) { return []release{{Version: "27.2.2", Build: "26B140", URL: bad}}, nil })
 		if err == nil || !strings.Contains(err.Error(), "not an https URL on a host of Apple's") {
 			t.Errorf("%s from the index: error %v, want it refused", bad, err)
 		}

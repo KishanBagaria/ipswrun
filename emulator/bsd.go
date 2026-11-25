@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/KishanBagaria/ipswrun/dyldcache"
 )
 
 // handler implements one system call or Mach trap. args is how many registers it takes, which is
@@ -539,6 +541,16 @@ func sysSysctlbyname(p *Process, a []uint64) int64 {
 	return p.sysctlOut(strings.TrimRight(string(p.read(a[0], a[1])), "\x00"), a[2], a[3])
 }
 
+// kern.osvariant_status is what libsystem_darwin's os_variant knows of the system without looking:
+// for each question it asks (is there internal content, can a debugger attach, ...), two bits, 2
+// for no and 3 for yes, or 0 for one it is to find the answer to itself. The Mac's is what an
+// Apple silicon Mac running a release build says. iOS stops ("os_variant had unexpected status")
+// at a question the kernel left open, so it is told no for each the Mac leaves open.
+const (
+	osVariantMac = 0x70010000F388828A
+	osVariantIOS = 0x70010000FBAAAAAA
+)
+
 // sysctlValue is a uint64 or a string.
 func (p *Process) sysctlValue(name string) (any, bool) {
 	if p.sysctls == nil {
@@ -559,7 +571,7 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			"hw.perflevel0.logicalcpu_max": n(1), "hw.machine": "arm64", "hw.model": os("model", "Macmini9,1"), "hw.targettype": "J274",
 			"hw.cpubrand": "Apple M1", "kern.ostype": "Darwin", "kern.hostname": "emu.local", "kern.argmax": n(1 << 20),
 			"kern.usrstack64": n(stackTop), "kern.safeboot": n(0), "kern.ngroups": n(16), "kern.maxfilesperproc": n(10240),
-			"kern.secure_kernel": n(0), "kern.bootargs": "", "kern.osvariant_status": n(0x70010000F388828A), "kern.willshutdown": n(0),
+			"kern.secure_kernel": n(0), "kern.bootargs": "", "kern.osvariant_status": n(osVariantMac), "kern.willshutdown": n(0),
 			"kern.hv_vmm_present": n(0), "sysctl.proc_translated": n(0), "kern.osrelease": os("release", "22.1.0"),
 			"kern.osversion": os("build", "22A400"), "kern.osproductversion": os("version", "13.0.1"),
 			"kern.version": "Darwin Kernel Version (emulated)", "kern.osproductversioncompat": "10.16",
@@ -568,6 +580,14 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			"hw.optional.arm.FEAT_LSE": n(1), "hw.optional.arm.FEAT_CRC32": n(1), "hw.optional.AdvSIMD": n(1),
 			"hw.optional.arm.AdvSIMD": n(1), "security.mac.lockdown_mode_state": n(0), "kern.development": n(0),
 			"vm.vm_page_free_target": n(4000), "kern.memorystatus_level": n(50),
+		}
+		if p.cache.Platform == dyldcache.IOS {
+			// An iPhone names its product where a Mac says arm64, and its board where a Mac
+			// names its product.
+			board := os("board", "")
+			p.sysctls["hw.machine"], p.sysctls["hw.model"] = os("model", "iPhone"), board
+			p.sysctls["hw.targettype"] = strings.TrimSuffix(board, "AP")
+			p.sysctls["kern.osvariant_status"] = n(osVariantIOS)
 		}
 	}
 	if v, ok := p.sysctls[name]; ok {
