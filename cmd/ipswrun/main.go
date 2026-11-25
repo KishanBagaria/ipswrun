@@ -57,7 +57,7 @@ const usage = "ipswrun [flags] <release> <guest executable or source> [guest arg
 
 // checkArgs says what is wrong with the positional arguments, before anything is fetched for
 // them, or returns the releases the first one names.
-func checkArgs(known, betas []release, builtIn string, args []string, current, index func() ([]release, error)) (selected []release, note error, err error) {
+func checkArgs(known, betas []release, args []string, current, index func() ([]release, error)) (selected []release, note error, err error) {
 	if len(args) < 2 {
 		return nil, nil, fmt.Errorf("expected a release and a guest executable, got %d argument(s)", len(args))
 	}
@@ -65,7 +65,7 @@ func checkArgs(known, betas []release, builtIn string, args []string, current, i
 	if err := checkExecutable(args[1]); err != nil {
 		return nil, nil, fmt.Errorf("guest executable: %w", err)
 	}
-	return selectReleases(known, betas, builtIn, args[0], current, index)
+	return selectReleases(known, betas, args[0], current, index)
 }
 
 // checkExecutable says what is wrong with the path of an executable on the host, or of a source
@@ -860,7 +860,7 @@ releases of iOS for it.`)
 		*cache = defaultCacheDir()
 	}
 
-	known, builtIn := parseReleases(releasesText), macBuiltIn
+	known := parseReleases(releasesText)
 	current := func() ([]release, error) { return fetchCurrent(*device) }
 	index := func() ([]release, error) { return fetchIndex(*device) }
 	guestOS := osOf(*device)
@@ -880,7 +880,7 @@ releases of iOS for it.`)
 			}
 			return every[len(every)-1:], nil
 		}
-		known, builtIn = nil, "the releases api.ipsw.me lists for "+*device
+		known = nil
 		if *listReleases || (flag.NArg() > 0 && needsIndex(flag.Arg(0))) {
 			every, err := index()
 			if err != nil {
@@ -923,15 +923,12 @@ releases of iOS for it.`)
 			err = fmt.Errorf("--jobs must be at least 1, got %d", *jobs)
 		}
 		if err == nil {
-			releases, note, err = checkArgs(known, parseBetas(betasText, *device), builtIn, flag.Args(), current, index)
+			releases, note, err = checkArgs(known, parseBetas(betasText, *device), flag.Args(), current, index)
 		}
 		if err == nil && guestOS == iOS {
 			// Every iOS release named other than by its image is the index's, and as for one of
 			// macOS, the index is followed only to Apple's hosts.
 			err = offApple(filter(releases, func(r release) bool { return r.Build != "" }))
-			if err == nil {
-				err = checkIOSReleases(releases)
-			}
 		}
 		if err == nil {
 			feedNote(note)
@@ -951,12 +948,6 @@ releases of iOS for it.`)
 				var more []emulator.Guest
 				more, err = parseDaemons("daemon", daemonValues)
 				daemons = append(daemons, more...)
-			}
-			if err == nil {
-				err = checkBuiltFor(flag.Arg(1), guestOS)
-			}
-			for i := 0; err == nil && i < len(daemons); i++ {
-				err = checkBuiltFor(daemons[i].Executable, guestOS)
 			}
 		}
 		if errors.Is(err, errSource) {
