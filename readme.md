@@ -184,7 +184,7 @@ The run is the first guest's: its output and its exit status. When it exits, the
 - **`mach_vm_remap` of a file's memory.** It copies instead of sharing: enough for code (the Objective-C block trampolines), wrong for a mapped file that is written afterwards.
 - **Some CPU features.** The emulated core has a 44-bit address space and reports no DIT, SHA-3 or SHA-512 instructions.
 - **iOS 12 and 13.** Their system volume cannot be read by range yet, so they are left out of an iPhone's or iPad's releases.
-- **On iOS 14, services between guests.** libxpc of iOS 14 asks launchd in a way that is not answered yet, so a guest finds no service another provides (`client`, `service`), and on 14.0 the files `foundation` writes in the home are not written, for a reason not yet found.
+- **On iOS 14.0, the files `foundation` writes in the home.** They are not written, for a reason not yet found.
 - **System calls nobody has needed yet.** An unimplemented call stops the run with a message and a guest backtrace instead of guessing. `--missing` carries on past them, to find in one run everything a guest needs.
 
 ## What is tested

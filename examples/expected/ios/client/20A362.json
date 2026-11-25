@@ -2,6 +2,6 @@
   "build": "20A362",
   "cache_uuid": "D3709648-CA48-3851-A382-5C1018B102DE",
   "exit_code": 0,
-  "output": "echo 1: no such service\necho 2: no such service\nreverse: no such service\n",
+  "output": "echo 1: \"HELLO, SERVER\", the server's request 1; it is another process: 1, and it knows this one: 1\necho 2: \"AND AGAIN\", the server's request 2; it is another process: 1, and it knows this one: 1\nreverse: answer 101 with 70000 bytes, reversed: 1, in memory of its own: 1; the server knows this process: 1\n",
   "version": "16.0"
 }
