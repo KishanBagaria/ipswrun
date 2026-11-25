@@ -115,6 +115,8 @@ func sysShmOpen(p *Process, a []uint64) int64 {
 	s := p.m.named[name]
 	p.note("  shm_open %s", name)
 	switch {
+	case p.full():
+		return -eMFILE
 	case s == nil && a[1]&oCreate == 0:
 		return -eNOENT
 	case s == nil:

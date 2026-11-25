@@ -31,7 +31,7 @@ func init() {
 		"open": {3, sysOpen}, "openat": {4, sysOpenat}, "guarded_open_np": {5, sysGuardedOpen}, "open_dprotected_np": {5, sysOpenDprotected}, "guarded_close_np": {2, sysGuardedClose},
 		"guarded_write_np": {4, sysGuardedWrite}, "guarded_pwrite_np": {5, sysGuardedPwrite}, "close": {1, sysClose},
 		"read": {3, sysRead}, "pread": {4, sysPread}, "write": {3, sysWrite}, "writev": {3, sysWritev}, "pwrite": {4, sysPwrite}, "lseek": {3, sysLseek},
-		"ftruncate": {2, sysFtruncate}, "fsync": {1, constant(0)}, "access": {2, sysAccess}, "unlink": {1, sysUnlink},
+		"ftruncate": {2, sysFtruncate}, "fsync": {1, sysFsync}, "sync": {0, sysSync}, "umask": {1, sysUmask}, "iopolicysys": {2, sysIopolicysys}, "memorystatus_get_level": {1, sysMemorystatusGetLevel}, "getpriority": {2, sysGetpriority}, "setpriority": {3, sysSetpriority}, "access": {2, sysAccess}, "unlink": {1, sysUnlink},
 		"mkdir": {2, sysMkdir}, "rename": {2, sysRename}, "readlink": {3, sysReadlink}, "readlinkat": {4, sysReadlinkat},
 		"mkdirat": {3, sysMkdirat}, "rmdir": {1, sysRmdir}, "unlinkat": {3, sysUnlinkat}, "renameat": {4, sysRenameat},
 		"renameatx_np": {5, sysRenameatx}, "faccessat": {4, sysFaccessat}, "truncate": {2, sysTruncate}, "fcntl": {3, sysFcntl}, "dup": {1, sysDup}, "dup2": {2, sysDup2},
@@ -62,7 +62,7 @@ func init() {
 		"workq_kernreturn": {4, sysWorkqKernreturn}, "kdebug_trace64": {0, constant(0)}, "kdebug_trace": {0, constant(0)},
 		"kdebug_trace_string": {0, constant(0)}, "kdebug_typefilter": {2, constant(-ePERM)}, "getentropy": {2, sysGetentropy},
 		"ptrace": {1, sysPtrace}, "select": {5, sysSelect}, "pselect": {5, sysPselect}, "kqueue": {0, sysKqueue}, "guarded_kqueue_np": {2, sysKqueue}, "csops": {4, sysCsops}, "csops_audittoken": {4, sysCsops}, "csrctl": {3, constant(-ePERM)}, "getrlimit": {2, sysGetrlimit},
-		"setrlimit": {2, constant(0)}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
+		"setrlimit": {2, sysSetrlimit}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
 		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpid}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
@@ -73,14 +73,15 @@ func init() {
 }
 
 // trivial are more calls answered with a constant (negative: errno) and no side effects.
+// None answers success: a call that would have done something is implemented, or has no handler
+// and stops the run. setsid fails as it does for a process launchd started, which already leads
+// its session and its process group (getpgrp is its pid). objc_bp_assist_cfg_np fails as on a
+// core without the hardware that assists Objective-C breakpoints, which the emulated one is.
 var trivial = map[string]int64{
-	"objc_bp_assist_cfg_np": 0, "iopolicysys": 0, "work_interval_ctl": -eNOTSUP, "memorystatus_control": 0, "proc_rlimit_control": 0,
-	"thread_selfusage": 0, "crossarch_trap": -eNOTSUP,
-	"kqueue_workloop_ctl": 0, "necp_open": -eNOSYS, "socket": -eACCES, "umask": 0o22,
-	"audit_session_self": 0, "getaudit_addr": -eNOSYS, "coalition_info": -eNOSYS, "persona": -eNOSYS,
-	"debug_syscall_reject_config": 0, "debug_syscall_reject": 0,
-	"memorystatus_get_level": 0, "record_system_event": 0, "log_data": 0, "oslog_coproc_reg": 0, "oslog_coproc": 0, "setpriority": 0,
-	"getpriority": 0, "setsid": 0, "sync": 0,
+	"work_interval_ctl": -eNOTSUP, "crossarch_trap": -eNOTSUP, "objc_bp_assist_cfg_np": -eNOTSUP,
+	"necp_open": -eNOSYS, "socket": -eACCES,
+	"getaudit_addr": -eNOSYS, "coalition_info": -eNOSYS, "persona": -eNOSYS,
+	"setsid": -ePERM,
 }
 
 // call runs a handler; touching unmapped guest memory yields onFault instead of ending the run.
@@ -472,6 +473,9 @@ const (
 // sysKqueue gives a descriptor that can be described and closed like any other. The events asked
 // of it never happen: only libdispatch's own kqueues, which have no descriptor, are emulated.
 func sysKqueue(p *Process, a []uint64) int64 {
+	if p.full() {
+		return -eMFILE
+	}
 	return int64(p.newFD(&fd{kind: dataFD}))
 }
 
@@ -507,15 +511,138 @@ func sysPtrace(p *Process, a []uint64) int64 {
 	return -eINVAL
 }
 
-func sysGetrlimit(p *Process, a []uint64) int64 {
-	limits := []uint64{0x7FFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF}
-	switch a[0] & 0xFF {
-	case 3: // RLIMIT_STACK
-		limits = []uint64{stackSize, 64 << 20}
-	case 8: // RLIMIT_NOFILE
-		limits = []uint64{256, 10240}
+// sysIopolicysys sets and reads back a process's or thread's I/O policies (iopolicy_set and
+// _get). A disk policy only changes how soon I/O is done, which nothing here can tell. The
+// policies of what a file system shows (access times, modification times, permissions) would
+// change what the guest sees, and stop the run when set.
+func sysIopolicysys(p *Process, a []uint64) int64 {
+	const get, set = 1, 2 // IOPOL_CMD_GET and _SET
+	b := p.read(a[1], 12) // struct _iopol_param_t: scope, type, policy
+	scope, kind := le.Uint32(b), le.Uint32(b[4:])
+	key := [2]uint32{scope, kind}
+	if scope == 1 { // IOPOL_SCOPE_THREAD: the thread's own
+		key[0] = 1<<16 | uint32(p.current.port)
 	}
-	p.write(a[1], le64(limits...))
+	p.note("  iopolicysys cmd %d scope %d type %d policy %d", a[0], scope, kind, le.Uint32(b[8:]))
+	switch {
+	case scope > 2:
+		return -eINVAL
+	case a[0] == set && (kind == 2 || kind == 7 || kind == 8): // ATIME_UPDATES, IGNORE_PERMISSIONS, SKIP_MTIME_UPDATE
+		p.unimplemented("iopolicysys of a policy that changes what files show", a)
+		return -eNOSYS
+	case a[0] == set:
+		if p.iopolicies == nil {
+			p.iopolicies = map[[2]uint32]uint32{}
+		}
+		p.iopolicies[key] = le.Uint32(b[8:])
+	case a[0] == get:
+		p.write(a[1]+8, le32(p.iopolicies[key])) // IOPOL_DEFAULT until set
+	default:
+		return -eINVAL
+	}
+	return 0
+}
+
+// sysMemorystatusGetLevel is the percentage of memory free, as kern.memorystatus_level says.
+func sysMemorystatusGetLevel(p *Process, a []uint64) int64 {
+	level, _ := p.sysctlValue("kern.memorystatus_level")
+	p.write(a[0], le32(uint32(level.(uint64))))
+	return 0
+}
+
+// Priorities are a process's nice value, by PRIO_PROCESS, PRIO_PGRP or PRIO_USER of its own pid,
+// group (its pid) or user, as getpriority and setpriority keep them. A user may raise its nice
+// value but not lower it again. Darwin's own kinds (PRIO_DARWIN_THREAD and the like) stop.
+func (p *Process) priorityOf(which, who uint64) int64 {
+	switch {
+	case which > 2:
+		p.unimplemented("getpriority or setpriority of a Darwin kind", []uint64{which, who, 0, 0, 0, 0})
+		return -eNOSYS
+	case who != 0 && who != uint64(p.pid) && (which != 2 || who != uint64(p.uid)):
+		return -eSRCH
+	}
+	return 0
+}
+
+func sysGetpriority(p *Process, a []uint64) int64 {
+	if errno := p.priorityOf(a[0], a[1]); errno != 0 {
+		return errno
+	}
+	if p.nice < 0 { // a negative result here is an errno: only root can have one
+		p.unimplemented("getpriority of a negative nice value", a)
+		return -eNOSYS
+	}
+	return p.nice
+}
+
+func sysSetpriority(p *Process, a []uint64) int64 {
+	if errno := p.priorityOf(a[0], a[1]); errno != 0 {
+		return errno
+	}
+	nice := min(max(int64(int32(a[2])), -20), 20)
+	if nice < p.nice && p.uid != 0 {
+		return -eACCES
+	}
+	p.nice = nice
+	return 0
+}
+
+const (
+	rlimInfinity = 1<<63 - 1
+	rlimitStack  = 3
+	rlimitNofile = 8
+	rlimitCount  = 9      // RLIM_NLIMITS
+	rlimitPOSIX  = 0x1000 // _RLIMIT_POSIX_FLAG: refuse, rather than clamp, a soft limit too high
+)
+
+// rlimit is a resource's {soft, hard} limit: what setrlimit made it, or what a process launchd
+// starts on a Mac or an iPhone has. RLIMIT_NPROC's depends on the device's memory and is not
+// known here; it is left unlimited, as the emulator starts no processes.
+func (p *Process) rlimit(resource uint64) [2]uint64 {
+	if l, ok := p.rlimits[resource]; ok {
+		return l
+	}
+	switch resource {
+	case 4: // RLIMIT_CORE: no core files
+		return [2]uint64{0, rlimInfinity}
+	case rlimitStack: // 8 MB and 64 MB, less a guard page
+		return [2]uint64{8<<20 - pageSize, 64<<20 - pageSize}
+	case rlimitNofile:
+		return [2]uint64{256, rlimInfinity}
+	}
+	return [2]uint64{rlimInfinity, rlimInfinity}
+}
+
+func sysGetrlimit(p *Process, a []uint64) int64 {
+	resource := a[0] &^ rlimitPOSIX
+	if resource >= rlimitCount {
+		return -eINVAL
+	}
+	l := p.rlimit(resource)
+	p.write(a[1], le64(l[0], l[1]))
+	return 0
+}
+
+// sysSetrlimit changes a limit as the kernel lets a process: a soft limit no higher than the
+// hard one, and a hard one raised only by root. The descriptors' limit is kept to (see
+// fdLimit); the stack's applies to a process yet to start, which none is here.
+func sysSetrlimit(p *Process, a []uint64) int64 {
+	resource := a[0] &^ rlimitPOSIX
+	if resource >= rlimitCount {
+		return -eINVAL
+	}
+	b := p.read(a[1], 16)
+	soft, hard := le.Uint64(b), le.Uint64(b[8:])
+	if soft > hard {
+		return -eINVAL
+	}
+	if hard > p.rlimit(resource)[1] && p.uid != 0 {
+		return -ePERM
+	}
+	if p.rlimits == nil {
+		p.rlimits = map[uint64][2]uint64{}
+	}
+	p.rlimits[resource] = [2]uint64{soft, hard}
 	return 0
 }
 

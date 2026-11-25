@@ -21,6 +21,7 @@ This list was made by reading the code, not by running guests against releases. 
 | 9 | The system volume is closed by default: only feature flags, `SystemVersion.plist`, ICU data and the Objective-C trampolines can be read | Frameworks' `Resources` (Info.plist, `.strings`, `.car`), fonts and other `/System/Library` data: frameworks behave differently with no error | `emulator/build.go` (`DefaultSystem`) | Yes, it is a default; `--system` already opens more |
 | 10 | Device and OS coverage: iPhones and iPads from the A12 only; no tvOS, watchOS, visionOS or bridgeOS; no macOS before 11 | iOS 14 to 16 on A9 to A11 devices; the other Apple platforms | `cmd/ipswrun` device tables | A9 to A11 (plain arm64 caches) and tvOS look reachable; watchOS is arm64_32; macOS before 11 has no arm64 code |
 | 11 | Hosts: an Apple silicon Mac, or Linux on arm64 or x86-64 with glibc; guests have to be built on a Mac | Intel Macs, Windows, musl Linux, CI without a Mac | `emulator/artifact.go` (pinned libunicorn builds) | Intel Macs and musl need a libunicorn build to pin; building guests on Linux needs an SDK |
+| 12 | What the system says of itself is left out where it isn't known for sure ([below](#sysctls-left-out)) | A guest that needs one of those sysctls gets ENOENT, as from a kernel without it | `emulator/bsd.go` (`sysctlValue`, `cpuFamilies`) | Yes, one value at a time, from a real device or the restore image |
 
 ## What to fix first
 
@@ -42,10 +43,31 @@ The `trivial` map in `emulator/bsd.go` used to answer 0 for calls that did nothi
 | `utimes`, `futimes`, `setattrlist`, `fsetattrlist` | Set the host file's dates; `setattrlist` also owner, group and mode, and stops as unimplemented for any other attribute |
 | `flock` | The host's `flock`, so guests sharing a mount lock each other, and so do host processes. A blocking lock waits like the other kinds of wait |
 | `mprotect`, `vm_protect` | Tracked per region; a forbidden access faults (see limit 7). It costs 2–4% on the example guests |
+| `setrlimit`, `getrlimit` | Start as launchd gives them (no core files; an 8 MB stack, less a guard page, of at most 64 MB; 256 descriptors), and change as the kernel allows: a soft limit no higher than the hard one, a hard one raised only by root. The descriptors' limit is kept to (EMFILE). RLIMIT_NPROC's real value depends on the device's memory and is not known, so it stays unlimited |
+| `fsync`, `sync` | The host's, for host files and the standard descriptors (EINVAL for a pipe, as on a Mac); 0 for what is read from the system volume. `fsync` of shared memory or a kqueue stops as unimplemented |
+| `umask` | Kept, from launchd's 022, and applied to the files and directories a guest creates in place of the host's own umask |
+| `getpriority`, `setpriority` | The process's nice value; a user may raise it but not lower it again. Darwin's own kinds (`PRIO_DARWIN_THREAD` and the like) stop as unimplemented |
+| `iopolicysys` | Kept and read back by scope and type. Setting a policy that would change what files show (access times, skipped modification times, ignored permissions) stops as unimplemented |
+| `memorystatus_get_level` | 50, as `kern.memorystatus_level` and `host_statistics` say |
+| `setsid` | EPERM, as for a process launchd started, which already leads its session and group |
 | `sigaction`, `sigprocmask`, `sigaltstack`, `setitimer` | See limit 3 |
 | `kevent`, `kevent64` | See limit 4 |
 
-Left as they are, deliberately: `setrlimit`, `fsync` and `sync` answer 0, which is harmless, and so does `__mac_syscall` for Sandbox, so `sandbox_init` succeeds and confines nothing. That is fine for running guests, but sandbox behaviour can't be studied.
+The rest of what the `trivial` map answered 0 now has no handler, and stops the run: `memorystatus_control`, `proc_rlimit_control`, `thread_selfusage`, `kqueue_workloop_ctl`, `audit_session_self`, `debug_syscall_reject_config`, `debug_syscall_reject`, `record_system_event`, `log_data`, `oslog_coproc_reg` and `oslog_coproc`. None of the example guests calls them on the releases tested. `objc_bp_assist_cfg_np`, which libobjc of iOS 16.0 calls as it starts, fails with ENOTSUP, as on a core without the hardware that assists Objective-C breakpoints.
+
+Still to check against a real kernel: the map's constant errors (`necp_open` and `getaudit_addr`, `coalition_info` and `persona` answer ENOSYS, `socket` EACCES, `work_interval_ctl` and `crossarch_trap` ENOTSUP), which fail but perhaps not as a Mac does. And `__mac_syscall`, which answers 0 to every Sandbox and Quarantine call and a made-up value to AMFI's 90: `sandbox_init` succeeds and confines nothing.
+
+## Sysctls left out
+
+A sysctl whose value is not known for sure for the release and device is not answered (ENOENT), rather than answered with another chip's or release's value:
+
+- `hw.cpufamily` of a device not in `cpuFamilies`: of the Macs, only those with an M1, M1 Pro, Max or Ultra are there. The commpage's family is then 0 too.
+- `hw.l1icachesize`, `hw.l1dcachesize` and `hw.l2cachesize`, except on an M1 Mac: an iPhone's or iPad's chip has its own.
+- `hw.cpusubfamily` and the `hw.perflevel0` fields other than its core counts (`name`, `l2cachesize`, `cpusperl2`, `physicalcpu_max`), which libBLAS asks for and does without.
+- `kern.version`, which names the build's kernel and when it was built; `kern.iossupportversion`, which is a Mac release's own (in its `SystemVersion.plist`); `kern.osproductversioncompat`, which a Mac of macOS 27 leaves empty; `kern.maxfilesperproc`, which follows the device's memory.
+- `hw.cpubrand`, which no kernel has (a Mac's brand is `machdep.cpu.brand_string`).
+
+What describes the emulated machine itself stays: one CPU (`hw.ncpu` and the `perflevel0` counts), 8 GB, half of it free (`kern.memorystatus_level`).
 
 ## AMX emulation
 

@@ -210,3 +210,174 @@ func TestMprotect(t *testing.T) {
 		}
 	})
 }
+
+// result is what a system call returned as a C caller sees it: negative for an errno.
+func (p *Process) result(t *testing.T, name string, args ...uint64) int64 {
+	t.Helper()
+	x0, carry, stopped := p.trap(number(t, name), args...)
+	if stopped != "" {
+		t.Errorf("%s stopped: %s", name, stopped)
+	}
+	if carry {
+		return -int64(x0)
+	}
+	return int64(x0)
+}
+
+// Limits start as launchd gives them, change as the kernel lets a process change them, and the
+// descriptors' is kept to.
+func TestResourceLimits(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		limit := uint64(dataAddr)
+		get := func(resource uint64) (uint64, uint64) {
+			p.result(t, "getrlimit", resource, limit)
+			return p.u64(limit), p.u64(limit + 8)
+		}
+		if soft, hard := get(rlimitNofile); soft != 256 || hard != rlimInfinity {
+			t.Errorf("RLIMIT_NOFILE starts at %d, %#x", soft, hard)
+		}
+		if soft, hard := get(4); soft != 0 || hard != rlimInfinity {
+			t.Errorf("RLIMIT_CORE starts at %d, %#x", soft, hard)
+		}
+		set := func(resource, soft, hard uint64) int64 {
+			p.write(limit, le64(soft, hard))
+			return p.result(t, "setrlimit", resource, limit)
+		}
+		if errno := set(rlimitNofile, 300, 100); errno != -eINVAL {
+			t.Errorf("soft above hard: %d", errno)
+		}
+		if errno := set(99, 1, 1); errno != -eINVAL {
+			t.Errorf("no such resource: %d", errno)
+		}
+		if errno := set(rlimitNofile, 5, 200); errno != 0 {
+			t.Errorf("lowering: %d", errno)
+		}
+		if soft, hard := get(rlimitNofile); soft != 5 || hard != 200 {
+			t.Errorf("read back %d, %d", soft, hard)
+		}
+		if errno := set(rlimitNofile, 5, 300); errno != -ePERM {
+			t.Errorf("a user raising its hard limit: %d", errno)
+		}
+		// 0 to 2 are open: two more, and then no room.
+		p.write(dataAddr+0x100, []byte(GuestHome+"/f\x00"))
+		for i, want := range []int64{3, 4, -eMFILE} {
+			if got := p.result(t, "open", dataAddr+0x100, 0x202, 0o644); got != want {
+				t.Errorf("open %d with a limit of 5: %d, want %d", i, got, want)
+			}
+		}
+		if got := p.result(t, "dup", 0); got != -eMFILE {
+			t.Errorf("dup at the limit: %d", got)
+		}
+		if got := p.result(t, "dup2", 0, 9); got != -eBADF {
+			t.Errorf("dup2 beyond the limit: %d", got)
+		}
+	})
+}
+
+// A file a guest creates has the mode it asks for less its umask, not the host's.
+func TestUmask(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		if old := p.result(t, "umask", 0o077); old != 0o22 {
+			t.Errorf("umask starts at %o", old)
+		}
+		if old := p.result(t, "umask", 0o002); old != 0o077 {
+			t.Errorf("umask read back %o", old)
+		}
+		p.write(dataAddr, []byte(GuestHome+"/f\x00"))
+		p.write(dataAddr+0x100, []byte(GuestHome+"/d\x00"))
+		p.result(t, "open", dataAddr, 0x202, 0o666)
+		p.result(t, "mkdir", dataAddr+0x100, 0o777)
+		for name, want := range map[string]os.FileMode{"f": 0o664, "d": 0o775} {
+			if st, err := os.Stat(filepath.Join(p.mounts[0].root.Name(), name)); err != nil || st.Mode().Perm() != want {
+				t.Errorf("%s created as %v (%v), want %v", name, st.Mode().Perm(), err, want)
+			}
+		}
+		p.result(t, "umask", 0o777)
+		p.result(t, "open", dataAddr, 0x202, 0o666) // there already: its mode stays
+		if st, _ := os.Stat(filepath.Join(p.mounts[0].root.Name(), "f")); st.Mode().Perm() != 0o664 {
+			t.Errorf("opening an existing file changed its mode to %v", st.Mode().Perm())
+		}
+	})
+}
+
+// fsync and sync are the host's; what the guest cannot write has nothing to write.
+func TestFsync(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		p.write(dataAddr, []byte(GuestHome+"/f\x00"))
+		fd := p.result(t, "open", dataAddr, 0x202, 0o644)
+		if got := p.result(t, "fsync", uint64(fd)); got != 0 {
+			t.Errorf("fsync of a home file: %d", got)
+		}
+		if got := p.result(t, "fsync", 99); got != -eBADF {
+			t.Errorf("fsync of no descriptor: %d", got)
+		}
+		if got := p.result(t, "sync"); got != 0 {
+			t.Errorf("sync: %d", got)
+		}
+		kq, _, _ := p.trap(number(t, "kqueue"))
+		if _, _, stopped := p.trap(number(t, "fsync"), kq); !strings.Contains(stopped, "fsync of shared memory or a kqueue") {
+			t.Errorf("fsync of a kqueue stopped with %q", stopped)
+		}
+	})
+}
+
+// Nice values read back; a user may raise its own but not lower it again.
+func TestPriority(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		if got := p.result(t, "getpriority", 0, 0); got != 0 {
+			t.Errorf("nice starts at %d", got)
+		}
+		if got := p.result(t, "setpriority", 0, 0, 10); got != 0 {
+			t.Errorf("raising nice: %d", got)
+		}
+		if got := p.result(t, "getpriority", 0, uint64(p.pid)); got != 10 {
+			t.Errorf("nice read back %d", got)
+		}
+		if got := p.result(t, "setpriority", 0, 0, 5); got != -eACCES {
+			t.Errorf("a user lowering nice: %d", got)
+		}
+		if got := p.result(t, "getpriority", 0, 12345); got != -eSRCH {
+			t.Errorf("another process: %d", got)
+		}
+		if _, _, stopped := p.trap(number(t, "setpriority"), 3, 0, 0x1000); !strings.Contains(stopped, "Darwin kind") {
+			t.Errorf("PRIO_DARWIN_THREAD stopped with %q", stopped)
+		}
+	})
+}
+
+// I/O policies read back by scope and type, and those that would change what files show stop.
+func TestIOPolicy(t *testing.T) {
+	p := newProcess(t)
+	onMain(func() {
+		param := uint64(dataAddr)
+		p.write(param, le32(0, 0, 3)) // process scope, IOPOL_TYPE_DISK, IOPOL_THROTTLE
+		if got := p.result(t, "iopolicysys", 2, param); got != 0 {
+			t.Errorf("set: %d", got)
+		}
+		p.write(param, le32(0, 0, 0))
+		p.result(t, "iopolicysys", 1, param)
+		if got := p.u32(param + 8); got != 3 {
+			t.Errorf("read back policy %d", got)
+		}
+		p.write(param, le32(0, 3, 0)) // IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, never set
+		p.result(t, "iopolicysys", 1, param)
+		if got := p.u32(param + 8); got != 0 {
+			t.Errorf("an unset policy reads %d", got)
+		}
+		p.write(param, le32(0, 8, 1)) // IOPOL_TYPE_VFS_SKIP_MTIME_UPDATE
+		if _, _, stopped := p.trap(number(t, "iopolicysys"), 2, param); !strings.Contains(stopped, "changes what files show") {
+			t.Errorf("skipping mtime updates stopped with %q", stopped)
+		}
+		p.result(t, "memorystatus_get_level", param)
+		if got := p.u32(param); got != 50 {
+			t.Errorf("memorystatus_get_level wrote %d", got)
+		}
+		if got := p.result(t, "setsid"); got != -ePERM {
+			t.Errorf("setsid of a group leader: %d", got)
+		}
+	})
+}

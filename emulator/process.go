@@ -261,7 +261,12 @@ type Process struct {
 	eventData   uint64            // where a kevent says a message it did not deliver is
 	ignored     map[int]int       // kevent filters nothing emulates, and how many changes each was sent
 	sigactions  [numSignals]sigAction
-	threadStart uint64 // libpthread's entry points, and what it said of a pthread
+	rlimits     map[uint64][2]uint64 // what setrlimit changed, by resource: {soft, hard}
+	cmask       uint32               // umask, once changed (cmaskSet)
+	cmaskSet    bool
+	nice        int64                // setpriority's, of the process
+	iopolicies  map[[2]uint32]uint32 // iopolicysys's, by {scope, type}
+	threadStart uint64               // libpthread's entry points, and what it said of a pthread
 	wqThread    uint64
 	pthreadSize uint64
 	tsdOffset   uint64
