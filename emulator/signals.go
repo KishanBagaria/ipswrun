@@ -1,6 +1,9 @@
 package emulator
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Signals. One ends the process it is sent to, does nothing, or has a handler of the process's
 // run, by what the process has said of it or by what it does unasked. A process is sent one by
@@ -45,6 +48,138 @@ type pendingSignal struct {
 	code, status int32
 	pid, uid     uint32
 	to           *thread
+	addr         uint64 // of a fault: the address that was touched, or the instruction that trapped
+	fault        bool
+}
+
+// The signals a fault makes, and what their handlers are told of them, as a Mac's kernel says it.
+const (
+	sigTrap  = 5
+	sigBus   = 10
+	sigSegv  = 11
+	sigAlarm = 14
+
+	codeNotMapped  = 2 // of SIGSEGV: memory that is not there
+	codeNoAccess   = 1 // of SIGBUS: memory that may not be touched this way
+	codeBreakpoint = 2 // of SIGTRAP: a trap instruction
+)
+
+// breakpoint says whether an instruction is a trap a program puts in itself (brk), other than
+// the ones a failed pointer check makes, which are another matter to the kernel.
+func breakpoint(instruction uint32) bool {
+	immediate := instruction >> 5 & 0xFFFF
+	return instruction&0xFFE0001F == 0xD4200000 && (immediate < 0xC470 || immediate > 0xC473)
+}
+
+// faulted is the thread that has the CPU having made a fault: its handler for the signal is
+// run, with where the fault was, and may mend it or go elsewhere. With no handler, or with the
+// signal blocked or ignored, which a fault is not held back by, the process ends by the signal.
+func (p *Process) faulted(s pendingSignal, pc uint64) {
+	t := p.current
+	s.to, s.status = t, int32(s.sig)
+	handler := p.sigactions[s.sig].handler
+	if handler <= sigIgnore || t.sigmask>>(s.sig-1)&1 != 0 {
+		p.crash = fmt.Sprintf("%s at %s lr %s\n%s", p.faultText(s), p.where(pc), p.where(p.uc.reg(regLR)), p.Diagnostics())
+		p.endSignal, p.exited = int(s.sig), true
+		return
+	}
+	p.current.pc = pc
+	p.runHandler(s)
+}
+
+func (p *Process) faultText(s pendingSignal) string {
+	switch s.sig {
+	case sigSegv:
+		return fmt.Sprintf("a touch of memory that is not there, at %#x", s.addr)
+	case sigBus:
+		return fmt.Sprintf("a touch of memory that may not be touched that way, at %#x", s.addr)
+	}
+	return "a trap"
+}
+
+// Crash describes the fault that ended the guest, if one did.
+func (p *Process) Crash() string { return p.crash }
+
+// intervalTimer is a process's real-time interval timer (setitimer's ITIMER_REAL, and alarm's).
+type intervalTimer struct {
+	due      time.Time // zero: it is not running
+	interval time.Duration
+}
+
+// sysSetitimer is setitimer(which, &new, &old): the timer that sends SIGALRM when the time it
+// was given has passed, and again after every interval, if it has one. The two that count the
+// process's own time on the CPU are read as not running, and starting one is not implemented.
+func sysSetitimer(p *Process, a []uint64) int64 {
+	which, set, old := a[0], a[1], a[2]
+	if which > 2 {
+		return -eINVAL
+	}
+	var next intervalTimer
+	if set != 0 {
+		b := p.read(set, 32)
+		interval, value, ok := timevalOf(b), timevalOf(b[16:]), true
+		for _, at := range []int{0, 16} {
+			ok = ok && int64(le.Uint64(b[at:])) >= 0 && le.Uint32(b[at+8:]) < 1000000
+		}
+		switch {
+		case !ok:
+			return -eINVAL
+		case which != 0 && value != 0:
+			p.unimplemented("setitimer that starts a timer of the process's own time", a)
+			return -eNOSYS
+		case value != 0:
+			next = intervalTimer{due: p.m.clock.now().Add(value), interval: interval}
+		}
+	}
+	if old != 0 {
+		p.write(old, p.timerLeft(which))
+	}
+	if set != 0 && which == 0 {
+		p.itimer = next
+	}
+	return 0
+}
+
+func sysGetitimer(p *Process, a []uint64) int64 {
+	if a[0] > 2 {
+		return -eINVAL
+	}
+	p.write(a[1], p.timerLeft(a[0]))
+	return 0
+}
+
+func timevalOf(b []byte) time.Duration {
+	return time.Duration(le.Uint64(b))*time.Second + time.Duration(le.Uint32(b[8:]))*time.Microsecond
+}
+
+// timerLeft is a timer as getitimer reads it: its interval, and how long until it is next due.
+func (p *Process) timerLeft(which uint64) []byte {
+	out := make([]byte, 32)
+	if which != 0 || p.itimer.due.IsZero() {
+		return out
+	}
+	timeval := func(at int, d time.Duration) {
+		le.PutUint64(out[at:], uint64(d/time.Second))
+		le.PutUint32(out[at+8:], uint32(d%time.Second/time.Microsecond))
+	}
+	timeval(0, p.itimer.interval)
+	timeval(16, max(p.itimer.due.Sub(p.m.clock.now()), time.Microsecond))
+	return out
+}
+
+// ringTimer sends the process SIGALRM if its timer is due, and reports when it is next.
+func (p *Process) ringTimer(now time.Time) time.Time {
+	t := &p.itimer
+	if t.due.IsZero() || t.due.After(now) {
+		return t.due
+	}
+	if t.interval > 0 {
+		t.due = t.due.Add((now.Sub(t.due)/t.interval + 1) * t.interval)
+	} else {
+		t.due = time.Time{}
+	}
+	p.sendSignal(pendingSignal{sig: sigAlarm, status: sigAlarm})
+	return t.due
 }
 
 const (
@@ -295,12 +430,20 @@ func (p *Process) runHandler(s pendingSignal) {
 	told := make([]byte, sigInfoSize)
 	copy(told, le32(uint32(s.sig), 0, uint32(s.code), s.pid, s.uid, uint32(s.status)))
 	le.PutUint64(told[24:], pc)
+	far, esr := uint64(0), uint64(sigSyscallESR)
+	if s.fault { // where it was; what the exception was, as the chip words it, is left out
+		le.PutUint64(told[24:], s.addr)
+		far, esr = s.addr, 0
+		if s.sig == sigTrap {
+			far = 0
+		}
+	}
 	stackFlags := uint32(0)
 	if wasOnStack {
 		stackFlags = ssOnStack
 	}
 	uc := append(le32(uint32(truth(wasOnStack)), interrupted), le64(sp, stackSize, uint64(stackFlags), 0, sigMachineSize, machine)...)
-	state := le64(0, sigSyscallESR) // the address of a fault, of which there was none, and the exception
+	state := le64(far, esr) // the address of a fault, and the exception the thread last took
 	for i := uint32(0); i < 31; i++ {
 		state = append(state, le64(p.xr(i))...)
 	}
@@ -391,7 +534,7 @@ func (p *Process) endBySignal(sig int) {
 		return
 	}
 	p.endSignal = sig
-	if p == p.m.running {
+	if p == p.m.running && p.m.stepping {
 		p.exited = true // as exit does: the machine sees to the rest when the call returns
 		return
 	}

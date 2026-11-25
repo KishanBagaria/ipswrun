@@ -27,6 +27,7 @@ type Machine struct {
 	named    map[string]*sharedMemory       // those shm_open knows by a name
 	xattrs   map[hostFile]map[string][]byte // the extended attributes of the home's and mounts' files (see metadata.go)
 	ioMain   *port                          // what IOKit's searches are sent to, once a process has asked for it
+	stepping bool                           // a thread of the running process is on the CPU now, and not between two turns
 	asked    map[string]bool                // the services that were looked for among the build's own, once each
 	replaced []*Process                     // processes that are no longer among procs, to be closed with them
 	deferred []func()                       // what a system call left to be done between stretches of emulation (see spawn.go)
@@ -302,6 +303,9 @@ func (m *Machine) schedule() bool {
 				m.exit(p, "with its last thread") // as if main had returned 0
 			}
 			live = live || !p.exited
+		}
+		if len(m.deferred) > 0 {
+			continue // what serving the processes left to be done, such as the end of one a timer's signal ended
 		}
 		if main.exited && (!live || !now.Before(m.settling)) {
 			return false

@@ -34,6 +34,7 @@ const (
 	modeARM       = 0
 	protAll       = 7
 	ctlCPUModel   = 7 | 1<<26 // UC_CTL_CPU_MODEL with one argument
+	ctlTLBFlush   = 11        // UC_CTL_TLB_FLUSH, with none
 	ctlWrite      = 1 << 30
 	ctlRead       = 2 << 30
 	hookInterrupt = 1 << 0
@@ -303,6 +304,13 @@ func (e *engine) memMapHost(addr uint64, memory []byte, prot uint32) {
 
 func (e *engine) memProtect(addr, size uint64, prot uint32) {
 	must(api.memProt(e.uc, addr, size, prot), "mem_protect %#x+%#x", addr, size)
+}
+
+// forgetTranslations has the engine look every address up again: it remembers what an address
+// may be touched for from the last time it was, and a page that may no longer be read would go
+// on being read.
+func (e *engine) forgetTranslations() {
+	must(ctlSet(e.uc, ctlTLBFlush|ctlWrite, 0), "tlb_flush")
 }
 
 func (e *engine) memUnmap(addr, size uint64) {

@@ -1,0 +1,25 @@
+a read of memory that is not there: ended by signal 11
+a write to memory that may only be read: ended by signal 10
+a trap: ended by signal 5
+a timer that runs out: ended by signal 14
+  handler: signal 11, code 2, at the page: 1, and the context says the same: 1
+back from a read of memory that is not there
+  handler: signal 10, code 1, at the page: 1, and the context says the same: 1
+back from a write to memory that may only be read; it reads 0
+  handler: signal 10, code 1, at the page: 1, and the context says the same: 1
+back from a read of memory that may not be touched
+  handler: signal 11, code 2, at the page: 1, and the context says the same: 1
+back from a read of memory that was unmapped
+  handler: signal 5, code 2, at the instruction that trapped: 1
+back from a trap
+  handler: signal 10, code 1; the page is made writable
+the write that faulted was made: 42
+a timer for once, in 30 ms: 0; none was running: 1
+it has some of that left: 1, and no interval: 1
+pause: -1 (Interrupted system call); it rang 1 time
+afterwards it is not running: 1
+every 10 ms: it rang 3 times, and was stopped with an interval of 10000
+stopped, it rings no more: 1
+alarm for 1 second: 0; alarm again, with that one left: 1; and stopped: 2
+a timer of 2000000 microseconds: -1 (Invalid argument)
+a timer there is not: -1 (Invalid argument)

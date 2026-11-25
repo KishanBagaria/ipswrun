@@ -56,7 +56,7 @@ func init() {
 		"getrusage": {2, sysGetrusage}, "getlogin": {2, sysGetlogin}, "getdtablesize": {0, sysGetdtablesize},
 		"issetugid": {0, constant(0)}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
 		"__pthread_sigmask": {3, sysSigprocmask}, "__pthread_kill": {2, sysPthreadKill}, "kill": {3, sysKill},
-		"sigaltstack": {2, sysSigaltstack}, "setitimer": {3, sysSetitimer}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
+		"sigaltstack": {2, sysSigaltstack}, "setitimer": {3, sysSetitimer}, "getitimer": {2, sysGetitimer}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
 		"bsdthread_register": {6, sysBsdthreadRegister}, "bsdthread_create": {5, sysBsdthreadCreate},
 		"bsdthread_terminate": {4, sysBsdthreadTerminate}, "__semwait_signal": {6, sysSemwaitSignal},
 		"sigsuspend": {1, sysSigsuspend}, "__sigwait": {2, sysSigwait}, "kevent_qos": {8, sysKeventQos}, "kevent": {6, sysKevent}, "kevent64": {7, sysKevent64}, "kevent_id": {8, sysKeventID}, "psynch_mutexwait": {5, sysPsynchMutexwait}, "psynch_mutexdrop": {5, sysPsynchMutexdrop}, "psynch_cvwait": {8, sysPsynchCvwait},
@@ -414,23 +414,6 @@ func sysSigaltstack(p *Process, a []uint64) int64 {
 		default:
 			t.altstack = [2]uint64{sp, size}
 		}
-	}
-	return 0
-}
-
-// sysSetitimer reads an interval timer, which is never running, and stops it. Starting one would
-// mean a signal later, which nothing delivers.
-func sysSetitimer(p *Process, a []uint64) int64 {
-	which, set, old := a[0], a[1], a[2]
-	if which > 2 {
-		return -eINVAL
-	}
-	if set != 0 && slices.ContainsFunc(p.read(set+16, 16), func(b byte) bool { return b != 0 }) {
-		p.unimplemented("setitimer that starts a timer", a)
-		return -eNOSYS
-	}
-	if old != 0 {
-		p.write(old, make([]byte, 32))
 	}
 	return 0
 }

@@ -408,7 +408,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 			next.sigactions[sig].handler = sigIgnore
 		}
 	}
-	next.current.sigmask = p.current.sigmask
+	next.current.sigmask, next.itimer = p.current.sigmask, p.itimer
 	if err := next.load(argv, env); err != nil {
 		m.replaced = append(m.replaced, next)
 		return -eNOEXEC

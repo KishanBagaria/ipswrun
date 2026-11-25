@@ -299,7 +299,7 @@ func (p *Process) signalled(number uint64) bool {
 // serve starts work queue threads for the kqueues that have something for one, and reports when
 // the next timer is due (zero: none is armed).
 func (p *Process) serve(now time.Time) (next time.Time) {
-	next = earlier(p.fireTimers(now), p.serveKevents())
+	next = earlier(earlier(p.fireTimers(now), p.serveKevents()), p.ringTimer(now))
 	for _, id := range slices.Sorted(maps.Keys(p.kqueues)) {
 		q := p.kqueues[id]
 		for ident, t := range q.timers {

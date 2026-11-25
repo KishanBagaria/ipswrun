@@ -126,9 +126,18 @@ func TestSignalState(t *testing.T) {
 		if _, carry, stopped := p.trap(number(t, "setitimer"), 0, act, 0); carry || stopped != "" {
 			t.Errorf("disarming a timer: carry %v stopped %q", carry, stopped)
 		}
-		p.write(act+16, le64(1)) // it_value: fire in a second
-		if _, _, stopped := p.trap(number(t, "setitimer"), 0, act, 0); !strings.Contains(stopped, "setitimer that starts a timer") {
-			t.Errorf("arming a timer stopped with %q", stopped)
+		// One that is started is read back with time left on it; the two that count the
+		// process's own time cannot be started.
+		p.write(act+16, le64(1)) // it_value: due in a second
+		if _, carry, stopped := p.trap(number(t, "setitimer"), 0, act, old); carry || stopped != "" || p.u64(old+16) != 0 {
+			t.Errorf("starting a timer: carry %v stopped %q, and one was running before: %d s", carry, stopped, p.u64(old+16))
+		}
+		p.trap(number(t, "getitimer"), 0, old)
+		if left := time.Duration(p.u64(old+16))*time.Second + time.Duration(p.u32(old+24))*time.Microsecond; left <= 0 || left > time.Second {
+			t.Errorf("a timer of a second has %v left", left)
+		}
+		if _, _, stopped := p.trap(number(t, "setitimer"), 1, act, 0); !strings.Contains(stopped, "setitimer that starts a timer") {
+			t.Errorf("starting a timer of the process's own time stopped with %q", stopped)
 		}
 	})
 }

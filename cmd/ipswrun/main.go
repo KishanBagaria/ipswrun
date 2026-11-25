@@ -515,6 +515,9 @@ func (o *options) runOne(r release, label string) (out outcome) {
 	out.code, _ = machine.Main().ExitCode()
 	if sig := machine.Main().Signal(); sig != 0 {
 		out.stderr += fmt.Sprintf("ipswrun: %s: the guest was ended by signal %d\n", out.name, sig)
+		if crash := machine.Main().Crash(); crash != "" {
+			out.stderr += "ipswrun: " + crash + "\n"
+		}
 	}
 	if o.Report != "" {
 		requests, fetched := image.Stats()

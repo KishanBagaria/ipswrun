@@ -261,14 +261,17 @@ type Process struct {
 	fds      map[uint64]*fd
 	nextPort uint32
 
-	exited    bool
-	early     bool // it exited while the guest the run is for was still running
-	exitCode  int
-	endSignal int             // the signal that ended it, if one did (see signals.go)
-	pending   []pendingSignal // the signals no thread has taken yet
-	fault     string
-	faultKind StopKind // of the stop that set fault, carried out of the hook it happened in
-	resume    bool
+	exited     bool
+	early      bool // it exited while the guest the run is for was still running
+	exitCode   int
+	endSignal  int             // the signal that ended it, if one did (see signals.go)
+	pending    []pendingSignal // the signals no thread has taken yet
+	guestFault *pendingSignal  // the fault the thread that has the CPU just made, on its way out of the hook
+	crash      string          // of a process a fault ended: what it was, and where
+	itimer     intervalTimer   // the timer that sends it SIGALRM, if it set one
+	fault      string
+	faultKind  StopKind // of the stop that set fault, carried out of the hook it happened in
+	resume     bool
 
 	// Threads: see threads.go.
 	threads     []*thread
@@ -665,6 +668,7 @@ func (p *Process) protect(start, end uint64, prot uint32) bool {
 		p.uc.memProtect(a, b-a, prot)
 		a = b
 	}
+	p.uc.forgetTranslations()
 	return true
 }
 
@@ -735,6 +739,7 @@ func (p *Process) unmapped(addr uint64, size int) (ok bool) {
 	}
 	if !ok {
 		p.fault = fmt.Sprintf("unmapped access %#x size %d", addr, size)
+		p.guestFault = &pendingSignal{sig: sigSegv, code: codeNotMapped, addr: addr, fault: true}
 	}
 	return ok
 }
@@ -745,6 +750,7 @@ func (p *Process) protected(kind int32, addr uint64, size int) bool {
 	defer p.hookGuard(nil)
 	what := map[int32]string{22: "write to", 23: "read of", 24: "instruction fetch from"}[kind]
 	p.fault = fmt.Sprintf("%s protected memory %#x size %d (%s)", what, addr, size, p.where(addr))
+	p.guestFault = &pendingSignal{sig: sigBus, code: codeNoAccess, addr: addr, fault: true}
 	return false
 }
 
@@ -1155,10 +1161,20 @@ func (p *Process) step() bool {
 	}
 	off := p.m.clock.alarm(limit, p.uc.stop)
 	p.usage.start(p.m.clock)
+	p.m.stepping = true
 	err := p.uc.start(p.current.pc, 0, 0)
+	p.m.stepping = false
 	p.usage.stop(p.m.clock)
 	timedOut := off()
 	pc := p.uc.reg(regPC)
+	if s := p.guestFault; s != nil && !timedOut {
+		// A fault of the guest's own: a signal to the thread that made it, as a Mac's kernel
+		// makes of one.
+		p.guestFault, p.fault = nil, ""
+		p.faulted(*s, pc)
+		return true
+	}
+	p.guestFault = nil
 	if err != nil {
 		reason := p.fault
 		if reason == "" {
@@ -1203,6 +1219,9 @@ func (p *Process) interrupt(number uint32) {
 			words = fmt.Sprintf("%08x %08x %08x %08x", le.Uint32(w), le.Uint32(w[4:]), le.Uint32(w[8:]), le.Uint32(w[12:]))
 		}()
 		p.fault = fmt.Sprintf("CPU exception %d at %s (code around pc: %s)", number, p.where(pc), words)
+		if breakpoint(instruction) {
+			p.guestFault = &pendingSignal{sig: sigTrap, code: codeBreakpoint, addr: pc, fault: true}
+		}
 		if number == 1 && amx(instruction) {
 			p.fault = fmt.Sprintf("AMX instruction %08x at %s: Accelerate's BLAS and LAPACK need Apple's matrix coprocessor, which is not emulated",
 				instruction, p.where(pc))
