@@ -57,12 +57,15 @@ jobs:
           path: examples/bin
       - run: chmod +x examples/bin/* examples/bin/ios/*
       # What ipswrun fetched of the releases, kept between runs: without it every run downloads
-      # a few hundred megabytes of each from Apple.
+      # a few hundred megabytes of each from Apple. A cache is only saved when its key is new, so the
+      # key changes with what decides what is fetched: the guests, the releases this file names and
+      # the cache's own format. "packed" leaves out the caches of sparse files, which actions/cache
+      # unpacks to their whole size, zeros and all.
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/ipswrun-matrix
-          key: matrix-${{ runner.os }}-${{ hashFiles('examples/*.c', 'examples/*.m', 'examples/*.swift', 'examples/Makefile') }}
-          restore-keys: matrix-${{ runner.os }}-
+          key: matrix-packed-${{ runner.os }}-${{ hashFiles('examples/*.c', 'examples/*.m', 'examples/*.swift', 'examples/Makefile', '.github/workflows/guests.yml', 'rangefs/cache.go') }}
+          restore-keys: matrix-packed-${{ runner.os }}-
       - run: examples/matrix.sh --guest=crypto,threads,swiftasync,ipc,service,client,prefs,adi 15.0 27.2
         env:
           IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix
