@@ -30,6 +30,7 @@ const (
 
 	filterRead     = -1
 	filterWrite    = -2
+	filterProc     = -5
 	filterSignal   = -6
 	filterTimer    = -7
 	filterMachport = -8
@@ -42,6 +43,7 @@ const (
 	evEnable   = 0x4
 	evDisable  = 0x8
 	evOneshot  = 0x10
+	evClear    = 0x20
 	evReceipt  = 0x40  // answer the change at once, as an event with EV_ERROR set
 	evDispatch = 0x80  // disabled once it has happened, until enabled again
 	evVanished = 0x200 // asked for: to be told if what is watched goes away. In an event: it did
@@ -105,6 +107,8 @@ type kqueue struct {
 	signals map[uint64]kevent    // the signals it is to be told of, by number
 	ports   map[watchKey]kevent  // the ports and sets it watches (see ports.go)
 	pipes   map[pipeWatch]kevent // the ends of pipes it watches, to read or to write (see pipes.go)
+	procs   map[watchKey]kevent  // the processes it is to be told the end of, by pid (see spawn.go)
+	errors  []kevent             // changes that were refused, to be answered with the next events asked for
 	ready   []kevent             // events that happened and have not been handed to a thread yet
 
 	// Of a workloop: its request for a thread while that waits to be answered, the thread that
@@ -123,7 +127,7 @@ type timer struct {
 func (p *Process) kqueue(id uint64) *kqueue {
 	q := p.kqueues[id]
 	if q == nil {
-		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, signals: map[uint64]kevent{}, ports: map[watchKey]kevent{}, pipes: map[pipeWatch]kevent{}, woken: map[uint64]bool{}}
+		q = &kqueue{id: id, timers: map[uint64]*timer{}, users: map[uint64]kevent{}, signals: map[uint64]kevent{}, ports: map[watchKey]kevent{}, pipes: map[pipeWatch]kevent{}, procs: map[watchKey]kevent{}, woken: map[uint64]bool{}}
 		p.kqueues[id] = q
 	}
 	return q
@@ -191,6 +195,14 @@ func (p *Process) fdKevents(a []uint64, size uint64) int64 {
 // kevents applies the changes at a[1], then gives the caller what is ready, if it asked.
 func (p *Process) kevents(q *kqueue, a []uint64) int64 {
 	p.change(q, p.readKevents(a[1], a[2]))
+	if len(q.errors) > 0 { // what was refused of the changes, where there is room to say so
+		refused := q.errors
+		q.errors = nil
+		if n := min(len(refused), int(int32(a[4]))); a[3] != 0 && n > 0 {
+			p.writeKevents(a[3], refused[:n])
+			return int64(n)
+		}
+	}
 	if p.current.state != runnable || a[3] == 0 || int32(a[4]) <= 0 || q.servicer != p.current {
 		return 0
 	}
@@ -231,6 +243,8 @@ func (p *Process) change(q *kqueue, changes []kevent) {
 			if !p.changePipe(q, c) { // of a descriptor that is no pipe's: nothing here says when
 				p.ignored[int(c.filter)]++
 			}
+		case filterProc:
+			p.changeProc(q, c)
 		case filterMemory:
 		default:
 			p.ignored[int(c.filter)]++

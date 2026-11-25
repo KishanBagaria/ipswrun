@@ -27,6 +27,8 @@ type Machine struct {
 	named    map[string]*sharedMemory       // those shm_open knows by a name
 	xattrs   map[hostFile]map[string][]byte // the extended attributes of the home's and mounts' files (see metadata.go)
 	ioMain   *port                          // what IOKit's searches are sent to, once a process has asked for it
+	replaced []*Process                     // processes that are no longer among procs, to be closed with them
+	deferred []func()                       // what a system call left to be done between stretches of emulation (see spawn.go)
 	pipes    uint64                         // how many pipes were ever made: the next one's number
 	ioRoot   *ioEntry                       // the root of the I/O Registry, once a process has asked for it (see registry.go)
 	clock    *clock
@@ -105,7 +107,7 @@ func (m *Machine) Processes() []*Process { return m.procs }
 
 // Close releases every process, the memory they shared, and the mount roots.
 func (m *Machine) Close() {
-	for _, p := range m.procs {
+	for _, p := range append(m.procs, m.replaced...) {
 		p.Close()
 	}
 	for _, s := range m.shared {
@@ -141,13 +143,15 @@ func (m *Machine) Run(timeout time.Duration) (err error) {
 // exit is what follows a process's end, however it came to it: its rights end with it, and if
 // it is the guest the run is for, the others have only a while longer.
 func (m *Machine) exit(p *Process, how string) {
-	p.early = p != m.procs[0] && !m.procs[0].exited
+	p.early = p != m.procs[0] && !m.procs[0].exited && p.parent == nil
 	p.exited = true
 	p.note("exited %s", how)
 	p.reap()
 	for _, n := range slices.Sorted(maps.Keys(p.fds)) { // and its files, with the locks on them
 		p.closeFD(n)
 	}
+	m.childExited(p)
+	m.exitWatched(p)
 	if p == m.procs[0] {
 		// The others are asked to end, as launchd asks its daemons when they are no longer
 		// wanted, and have a while to do what they do about that.
@@ -226,6 +230,11 @@ func (m *Machine) schedule() bool {
 	m.running.yield = false
 	main := m.procs[0]
 	for {
+		for len(m.deferred) > 0 {
+			do := m.deferred[0]
+			m.deferred = m.deferred[1:]
+			do()
+		}
 		now := m.clock.now()
 		var until time.Time
 		live, stuck := false, false

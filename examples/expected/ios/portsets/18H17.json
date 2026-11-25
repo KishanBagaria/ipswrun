@@ -1,0 +1,7 @@
+{
+  "build": "18H17",
+  "cache_uuid": "3C01FCEA-4C63-3553-8C06-31731FDB76A7",
+  "exit_code": 0,
+  "output": "insert into the first set: 0; into the second: 0; in a set: 1\nthe first set: message 1, from the port: 1\nthe second set: nothing (0x10004003)\nthe second set: message 2, from the port: 1\nthe first set: nothing (0x10004003)\ntake it out of the first: 0; in a set: 1\nthe first set: nothing (0x10004003)\nthe second set: message 3, from the port: 1\ntake it out of the first again: 0xc\ninsert into the first again: 0, twice: 0xb\nmove it to the second: 0\nthe first set: nothing (0x10004003)\nthe second set: message 4, from the port: 1\nmove it to no set: 0; in a set: 0\nthe second set: nothing (0x10004003)\nthe port itself: message 5, from the port: 1\n",
+  "version": "14.8"
+}

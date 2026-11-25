@@ -69,6 +69,7 @@ type fd struct {
 	pipe      *pipe
 	flags     uint32
 	noSigpipe bool
+	refs      int // the descriptors it is, in every process: a duplicate and a child's are the same end
 }
 
 func (f *fd) size() int64 {
@@ -300,7 +301,7 @@ func (p *Process) resolve(path string) (target, bool) {
 // absolute is the canonical form of a guest path, relative to the working directory or not.
 func (p *Process) absolute(path string) string {
 	if !strings.HasPrefix(path, "/") {
-		path = p.cwd + "/" + path
+		path = p.workingDirectory() + "/" + path
 	}
 	return canonical(path)
 }
@@ -415,7 +416,18 @@ func sysFstat64(p *Process, a []uint64) int64 {
 	return p.putStat(a[1], info, errno)
 }
 
+// doOpen opens a path, and marks the descriptor as one a program the process starts is not to
+// have, if the flags say so.
 func (p *Process) doOpen(path string, flags, mode uint64) int64 {
+	const cloexec = 0x1000000 // O_CLOEXEC
+	n := p.openPath(path, flags, mode)
+	if n >= 0 && flags&cloexec != 0 {
+		p.cloexec[uint64(n)] = true
+	}
+	return n
+}
+
+func (p *Process) openPath(path string, flags, mode uint64) int64 {
 	if p.full() {
 		return -eMFILE
 	}
@@ -542,7 +554,7 @@ func (p *Process) at(dirfd, path uint64) (string, int64) {
 	if strings.HasPrefix(s, "/") {
 		return s, 0
 	}
-	dir := p.cwd
+	dir := p.workingDirectory()
 	if int32(dirfd) != atFDCWD {
 		f := p.fds[dirfd&0xFFFFFFFF]
 		if f == nil {
@@ -592,6 +604,7 @@ func (p *Process) closeFD(n uint64) int64 {
 		return -eBADF
 	}
 	delete(p.fds, n)
+	delete(p.cloexec, n)
 	if f.kind == hostFD {
 		closeHost(f.host)
 		p.m.retryLocks() // its locks went with it, if it was the last descriptor of its file
@@ -672,11 +685,14 @@ func sysWrite(p *Process, a []uint64) int64 {
 			return -eBADF
 		}
 		data := p.read(a[1], a[2])
-		kept, live := &p.stdout, p.m.cfg.Stdout
+		// A process started by another writes where that one does, unless it was given
+		// somewhere else to.
+		owner := p.stdio
+		kept, live := &owner.stdout, p.m.cfg.Stdout
 		if f.host == 2 {
-			kept, live = &p.stderr, p.m.cfg.Stderr
+			kept, live = &owner.stderr, p.m.cfg.Stderr
 		}
-		if live != nil && p == p.m.procs[0] {
+		if live != nil && owner == p.m.procs[0].stdio {
 			// As it is written, and as it is: whoever reads it is the guest's own reader.
 			if _, err := live.Write(data); err != nil {
 				stopf("the guest's output could not be written: %v", err)
@@ -684,7 +700,7 @@ func sysWrite(p *Process, a []uint64) int64 {
 			return int64(a[2])
 		}
 		text := strings.ToValidUTF8(string(data), "�")
-		if p.stdout.Len()+p.stderr.Len()+len(text) > maxKeptOutput {
+		if owner.stdout.Len()+owner.stderr.Len()+len(text) > maxKeptOutput {
 			stopf("%s wrote more than %d MB, and what a guest writes is kept until the run ends, unless it is the one guest of a run against one release, whose output is passed on as it is written", p.Label(), maxKeptOutput>>20)
 		}
 		kept.WriteString(text)
@@ -811,35 +827,86 @@ func sysFaccessat(p *Process, a []uint64) int64 {
 	return p.atPath(a[0], a[1], func(path string) int64 { return p.doAccess(path) })
 }
 
-func sysChdir(p *Process, a []uint64) int64 {
-	t, info, errno := p.describePath("chdir", p.cstr(a[0]), true)
+func sysChdir(p *Process, a []uint64) int64 { return p.changeDirectory(p.cstr(a[0])) }
+
+// changeDirectory is chdir, of a process or of one about to start.
+func (p *Process) changeDirectory(path string) int64 {
+	dir, errno := p.directory(path)
+	if errno == 0 {
+		p.cwd = dir
+	}
+	return errno
+}
+
+// directory is the directory a path names, for something to be in.
+func (p *Process) directory(path string) (string, int64) {
+	t, info, errno := p.describePath("chdir", path, true)
 	if errno != 0 {
-		return errno
+		return "", errno
 	}
 	if info.mode&syscall.S_IFMT != syscall.S_IFDIR {
-		return -eNOTDIR
+		return "", -eNOTDIR
 	}
-	p.cwd = t.path
-	return 0
+	return t.path, 0
+}
+
+// workingDirectory is the directory the calling thread is in: the process's, unless the thread
+// has one of its own.
+func (p *Process) workingDirectory() string {
+	if t := p.current; t != nil && t.cwd != "" {
+		return t.cwd
+	}
+	return p.cwd
+}
+
+// sysPthreadChdir gives the calling thread a working directory of its own, and sysPthreadFchdir
+// one by a descriptor, or with -1 takes it away again: how a thread starts a program in a
+// directory without the others finding themselves there.
+func sysPthreadChdir(p *Process, a []uint64) int64 {
+	dir, errno := p.directory(p.cstr(a[0]))
+	if errno == 0 {
+		p.current.cwd = dir
+	}
+	return errno
+}
+
+func sysPthreadFchdir(p *Process, a []uint64) int64 {
+	if int32(a[0]) == -1 {
+		p.current.cwd = ""
+		return 0
+	}
+	dir, errno := p.descriptorDirectory(a[0])
+	if errno == 0 {
+		p.current.cwd = dir
+	}
+	return errno
 }
 
 func sysFchdir(p *Process, a []uint64) int64 {
-	f := p.fds[a[0]]
+	dir, errno := p.descriptorDirectory(a[0])
+	if errno == 0 {
+		p.cwd = dir
+	}
+	return errno
+}
+
+// descriptorDirectory is the directory a descriptor is of.
+func (p *Process) descriptorDirectory(n uint64) (string, int64) {
+	f := p.fds[n]
 	if f == nil {
-		return -eBADF
+		return "", -eBADF
 	}
 	if f.path == "" {
-		return -eNOTDIR
+		return "", -eNOTDIR
 	}
 	info, errno := p.describeFD(f)
 	if errno != 0 {
-		return errno
+		return "", errno
 	}
 	if info.mode&syscall.S_IFMT != syscall.S_IFDIR {
-		return -eNOTDIR
+		return "", -eNOTDIR
 	}
-	p.cwd = f.path
-	return 0
+	return f.path, 0
 }
 
 // writableTarget resolves a guest path to a writable target under the home or a mount.
@@ -1097,6 +1164,7 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 		dup = &fd{kind: f.kind, shared: f.shared.retain(), path: f.path, pos: f.pos}
 	default:
 		dup = f // shares the offset, like a real duplicate
+		dup.refs++
 	}
 	n := minFD
 	if exact {
@@ -1105,9 +1173,13 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 		if dup.kind == hostFD {
 			syscall.Close(dup.host)
 		}
+		if dup == f {
+			dup.refs--
+		}
 		return -eMFILE
 	}
 	p.fds[n] = dup
+	delete(p.cloexec, n) // a duplicate is the child's too, whatever the original is
 	return int64(n)
 }
 
@@ -1129,7 +1201,20 @@ func sysFcntl(p *Process, a []uint64) int64 {
 		}
 		p.write(arg, str(path))
 	case 0, 67: // F_DUPFD, F_DUPFD_CLOEXEC
-		return p.dupFD(a[0], arg, false)
+		n := p.dupFD(a[0], arg, false)
+		if n >= 0 && cmd == 67 {
+			p.cloexec[uint64(n)] = true
+		}
+		return n
+	case 1: // F_GETFD
+		return int64(truth(p.cloexec[a[0]]))
+	case 2: // F_SETFD
+		if arg&fdCloexec != 0 {
+			p.cloexec[a[0]] = true
+		} else {
+			delete(p.cloexec, a[0])
+		}
+		return 0
 	case 3: // F_GETFL
 		return 2
 	case 97: // F_ADDFILESIGS_RETURN: the signature covers the file up to the blob

@@ -1,0 +1,7 @@
+{
+  "build": "20G165",
+  "cache_uuid": "5F50D953-A228-3416-A982-9FDE102DB036",
+  "exit_code": 0,
+  "output": "from the shell\nsystem: status 5\npopen: through popen -> 0\nNSTask: \"from NSTask\", status 0\n",
+  "version": "11.6"
+}

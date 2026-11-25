@@ -23,6 +23,8 @@ const (
 	kernNoSpace        = 3
 	kernInvalidArg     = 4
 	kernFailure        = 5
+	kernAlreadyInSet   = 11
+	kernNotInSet       = 12
 	kernInvalidName    = 15
 	kernInvalidRight   = 17
 	kernInvalidValue   = 18
@@ -46,7 +48,7 @@ func init() {
 		"port_allocate": {3, machPortAllocate}, "port_construct": {4, machPortConstruct}, "port_deallocate": {2, machPortDeallocate},
 		"port_mod_refs": {4, machPortModRefs}, "port_insert_right": {4, machPortInsertRight}, "port_destruct": {4, machPortDestruct},
 		"port_guard": {4, machPortGuard}, "port_unguard": {3, machPortUnguard}, "port_get_attributes": {5, machPortGetAttributes}, "port_insert_member": {3, machPortInsertMember},
-		"port_move_member": {3, machPortInsertMember}, "port_extract_member": {3, machPortExtractMember}, "port_type": {3, machPortType},
+		"port_move_member": {3, machPortMoveMember}, "port_extract_member": {3, machPortExtractMember}, "port_type": {3, machPortType},
 		"port_request_notification":         {7, machPortRequestNotification},
 		"task_dyld_process_info_notify_get": {2, constant(kernFailure)}, // nobody is watching
 		"timebase_info":                     {1, machTimebaseInfo}, "generate_activity_id": {3, machGenerateActivityID},

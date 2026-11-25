@@ -50,7 +50,7 @@ func init() {
 		"mremap_encrypted": {0, constant(0)}, "shared_region_check_np": {1, sysSharedRegionCheck},
 		"shared_region_map_and_slide_2_np": {4, sysSharedRegionMap}, "map_with_linking_np": {4, constant(-eNOTSUP)},
 		// process
-		"exit": {1, sysExit}, "getpid": {0, sysGetpid}, "getppid": {0, constant(1)}, "getuid": {0, sysGetuid},
+		"exit": {1, sysExit}, "getpid": {0, sysGetpid}, "getppid": {0, sysGetppid}, "posix_spawn": {5, sysPosixSpawn}, "wait4": {4, sysWait4}, "__pthread_chdir": {1, sysPthreadChdir}, "__pthread_fchdir": {1, sysPthreadFchdir}, "execve": {3, sysExecve}, "getuid": {0, sysGetuid},
 		"geteuid": {0, sysGetuid}, "getgid": {0, sysGetgid}, "getegid": {0, sysGetgid}, "gettid": {2, constant(-eSRCH)},
 		"setuid": {1, sysSetuid}, "seteuid": {1, sysSetuid}, "setgid": {1, sysSetgid}, "setegid": {1, sysSetgid},
 		"getrusage": {2, sysGetrusage}, "getlogin": {2, sysGetlogin}, "getdtablesize": {0, sysGetdtablesize},
@@ -68,7 +68,7 @@ func init() {
 		"setrlimit": {2, sysSetrlimit}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
-		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpid}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
 	}
 	for name, v := range trivial {
 		bsdHandlers[name] = handler{4, constant(v)}

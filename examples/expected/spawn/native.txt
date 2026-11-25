@@ -1,0 +1,24 @@
+a child that exits 7: posix_spawn 0, a pid of its own: 1, exited 7
+child: hello, on the descriptors it was started with
+it exited 0
+child: 4 arguments, the last "one more"; SPAWN_GIVEN is the parent's; its parent is the one that started it: 1
+it exited 0
+child: 4 arguments, the last "one more"; SPAWN_GIVEN is not set; its parent is the one that started it: 1
+with another environment, it exited 0
+read from the child: 19 "child: into a pipe", then 0; it exited 0
+through a child and back: "THROUGH THE CHILD"; it exited 0
+a child writing to a file: it exited 0; the file has "child: into a file"
+child: descriptor 3 is open
+it exited 0
+told to close what it is not given: it exited 0
+child: descriptor 3 is closed
+one marked to be closed: it exited 0
+child: in spawn.dir
+it exited 0
+a child still running, not waited for: 0; waited for, any child: it is that one: 1, exited 3
+waited for again: -1 (No child processes)
+with no child at all: -1 (No child processes)
+a program that is not there: No such file or directory
+a directory: Permission denied
+a file that may not be run: Permission denied
+one that may, and is no program: Exec format error

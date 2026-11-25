@@ -1,0 +1,7 @@
+{
+  "build": "26B131",
+  "cache_uuid": "C208F2EB-29B0-3D9E-BA56-45FD90E37B16",
+  "exit_code": 0,
+  "output": "from the shell\nsystem: status 5\npopen: through popen -> 0\nNSTask: \"from NSTask\", status 0\n",
+  "version": "27.2.1"
+}

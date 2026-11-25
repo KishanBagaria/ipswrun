@@ -210,6 +210,9 @@ type Config struct {
 	// and error as it writes it, and none of it is kept (Process.Stdout). What the other guests
 	// write is always kept.
 	Stdout, Stderr io.Writer
+	// Program reads a program of the build for a guest to start, whatever of the system volume
+	// guests may read: nil for a path with no file, and true for a directory.
+	Program func(path string) (image []byte, dir bool, err error)
 	// DeviceTree reads the device's flattened device tree, which is what the I/O Registry holds;
 	// with none, the registry is not there to ask. It is read when a guest first asks.
 	DeviceTree func() ([]byte, error)
@@ -297,6 +300,16 @@ type Process struct {
 	stdout  strings.Builder
 	stderr  strings.Builder
 	usage   usage // what the process has used of the machine (see usage.go)
+
+	// Of a process another started (see spawn.go): which, and whether that one has been told
+	// how it ended. ppid is 1, launchd, for a guest of the run's own. stdio is the process whose
+	// standard output and error it writes to: itself, or the one it was started under.
+	parent  *Process
+	pgroup  uint32 // the group it is in, if not one of its own
+	ppid    uint32
+	reaped  bool
+	stdio   *Process
+	cloexec map[uint64]bool // the descriptors a program it starts is not to have
 
 	cacheDir   string
 	cachePaths map[string]dyldcache.File
@@ -411,6 +424,7 @@ func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Pro
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},
 		fds:      map[uint64]*fd{0: {kind: stdioFD, host: 0}, 1: {kind: stdioFD, host: 1}, 2: {kind: stdioFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{path: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
+	p.ppid, p.stdio, p.cloexec = launchdPID, p, map[uint64]bool{}
 	for _, v := range volumes { // their roots, for fsgetpath
 		p.seen[fileID{v.dev, rootInode}] = v.mount
 	}
@@ -484,10 +498,19 @@ func (p *Process) ExitCode() (code int, ok bool) { return p.exitCode, p.exited }
 func (p *Process) LeftEarly() bool { return p.early }
 
 // Stdout is everything the guest wrote to file descriptor 1.
-func (p *Process) Stdout() string { return p.stdout.String() }
+func (p *Process) Stdout() string { return p.output().stdout.String() }
+
+// output is the process that holds what p wrote: itself, unless it is a program put in the
+// place of the one that was started (execve), which goes on writing where that one did.
+func (p *Process) output() *Process {
+	if p.parent == nil {
+		return p.stdio
+	}
+	return p
+}
 
 // Stderr is everything the guest wrote to file descriptor 2.
-func (p *Process) Stderr() string { return p.stderr.String() }
+func (p *Process) Stderr() string { return p.output().stderr.String() }
 
 // MappedPages is the number of guest pages that were actually touched.
 func (p *Process) MappedPages() int { return len(p.mapped) }

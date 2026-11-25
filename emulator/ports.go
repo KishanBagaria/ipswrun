@@ -23,7 +23,7 @@ type port struct {
 	owner   *Process // who holds its receive right: nobody while a message carries it, or launchd holds it
 	name    uint32   // what the owner calls it
 	set     bool
-	in      *port         // the set it is a member of, if any
+	sets    []*port       // the sets it is a member of: one message, for whichever is received from first
 	queue   []machMessage // as they were sent
 	due     time.Time     // of a timer (mk_timer) that is armed: when; zero otherwise
 	context uint64        // what it was made or guarded with, which its owner reads back
@@ -180,7 +180,7 @@ func (p *Process) readable(q *port) *port {
 	}
 	var first *port
 	for _, r := range p.names {
-		if member := r.port; r.receive && member.in == q && len(member.queue) > 0 && (first == nil || member.name < first.name) {
+		if member := r.port; r.receive && slices.Contains(member.sets, q) && len(member.queue) > 0 && (first == nil || member.name < first.name) {
 			first = member
 		}
 	}
@@ -378,16 +378,14 @@ func destroy(q *port) {
 func (p *Process) portGone(q *port) {
 	if q.set {
 		for _, r := range p.names {
-			if r.port.in == q {
-				r.port.in = nil
-			}
+			r.port.sets = slices.DeleteFunc(r.port.sets, func(set *port) bool { return set == q })
 		}
 	}
 	for _, t := range p.waiters(waitPort, uint64(q.name)) {
 		t.answer = &result{x0: rcvPortDied}
 		t.wake()
 	}
-	q.owner, q.in = nil, nil
+	q.owner, q.sets = nil, nil
 }
 
 // reap ends every right of a process that has exited: its ports die, and the ports it could
@@ -519,8 +517,8 @@ func machPortGetAttributes(p *Process, a []uint64) int64 {
 			flags |= statusStrict
 		}
 		var set uint32
-		if q.in != nil {
-			set = q.in.name
+		if len(q.sets) > 0 {
+			set = q.sets[0].name
 		}
 		flag := func(b bool) uint32 {
 			if b {
@@ -681,20 +679,52 @@ func machSpecialReplyPort(p *Process, a []uint64) int64 {
 	return int64(p.current.reply)
 }
 
-// setMember puts a port in a set, or with none takes it out of the one it is in.
-func (p *Process) setMember(name, setName uint32) int64 {
-	q, set := p.owned(name), p.owned(setName)
-	if q == nil || q.set || setName != 0 && (set == nil || !set.set) {
+// member is a port and a set of the process's, by their names; false if they are not that.
+func (p *Process) member(name, setName uint32) (q, set *port, ok bool) {
+	q, set = p.owned(name), p.owned(setName)
+	return q, set, q != nil && !q.set && set != nil && set.set
+}
+
+// machPortInsertMember puts a port in a set, beside the sets it is in already.
+func machPortInsertMember(p *Process, a []uint64) int64 {
+	q, set, ok := p.member(uint32(a[1]), uint32(a[2]))
+	switch {
+	case !ok:
 		return kernInvalidArg
+	case slices.Contains(q.sets, set):
+		return kernAlreadyInSet
 	}
-	q.in = set
+	q.sets = append(q.sets, set)
 	return 0
 }
 
-func machPortInsertMember(p *Process, a []uint64) int64 {
-	return p.setMember(uint32(a[1]), uint32(a[2]))
+// machPortMoveMember puts a port in a set and takes it out of every other, or with no set out
+// of them all.
+func machPortMoveMember(p *Process, a []uint64) int64 {
+	q, set, ok := p.member(uint32(a[1]), uint32(a[2]))
+	switch {
+	case a[2] == 0 && q != nil && !q.set:
+		q.sets = nil
+	case !ok:
+		return kernInvalidArg
+	default:
+		q.sets = []*port{set}
+	}
+	return 0
 }
-func machPortExtractMember(p *Process, a []uint64) int64 { return p.setMember(uint32(a[1]), 0) }
+
+// machPortExtractMember takes a port out of a set it is in.
+func machPortExtractMember(p *Process, a []uint64) int64 {
+	q, set, ok := p.member(uint32(a[1]), uint32(a[2]))
+	switch {
+	case !ok:
+		return kernInvalidArg
+	case !slices.Contains(q.sets, set):
+		return kernNotInSet
+	}
+	q.sets = slices.DeleteFunc(q.sets, func(s *port) bool { return s == set })
+	return 0
+}
 
 // ---- timers that send a message when they are due (mk_timer), which is how a run loop sleeps ----
 
@@ -863,10 +893,7 @@ func post(q *port, m machMessage) {
 	if owner == nil {
 		return // it waits for whoever gets the port
 	}
-	for _, at := range []*port{q, q.in} {
-		if at == nil {
-			continue
-		}
+	for _, at := range append([]*port{q}, q.sets...) {
 		if t := owner.firstWaiter(waitPort, uint64(at.name)); t != nil {
 			// The room it gave may not be memory it has: that is its receive failing, not this send.
 			into := handler{fn: func(p *Process, _ []uint64) int64 { return p.hand(q, *t.receiving) }}

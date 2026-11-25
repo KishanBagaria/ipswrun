@@ -113,6 +113,8 @@ for guest in ${guests//,/ }; do
 	# adi asks the release's adid, which on iOS is another daemon, of FairPlay's, that needs more
 	# of an iPhone than there is.
 	[ "$platform" != ios ] || [ "$guest" != adi ] || continue
+	# shell runs /bin/sh and /bin/echo, which iOS has not.
+	[ "$platform" != ios ] || [ "$guest" != shell ] || continue
 	if [ "$(uname)" = Darwin ]; then
 		make -s -C examples PLATFORM=$platform "${bin#examples/}/$guest" || exit
 	elif [ ! -x "$bin/$guest" ]; then
@@ -150,8 +152,8 @@ wait
 
 failed=0
 for guest in ${guests//,/ }; do
-	if [ "$platform" = ios ] && [ "$guest" = adi ]; then
-		echo "== adi: not run on iOS"
+	if [ "$platform" = ios ] && { [ "$guest" = adi ] || [ "$guest" = shell ]; }; then
+		echo "== $guest: not run on iOS"
 		continue
 	fi
 	[ "$guests" = "$guest" ] || echo "== $guest"

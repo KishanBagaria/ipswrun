@@ -1,0 +1,7 @@
+{
+  "build": "20G165",
+  "cache_uuid": "5F50D953-A228-3416-A982-9FDE102DB036",
+  "exit_code": 0,
+  "output": "a child that exits 7: posix_spawn 0, a pid of its own: 1, exited 7\nchild: hello, on the descriptors it was started with\nit exited 0\nchild: 4 arguments, the last \"one more\"; SPAWN_GIVEN is the parent's; its parent is the one that started it: 1\nit exited 0\nchild: 4 arguments, the last \"one more\"; SPAWN_GIVEN is not set; its parent is the one that started it: 1\nwith another environment, it exited 0\nread from the child: 19 \"child: into a pipe\", then 0; it exited 0\nthrough a child and back: \"THROUGH THE CHILD\"; it exited 0\na child writing to a file: it exited 0; the file has \"child: into a file\"\nchild: descriptor 3 is open\nit exited 0\ntold to close what it is not given: it exited 0\nchild: descriptor 3 is closed\none marked to be closed: it exited 0\nchild: in spawn.dir\nit exited 0\na child still running, not waited for: 0; waited for, any child: it is that one: 1, exited 3\nwaited for again: -1 (No child processes)\nwith no child at all: -1 (No child processes)\na program that is not there: No such file or directory\na directory: Permission denied\na file that may not be run: Permission denied\none that may, and is no program: Exec format error\n",
+  "version": "11.6"
+}

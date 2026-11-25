@@ -67,8 +67,8 @@ func sysPipe(p *Process, a []uint64) int64 {
 	p.m.pipes++
 	now := p.m.clock.now()
 	q := &pipe{id: p.m.pipes, size: pipeSize, readers: 1, writers: 1, made: now, written: now}
-	r := p.newFD(&fd{kind: pipeFD, pipe: q})
-	w := p.newFD(&fd{kind: pipeFD, pipe: q, flags: flagWriteOnly})
+	r := p.newFD(&fd{kind: pipeFD, pipe: q, refs: 1})
+	w := p.newFD(&fd{kind: pipeFD, pipe: q, flags: flagWriteOnly, refs: 1})
 	p.setX(1, w)
 	return int64(r)
 }
@@ -78,10 +78,8 @@ func (f *fd) writing() bool { return f.flags&flagWriteOnly != 0 }
 // pipeClosed is the last descriptor of one end of a pipe closing, which those who wait on the
 // other are told.
 func (p *Process) pipeClosed(f *fd) {
-	for _, other := range p.fds {
-		if other == f {
-			return // a duplicate is still open
-		}
+	if f.refs--; f.refs > 0 {
+		return // a duplicate is still open, or another process's
 	}
 	if f.writing() {
 		f.pipe.writers--
@@ -191,31 +189,36 @@ func (p *Process) brokenPipe(f *fd) int64 {
 }
 
 // pipeChanged gives the threads that wait on a pipe what they waited for, if it is there now,
-// and the threads in select their answer.
+// and the threads in select their answer: of every process, as a pipe's ends may be in two.
 func (p *Process) pipeChanged(q *pipe) {
-	for _, t := range p.waiters(waitPipe, q.id) {
-		op := t.pipeOp
-		if t.state != waiting || op == nil { // served meanwhile, by what an earlier one's turn set off
+	for _, owner := range p.m.procs {
+		if owner.exited {
 			continue
 		}
-		try := p.tryRead
-		if op.f.writing() {
-			try = p.tryWrite
+		for _, t := range owner.waiters(waitPipe, q.id) {
+			op := t.pipeOp
+			if t.state != waiting || op == nil { // served meanwhile, by what an earlier one's turn set off
+				continue
+			}
+			try := owner.tryRead
+			if op.f.writing() {
+				try = owner.tryWrite
+			}
+			if r, ok := try(op); ok {
+				t.pipeOp = nil
+				t.answer = &result{x0: uint64(max(r, -r)), carry: r < 0}
+				t.wake()
+			}
 		}
-		if r, ok := try(op); ok {
-			t.pipeOp = nil
-			t.answer = &result{x0: uint64(max(r, -r)), carry: r < 0}
-			t.wake()
-		}
-	}
-	for _, t := range p.waiters(waitSelect, 0) {
-		if t.state != waiting || t.selecting == nil {
-			continue
-		}
-		if n := p.selected(t.selecting); n > 0 {
-			t.selecting = nil
-			t.answer = &result{x0: uint64(n)}
-			t.wake()
+		for _, t := range owner.waiters(waitSelect, 0) {
+			if t.state != waiting || t.selecting == nil {
+				continue
+			}
+			if n := owner.selected(t.selecting); n > 0 {
+				t.selecting = nil
+				t.answer = &result{x0: uint64(n)}
+				t.wake()
+			}
 		}
 	}
 }

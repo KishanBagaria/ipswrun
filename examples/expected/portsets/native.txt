@@ -1,0 +1,16 @@
+insert into the first set: 0; into the second: 0; in a set: 1
+the first set: message 1, from the port: 1
+the second set: nothing (0x10004003)
+the second set: message 2, from the port: 1
+the first set: nothing (0x10004003)
+take it out of the first: 0; in a set: 1
+the first set: nothing (0x10004003)
+the second set: message 3, from the port: 1
+take it out of the first again: 0xc
+insert into the first again: 0, twice: 0xb
+move it to the second: 0
+the first set: nothing (0x10004003)
+the second set: message 4, from the port: 1
+move it to no set: 0; in a set: 0
+the second set: nothing (0x10004003)
+the port itself: message 5, from the port: 1

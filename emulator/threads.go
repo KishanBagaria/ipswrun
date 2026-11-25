@@ -38,9 +38,11 @@ const (
 	waitLock
 	waitPipe
 	waitSelect
+	waitChild
+	waitSpawn
 )
 
-var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message", "a file lock", "a pipe", "a descriptor to be ready"}
+var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message", "a file lock", "a pipe", "a descriptor to be ready", "a child to end", "a process it is starting"}
 
 // thread is one guest thread. Its registers are in ctx whenever it is not the one running.
 type thread struct {
@@ -67,6 +69,8 @@ type thread struct {
 	receiving *message   // of a thread waiting for a Mach message: where it wants it
 	pipeOp    *pipeOp    // of a thread waiting on a pipe: what it is in the middle of
 	selecting *selecting // of a thread waiting in select: what it asked about
+	cwd       string     // its working directory, if it has one of its own (see sysPthreadChdir)
+	waiting4  *waiting4  // of a thread waiting for a child to end: which, and where to say how
 
 	sigmask  uint32    // the signals it blocks
 	altstack [2]uint64 // its alternate signal stack, if it has one: where, and its size

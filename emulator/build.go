@@ -40,9 +40,11 @@ func BaseEnv(home string) []string {
 // DefaultSystem is what a guest may read from the build's system volume unless told otherwise:
 // the feature flags, the system version, ICU's data (locales, calendars, time zones), the
 // Objective-C runtime's block trampolines, which are not in the shared cache, and the sandbox
-// profiles, which a daemon that cannot read its own gives up over.
+// profiles, which a daemon that cannot read its own gives up over, and the programs, which a
+// guest that starts one looks for first.
 var DefaultSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/CoreServices/SystemVersion.plist", "/usr/share/icu/",
-	"/usr/lib/libobjc-trampolines.dylib", "/System/Library/Sandbox/Profiles/", "/usr/share/sandbox/"}
+	"/usr/lib/libobjc-trampolines.dylib", "/System/Library/Sandbox/Profiles/", "/usr/share/sandbox/",
+	"/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/libexec/"}
 
 // SystemPrefix starts the name of an executable that is taken from the build's system volume
 // and not from the host: system:/usr/libexec/dirhelper.
@@ -308,8 +310,29 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		return f, nil
 	}
 
+	// program reads a program of the build for a guest to start.
+	program := func(path string) ([]byte, bool, error) {
+		entry, err := image.Stat(rangefs.FileSystem, path)
+		for links := 0; err == nil && entry.Kind == rangefs.Symlink && links < 16; links++ {
+			if path = entry.Target; !strings.HasPrefix(path, "/") {
+				path = pathpkg.Join(pathpkg.Dir(path), entry.Target)
+			}
+			entry, err = image.Stat(rangefs.FileSystem, path)
+		}
+		switch {
+		case err != nil:
+			return nil, false, err
+		case entry.Kind == rangefs.Directory:
+			return nil, true, nil
+		case entry.Kind != rangefs.Regular || entry.File == nil:
+			return nil, false, nil
+		}
+		data, err := entry.File.Pread(0, entry.File.Size())
+		return data, false, err
+	}
+
 	build := image.Build()
-	m, err := NewMachine(Config{Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, Stdout: run.Stdout, Stderr: run.Stderr, System: system, Trace: run.Trace, Survey: run.Survey,
+	m, err := NewMachine(Config{Program: program, Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: run.Mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, Stdout: run.Stdout, Stderr: run.Stderr, System: system, Trace: run.Trace, Survey: run.Survey,
 		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device(), "board": image.Board()}})
 	if err != nil {
 		return nil, cache, err

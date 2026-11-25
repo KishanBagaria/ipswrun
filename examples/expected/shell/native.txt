@@ -1,0 +1,4 @@
+from the shell
+system: status 5
+popen: through popen -> 0
+NSTask: "from NSTask", status 0
