@@ -280,3 +280,32 @@ func (f *fakeCacheFile) Pread(off, n int64) ([]byte, error) {
 	}
 	return f.data[off:min(off+n, int64(len(f.data)))], nil
 }
+
+// A symbolic link of the system volume to a directory on the way to the shared cache is a link
+// to lstat and readlink, as dyld's realpath walks it, and the directory to everything else.
+func TestSystemLinkToCacheDirectory(t *testing.T) {
+	p := newProcess(t)
+	const link, real, text = "/System/Library/Frameworks/CoreServices.framework/Frameworks",
+		"/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks", "Versions/Current/Frameworks"
+	p.system = func(path string) (SystemFile, error) {
+		if path == link {
+			return SystemFile{Dir: true, Real: real, Link: text}, nil
+		}
+		return SystemFile{}, nil
+	}
+	if _, info, errno := p.describePath("lstat", link, false); errno != 0 || info.mode != modeLink || info.size != int64(len(text)) {
+		t.Fatalf("lstat: errno %d mode %#o size %d, want a link", errno, info.mode, info.size)
+	}
+	if target, info, errno := p.describePath("stat", link, true); errno != 0 || info.mode != modeDir || target.path != real {
+		t.Fatalf("stat: errno %d mode %#o path %s, want the directory %s", errno, info.mode, target.path, real)
+	}
+	onMain(func() {
+		buf := uint64(dataAddr)
+		if n := p.doReadlink(link, buf, 64); n != int64(len(text)) || string(p.read(buf, uint64(n))) != text {
+			t.Errorf("readlink: %d", n)
+		}
+		if n := p.doReadlink(real, buf, 64); n != -eINVAL {
+			t.Errorf("readlink of the directory: %d, want EINVAL", n)
+		}
+	})
+}

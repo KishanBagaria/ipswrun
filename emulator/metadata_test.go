@@ -413,7 +413,7 @@ func TestMacSyscall(t *testing.T) {
 			{[]uint64{out, pid, 0, 0, 0, 0x40000001, 1}, 0, 0},
 			{[]uint64{out, pid, write, 1, plist, 0x40000011, 1}, 0, 0}, // a path that is there
 			{[]uint64{out, pid, write, 1, write, 1}, 0, 2},             // and one that is not
-			{[]uint64{out, 1, write, 0xf0, 2, 0x20000005}, 0, 0}, // stderr is open
+			{[]uint64{out, 1, write, 0xf0, 2, 0x20000005}, 0, 0},       // stderr is open
 			{[]uint64{out, 1, write, 0xf0, 99, 0x20000005}, -eBADF, 0xaaaaaaaaaaaaaaaa},
 		} {
 			if got := mac(sandbox, 2, c.words...); got != c.want || p.u64(out) != c.result {

@@ -13,6 +13,7 @@ package emulator
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -187,6 +188,9 @@ type SystemFile struct {
 	Real string
 	// ReadDir lists the directory's entries when Dir is true and the volume backs it.
 	ReadDir func() ([]string, error)
+	// Link, of a directory the path's last part only links to, is that symbolic link's text: what
+	// lstat and readlink see.
+	Link string
 }
 
 // Config describes the machine the guests run on.
@@ -1017,10 +1021,20 @@ func (p *Process) load(argv, env []string) error {
 	if err != nil {
 		return fmt.Errorf("guest executable: %w", err)
 	}
+	cdhash := ""
 	if image, _, _ := p.loadMachO(exe, "guest", 0); image.CodeSignature() != nil {
 		signed := image.CodeSignature()
+		rank := -1
 		for _, directory := range signed.CodeDirectories {
 			p.identity = directory.ID
+			// The kernel's hash of the executable is that of its code directory of the strongest
+			// hash it knows, cut to 20 bytes. dyld checks it against the launch closures the
+			// shared cache has for the system's own executables, and uses one only if it matches.
+			if r := slices.Index([]uint8{1, 3, 2, 4}, uint8(directory.Header.HashType)); r > rank && len(directory.CDHash) >= 40 {
+				if _, err := hex.DecodeString(directory.CDHash); err == nil {
+					rank, cdhash = r, directory.CDHash[:40]
+				}
+			}
 		}
 		p.entitlements, p.entitlementsDER = signed.Entitlements, signed.EntitlementsDER
 	}
@@ -1028,8 +1042,11 @@ func (p *Process) load(argv, env []string) error {
 		fmt.Sprintf("main_stack=%#x,%#x,%#x,%#x", uint64(stackTop), uint64(stackSize), uint64(stackTop), uint64(stackSize)),
 		fmt.Sprintf("executable_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(exeInode)),
 		fmt.Sprintf("dyld_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(dyldInode)),
-		"executable_cdhash=" + strings.Repeat("11", 20), "executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", fmt.Sprintf("th_port=%#x", mainThreadPort),
+		"executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", fmt.Sprintf("th_port=%#x", mainThreadPort),
 		"ptrauth_disabled=1", "dyld_flags=0x0", "stack_guard=0x5a17c0de5a17c000", "malloc_entropy=0x1122334455667788,0x8877665544332211"}
+	if cdhash != "" { // an executable with no code signature has none
+		apple = append(apple, "executable_cdhash="+cdhash)
+	}
 	var text []byte
 	var offsets [][]uint64
 	for _, group := range [][]string{argv, env, apple} {

@@ -113,6 +113,7 @@ type target struct {
 	data    []byte
 	cache   dyldcache.File
 	readDir func() ([]string, error)
+	link    string // of a symbolic link on the system volume to the directory it is (see SystemFile.Link)
 }
 
 // fd is the descriptor for a target that is not a host file.
@@ -281,15 +282,20 @@ func (p *Process) resolve(path string) (target, bool) {
 	if path == "" {
 		return target{}, false
 	}
-	if !strings.HasPrefix(path, "/") {
-		path = p.cwd + "/" + path
-	}
-	path = canonical(path)
+	path = p.absolute(path)
 	t, ok := p.lookup(path)
 	if t.path == "" {
 		t.path = path
 	}
 	return t, ok
+}
+
+// absolute is the canonical form of a guest path, relative to the working directory or not.
+func (p *Process) absolute(path string) string {
+	if !strings.HasPrefix(path, "/") {
+		path = p.cwd + "/" + path
+	}
+	return canonical(path)
 }
 
 func (p *Process) lookup(path string) (target, bool) {
@@ -332,7 +338,7 @@ func (p *Process) lookup(path string) (target, bool) {
 			stopf("%v", err)
 		}
 		if f.Dir {
-			return target{kind: dirFD, path: f.Real, readDir: f.ReadDir}, true
+			return target{kind: dirFD, path: f.Real, readDir: f.ReadDir, link: f.Link}, true
 		}
 		if f.File != nil {
 			return target{kind: cacheFD, cache: f.File}, true
@@ -366,6 +372,7 @@ const (
 	fixedMtime = 1700000000
 	modeDir    = syscall.S_IFDIR | 0o755
 	modeFile   = syscall.S_IFREG | 0o755
+	modeLink   = syscall.S_IFLNK | 0o755
 )
 
 // putStat writes the struct stat64 of a file that was described without an error.
@@ -898,13 +905,16 @@ func sysTruncate(p *Process, a []uint64) int64 {
 
 // doReadlink serves the links a guest makes under its home or a mount; nothing else is a symbolic link.
 func (p *Process) doReadlink(path string, buf, size uint64) int64 {
-	t, ok := p.writableTarget(path)
-	if !ok {
+	var link string
+	if t, ok := p.writableTarget(path); ok {
+		var err error
+		if link, err = t.root.Readlink(t.rel); err != nil {
+			return hostErrno(err)
+		}
+	} else if t, ok := p.resolve(path); ok && t.link != "" { // one of the system volume's
+		link = t.link
+	} else {
 		return -eINVAL
-	}
-	link, err := t.root.Readlink(t.rel)
-	if err != nil {
-		return hostErrno(err)
 	}
 	n := min(uint64(len(link)), size)
 	p.write(buf, []byte(link)[:n])
