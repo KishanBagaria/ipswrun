@@ -11,7 +11,7 @@ import (
 	"sort"
 )
 
-// PageSize is the arm64 macOS page size.
+// PageSize is the page size of arm64 macOS and iOS.
 const PageSize = 0x4000
 
 var le = binary.LittleEndian

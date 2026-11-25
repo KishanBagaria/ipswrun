@@ -1,5 +1,5 @@
-// ipswrun runs an arm64 Mach-O inside the userland of any macOS build, taken from that build's
-// restore image (IPSW) over HTTP range requests. See the readme.
+// ipswrun runs an arm64 Mach-O inside the userland of any macOS or iOS build, taken from that
+// build's restore image (IPSW) over HTTP range requests. See the readme.
 package main
 
 import (
@@ -84,7 +84,7 @@ func checkExecutable(path string) error {
 	case st.IsDir():
 		return fmt.Errorf("%s is a directory", path)
 	case compiler(path, "") != nil && runtime.GOOS != "darwin":
-		return fmt.Errorf("compiling %s requires macOS; pass a prebuilt arm64 Mach-O on this host", path)
+		return fmt.Errorf("compiling %s needs Xcode on a Mac; pass a prebuilt arm64 Mach-O on this host", path)
 	}
 	return nil
 }

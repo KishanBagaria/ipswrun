@@ -1,7 +1,9 @@
 // Package emulator is a minimal user-mode Darwin "kernel" for arm64e on Unicorn.
 //
-// It starts a macOS build's own /usr/lib/dyld the way XNU would, lets it map that build's dyld
-// shared cache, and pages cache contents in on first touch. System calls and Mach traps are
+// It starts a macOS or iOS build's own /usr/lib/dyld the way XNU would, lets it map that build's
+// dyld shared cache, and pages cache contents in on first touch. What differs between the two
+// (where anonymous memory goes, what the system says of itself) follows the platform the cache
+// was built for. System calls and Mach traps are
 // implemented just far enough for libSystem, CoreFoundation, Foundation, the Objective-C and
 // Swift runtimes, Security, SQLite, libdispatch and XPC to run, as one process or as several that
 // send each other Mach messages (see Machine); anything unimplemented stops the run with a

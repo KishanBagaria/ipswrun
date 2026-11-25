@@ -102,7 +102,8 @@ func realDirectory(image *rangefs.Image, path string) (string, error) {
 }
 
 // RunBuild starts the guest, and the daemons beside it, inside the userland of the build in image
-// and runs them until the guest exits. The machine is returned even when the run fails, for its
+// and runs them until the guest exits. The build may be of macOS or of iOS: which one is the
+// returned cache's Platform. The machine is returned even when the run fails, for its
 // diagnostics; the caller closes it.
 func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error) {
 	if err := os.MkdirAll(filepath.Join(run.Home, "tmp"), 0o777); err != nil { // BaseEnv's TMPDIR

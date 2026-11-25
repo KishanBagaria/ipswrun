@@ -25,7 +25,7 @@ const (
 )
 
 // ErrNoSystemOS is in the error of a SystemOS read on a restore image that has no SystemOS cryptex:
-// every release before macOS 13, which keeps everything in the system volume.
+// every release before macOS 13 and iOS 16, which keep everything in the system volume.
 var ErrNoSystemOS = info.ErrorCryptexNotFound
 
 // Image is a remote or local restore image whose volumes are opened on first use.

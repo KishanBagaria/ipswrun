@@ -18,8 +18,8 @@ func ctlGet(uc uintptr, control uint32, value *int32) int32  { return ucCtl.get(
 func hostSymbols() []symbol { return nil }
 
 // commpageRows is what is not zero in the two commpages of an Apple silicon Mac (macOS 27.2),
-// in rows of 16 bytes: a Linux host has no commpage of its own to give the guest. The per-boot
-// random values at 0x320 are left out. setupCommpage replaces the clock fields.
+// in rows of 16 bytes: a Linux host has no commpage of its own to give the guest, of macOS or of
+// iOS. The per-boot random values at 0x320 are left out. setupCommpage replaces the clock fields.
 var commpageRows = []struct {
 	addr  uint64
 	bytes string

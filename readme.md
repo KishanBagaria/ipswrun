@@ -1,8 +1,8 @@
 # ipswrun
 
-ipswrun runs an arm64 Mach-O binary against the system libraries of any macOS release since 11, fetching only the parts it needs from Apple's restore image (IPSW) for that release. You don't need a Mac running that release, a VM, or the ~26 GB ipsw image downloaded on disk.
+ipswrun runs an arm64 Mach-O binary against the system libraries of any macOS release since 11, or of an iOS release, fetching only the parts it needs from Apple's restore image (IPSW) for that release. You don't need a device running that release, a VM, or the multi-gigabyte ipsw image (~26 GB for macOS) downloaded on disk.
 
-Use it to see what a framework does or what a private API returns on every macOS release across history. It runs a guest against [iOS](#ios) too.
+Use it to see what a framework does or what a private API returns on every macOS or iOS release across history. macOS is the default; an iPhone or iPad [`--device`](#ios) picks iOS.
 
 ## Try it
 
@@ -67,6 +67,8 @@ The first argument chooses the releases:
 | `/path/to/UniversalMac_Restore.ipsw` | a local restore image on disk |
 | `11,15.2,27.2.1` | several of the above |
 
+With an iPhone or iPad `--device`, the same names are of [iOS](#ios) releases.
+
 Every release Apple had published when ipswrun was built is built in ([`releases.tsv`](cmd/ipswrun/releases.tsv)) and resolves with nothing looked up. A newer one is the current release in [Apple's feed](https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml), or, once it has been replaced, is looked up in the [ipsw.me](https://ipsw.me) index of the restore images Apple has published. The index is not Apple's, so ipswrun follows it only to an https URL on Apple's hosts, and refuses an image that turns out not to be the build it was listed as. A version no release has, such as `11.0`, stands for the releases under it (11.0.1). macOS 13 and 14 are skipped unless you pass [`--stream-compressed`](#what-does-not-work).
 
 ## Usage
@@ -81,7 +83,7 @@ On macOS with Xcode command line tools, pass a single C, Objective-C, or Swift f
 ./ipswrun all examples/foundation.m
 ```
 
-ipswrun compiles the file once into a temporary arm64 executable targeting macOS 11, with the flags of [`examples/Makefile`](examples/Makefile): Objective-C guests get ARC and Foundation. The executable of an `--agent` or `--daemon` may be a source file too. For extra libraries, custom compiler flags, or entitlements, pass a prebuilt executable.
+ipswrun compiles the file once into a temporary arm64 executable targeting macOS 11, or iOS 14 for an [iOS](#ios) `--device`, with the flags of [`examples/Makefile`](examples/Makefile): Objective-C guests get ARC and Foundation. The executable of an `--agent` or `--daemon` may be a source file too. For extra libraries, custom compiler flags, or entitlements, pass a prebuilt executable.
 
 The program you run, the guest, is an ordinary executable built on a Mac:
 
@@ -89,7 +91,7 @@ The program you run, the guest, is an ordinary executable built on a Mac:
 clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains -o guest guest.c
 ```
 
-`-no_fixup_chains` is what lets every release's dyld load it. A binary with only arm64e code, as Apple's own are, is loaded too. [`examples/Makefile`](examples/Makefile) has the flags for Objective-C and Swift too.
+`-no_fixup_chains` is what lets every release's dyld load it. A binary with only arm64e code, as Apple's own are, is loaded too. [`examples/Makefile`](examples/Makefile) has the flags for Objective-C and Swift too, and for iOS.
 
 An executable can also be the release's own, by `system:` and its path there: `system:/usr/libexec/dirhelper`.
 
@@ -128,7 +130,7 @@ An iPhone or iPad `--device` runs the guest against iOS instead, from that devic
 
 The release is named as for macOS: a version or build, `latest`, `all`, `18`, `18.*`, a range, or an image's URL or path, commas in its name and all. Every iOS release is looked up in the [ipsw.me](https://ipsw.me) index for the device, with the same checks as a macOS one; none are built in. `--releases` lists them.
 
-A guest built for iOS is an ordinary iOS executable. Pass a source file and ipswrun builds it against the iOS SDK, which needs Xcode, not only its command line tools; to build it yourself:
+A guest for iOS is an ordinary iOS executable, built against the iOS SDK, which needs Xcode, not only its command line tools. ipswrun builds a source file so, and the examples build with `make -C examples PLATFORM=ios` into `examples/bin/ios`. By hand:
 
 ```sh
 xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=14.0 -Wl,-no_fixup_chains -o guest guest.c
@@ -164,8 +166,8 @@ What the guest gets is what it gets on macOS, with the same home. What iOS has t
 
 - **Host:** macOS on Apple silicon, or Linux on arm64 or x86-64 with glibc.
 - **To build:** Go and a C compiler, since dependencies use cgo.
-- **On Linux:** bring a guest built on a Mac. It is given a commpage recorded on an Apple silicon Mac.
-- **Network:** the first run downloads a pinned, hash-verified `libunicorn` into the user cache directory. macOS 15 and later images are encrypted, and their key comes from Apple's key service.
+- **On Linux:** bring a guest built on a Mac. It is given a commpage recorded on an Apple silicon Mac, whether it runs against macOS or iOS.
+- **Network:** the first run downloads a pinned, hash-verified `libunicorn` into the user cache directory. macOS 15 and later and iOS 18 and later images are encrypted, and their key comes from Apple's key service.
 
 ## What does not work
 
@@ -190,6 +192,6 @@ iOS so far only with executables of the release's own (`truncate`, `vm_stat`): i
 
 Three packages, one per layer:
 
-- [`rangefs`](rangefs) opens the restore image over HTTP ranges: ZIP directory → disk image (AEA-encrypted or UDIF) → GPT → APFS → file. A read fetches exactly the bytes it needs, and any response that is not exactly the requested range is refused.
-- [`dyldcache`](dyldcache) parses the shared cache and produces pages rebased the way the kernel's shared-region pager would (slide info v2, v3, v5).
-- [`emulator`](emulator) is a small user-mode Darwin "kernel" on [Unicorn](https://www.unicorn-engine.org), with an engine for each guest. It starts the release's `/usr/lib/dyld` the way XNU does, lets it map its own shared cache, and pages contents in on first touch. BSD system calls, Mach traps and a few MIG routines are implemented just far enough for libSystem, CoreFoundation, Foundation, the Objective-C and Swift runtimes, Security and SQLite.
+- [`rangefs`](rangefs) opens the restore image, of macOS or of iOS, over HTTP ranges or from disk: ZIP directory → disk image (AEA-encrypted or UDIF) → GPT → APFS → file. A read fetches exactly the bytes it needs, and any response that is not exactly the requested range is refused.
+- [`dyldcache`](dyldcache) parses the shared cache and produces pages rebased the way the kernel's shared-region pager would (slide info v2, v3, v5). It also reads which platform, macOS or iOS, the cache was built for.
+- [`emulator`](emulator) is a small user-mode Darwin "kernel" on [Unicorn](https://www.unicorn-engine.org), with an engine for each guest. It starts the release's `/usr/lib/dyld` the way XNU does, lets it map its own shared cache, and pages contents in on first touch. The one kernel serves both systems, and what they expect differently of it (where memory goes, what the system says it is) follows the cache's platform. BSD system calls, Mach traps and a few MIG routines are implemented just far enough for libSystem, CoreFoundation, Foundation, the Objective-C and Swift runtimes, Security and SQLite.
