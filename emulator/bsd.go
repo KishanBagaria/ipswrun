@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/KishanBagaria/ipswrun/dyldcache"
 )
@@ -31,17 +32,21 @@ func init() {
 		"open": {3, sysOpen}, "openat": {4, sysOpenat}, "guarded_open_np": {5, sysGuardedOpen}, "open_dprotected_np": {5, sysOpenDprotected}, "guarded_close_np": {2, sysGuardedClose},
 		"guarded_write_np": {4, sysGuardedWrite}, "guarded_pwrite_np": {5, sysGuardedPwrite}, "close": {1, sysClose},
 		"read": {3, sysRead}, "pread": {4, sysPread}, "write": {3, sysWrite}, "writev": {3, sysWritev}, "pwrite": {4, sysPwrite}, "lseek": {3, sysLseek},
-		"ftruncate": {2, sysFtruncate}, "fsync": {1, constant(0)}, "access": {2, sysAccess}, "unlink": {1, sysUnlink},
+		"ftruncate": {2, sysFtruncate}, "fsync": {1, sysFsync}, "sync": {0, sysSync}, "umask": {1, sysUmask}, "iopolicysys": {2, sysIopolicysys}, "memorystatus_get_level": {1, sysMemorystatusGetLevel}, "getpriority": {2, sysGetpriority}, "setpriority": {3, sysSetpriority}, "access": {2, sysAccess}, "unlink": {1, sysUnlink},
 		"mkdir": {2, sysMkdir}, "rename": {2, sysRename}, "readlink": {3, sysReadlink}, "readlinkat": {4, sysReadlinkat},
 		"mkdirat": {3, sysMkdirat}, "rmdir": {1, sysRmdir}, "unlinkat": {3, sysUnlinkat}, "renameat": {4, sysRenameat},
 		"renameatx_np": {5, sysRenameatx}, "faccessat": {4, sysFaccessat}, "truncate": {2, sysTruncate}, "fcntl": {3, sysFcntl}, "dup": {1, sysDup}, "dup2": {2, sysDup2},
-		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir},
+		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir}, "chmod": {2, sysChmod}, "fchmod": {2, sysFchmod}, "chown": {3, sysChown},
+		"lchown": {3, sysLchown}, "fchown": {3, sysFchown}, "utimes": {2, sysUtimes}, "futimes": {2, sysFutimes},
+		"setattrlist": {5, sysSetattrlist}, "fsetattrlist": {5, sysFsetattrlist}, "flock": {2, sysFlock},
+		"getxattr": {6, sysGetxattr}, "fgetxattr": {6, sysFgetxattr}, "setxattr": {6, sysSetxattr}, "fsetxattr": {6, sysFsetxattr},
+		"listxattr": {4, sysListxattr}, "flistxattr": {4, sysFlistxattr}, "removexattr": {3, sysRemovexattr}, "fremovexattr": {3, sysFremovexattr},
 		"ioctl": {3, constant(-eNOTTY)}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
 		"getattrlist": {5, sysGetattrlist}, "getattrlistat": {6, sysGetattrlistat}, "fgetattrlist": {5, sysFgetattrlist},
 		"getattrlistbulk": {5, sysGetattrlistbulk}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen}, "shm_unlink": {1, sysShmUnlink},
 		"getfsstat64": {3, constant(0)}, "pathconf": {2, sysPathconf}, "fpathconf": {2, sysPathconf}, "getdirentries64": {4, sysGetdirentries64},
 		// memory
-		"mmap": {6, sysMmap}, "munmap": {2, sysMunmap}, "mprotect": {3, constant(0)}, "madvise": {3, constant(0)},
+		"mmap": {6, sysMmap}, "munmap": {2, sysMunmap}, "mprotect": {3, sysMprotect}, "madvise": {3, constant(0)},
 		"mremap_encrypted": {0, constant(0)}, "shared_region_check_np": {1, sysSharedRegionCheck},
 		"shared_region_map_and_slide_2_np": {4, sysSharedRegionMap}, "map_with_linking_np": {4, constant(-eNOTSUP)},
 		// process
@@ -49,16 +54,16 @@ func init() {
 		"geteuid": {0, sysGetuid}, "getgid": {0, sysGetgid}, "getegid": {0, sysGetgid}, "gettid": {2, constant(-eSRCH)},
 		"issetugid": {0, constant(0)}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
 		"__pthread_sigmask": {3, sysSigprocmask}, "__pthread_kill": {2, sysPthreadKill}, "kill": {3, sysKill},
-		"sigaltstack": {2, constant(0)}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
+		"sigaltstack": {2, sysSigaltstack}, "setitimer": {3, sysSetitimer}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
 		"bsdthread_register": {6, sysBsdthreadRegister}, "bsdthread_create": {5, sysBsdthreadCreate},
 		"bsdthread_terminate": {4, sysBsdthreadTerminate}, "__semwait_signal": {6, sysSemwaitSignal},
-		"sigsuspend": {1, sysSigsuspend}, "__sigwait": {2, sysSigsuspend}, "kevent_qos": {8, sysKeventQos}, "kevent_id": {8, sysKeventID}, "psynch_mutexwait": {5, sysPsynchMutexwait}, "psynch_mutexdrop": {5, sysPsynchMutexdrop}, "psynch_cvwait": {8, sysPsynchCvwait},
+		"sigsuspend": {1, sysSigsuspend}, "__sigwait": {2, sysSigsuspend}, "kevent_qos": {8, sysKeventQos}, "kevent": {6, sysKevent}, "kevent64": {7, sysKevent64}, "kevent_id": {8, sysKeventID}, "psynch_mutexwait": {5, sysPsynchMutexwait}, "psynch_mutexdrop": {5, sysPsynchMutexdrop}, "psynch_cvwait": {8, sysPsynchCvwait},
 		"psynch_cvsignal": {8, sysPsynchCvsignal}, "psynch_cvbroad": {7, sysPsynchCvbroad}, "psynch_cvclrprepost": {7, constant(0)},
 		"psynch_rw_rdlock": {5, sysPsynchRWRdlock}, "psynch_rw_wrlock": {5, sysPsynchRWWrlock}, "psynch_rw_unlock": {5, sysPsynchRWUnlock}, "bsdthread_ctl": {4, constant(0)}, "workq_open": {0, constant(0)},
 		"workq_kernreturn": {4, sysWorkqKernreturn}, "kdebug_trace64": {0, constant(0)}, "kdebug_trace": {0, constant(0)},
 		"kdebug_trace_string": {0, constant(0)}, "kdebug_typefilter": {2, constant(-ePERM)}, "getentropy": {2, sysGetentropy},
 		"ptrace": {1, sysPtrace}, "select": {5, sysSelect}, "pselect": {5, sysPselect}, "kqueue": {0, sysKqueue}, "guarded_kqueue_np": {2, sysKqueue}, "csops": {4, sysCsops}, "csops_audittoken": {4, sysCsops}, "csrctl": {3, constant(-ePERM)}, "getrlimit": {2, sysGetrlimit},
-		"setrlimit": {2, constant(0)}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
+		"setrlimit": {2, sysSetrlimit}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
 		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpid}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
@@ -69,15 +74,15 @@ func init() {
 }
 
 // trivial are more calls answered with a constant (negative: errno) and no side effects.
+// None answers success: a call that would have done something is implemented, or has no handler
+// and stops the run. setsid fails as it does for a process launchd started, which already leads
+// its session and its process group (getpgrp is its pid). objc_bp_assist_cfg_np fails as on a
+// core without the hardware that assists Objective-C breakpoints, which the emulated one is.
 var trivial = map[string]int64{
-	"objc_bp_assist_cfg_np": 0, "iopolicysys": 0, "work_interval_ctl": -eNOTSUP, "memorystatus_control": 0, "proc_rlimit_control": 0,
-	"thread_selfusage": 0, "crossarch_trap": -eNOTSUP, "kevent64": 0, "kevent": 0,
-	"kqueue_workloop_ctl": 0, "necp_open": -eNOSYS, "socket": -eACCES, "umask": 0o22,
-	"audit_session_self": 0, "getaudit_addr": -eNOSYS, "coalition_info": -eNOSYS, "persona": -eNOSYS,
-	"debug_syscall_reject_config": 0, "debug_syscall_reject": 0, "setattrlist": 0, "fsetattrlist": 0, "chmod": 0, "fchmod": 0,
-	"flock": 0, "setxattr": 0, "fsetxattr": 0, "getxattr": -eNOATTR, "fgetxattr": -eNOATTR, "listxattr": 0, "flistxattr": 0,
-	"memorystatus_get_level": 0, "record_system_event": 0, "log_data": 0, "oslog_coproc_reg": 0, "oslog_coproc": 0, "setpriority": 0,
-	"getpriority": 0, "setsid": 0, "setitimer": 0, "utimes": 0, "futimes": 0, "fchown": 0, "chown": 0, "sync": 0,
+	"work_interval_ctl": -eNOTSUP, "crossarch_trap": -eNOTSUP, "objc_bp_assist_cfg_np": -eNOTSUP,
+	"necp_open": -eNOSYS, "socket": -eACCES,
+	"getaudit_addr": -eNOSYS, "coalition_info": -eNOSYS, "persona": -eNOSYS,
+	"setsid": -ePERM,
 }
 
 // call runs a handler; touching unmapped guest memory yields onFault instead of ending the run.
@@ -120,12 +125,13 @@ func (p *Process) bsd(n int64) {
 
 func sysMmap(p *Process, a []uint64) int64 {
 	addr, length, flags, fdn, off := a[0], a[1], a[3], a[4], a[5]
+	deny := denied(uint32(a[2]))
 	fixed := flags&0x10 != 0
 	if fixed && addr&tbiMask+length > vaLimit {
 		return -eNOMEM
 	}
 	if flags&0x1000 != 0 || fdn >= 1<<31 { // MAP_ANON, or no descriptor
-		start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, name: "mmap"})
+		start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, name: "mmap", deny: deny})
 		if !ok {
 			return -eNOMEM
 		}
@@ -139,13 +145,13 @@ func sysMmap(p *Process, a []uint64) int64 {
 		return -eACCES
 	}
 	if f.shared != nil && flags&mapShared != 0 {
-		return p.mapShared(f.shared, addr, length, off, fixed)
+		return p.mapShared(f.shared, addr, length, off, fixed, deny)
 	}
 	name := "?"
 	if f.path != "" {
 		name = f.path
 	}
-	what := allocation{addr: addr, fixed: fixed, kind: fileRegion, name: "mmap:" + name}
+	what := allocation{addr: addr, fixed: fixed, kind: fileRegion, name: "mmap:" + name, deny: deny}
 	if f.kind == cacheFD { // fetched by range, so only the pages the guest touches
 		what.file, what.off = f.cache, off
 	} else {
@@ -159,6 +165,19 @@ func sysMmap(p *Process, a []uint64) int64 {
 		return -eNOMEM
 	}
 	return int64(start)
+}
+
+// sysMprotect changes what a range of pages may be accessed for. An access they do not allow
+// ends the run, as the fault ends a process whose signal nothing handles.
+func sysMprotect(p *Process, a []uint64) int64 {
+	addr := a[0] & tbiMask
+	if addr%pageSize != 0 {
+		return -eINVAL
+	}
+	if !p.protect(addr, addr+align(a[1], pageSize), uint32(a[2]&protAll)) {
+		return -eNOMEM
+	}
+	return 0
 }
 
 func sysMunmap(p *Process, a []uint64) int64 {
@@ -213,7 +232,7 @@ func sysSharedRegionMap(p *Process, a []uint64) int64 {
 		p.unmap(addr, addr+align(size, pageSize))
 		if !backing {
 			// Not file backed: dyld hands over a buffer (its dynamic config) to copy in.
-			r := &region{start: addr, end: addr + align(size, pageSize), name: "shared-region"}
+			r := &region{start: addr, end: addr + align(size, pageSize), name: "shared-region", deny: denied(prot)}
 			if f == nil && p.findRegion(fileOff) != nil {
 				if r.data = p.read(fileOff, size); len(r.data) > 0 {
 					r.kind = fileRegion
@@ -227,7 +246,7 @@ func sysSharedRegionMap(p *Process, a []uint64) int64 {
 			stopf("inconsistent shared region slide")
 		}
 		p.slide, p.slideSet = slide, true
-		p.addRegion(&region{start: addr, end: addr + size, kind: cacheRegion, name: "cache"})
+		p.addRegion(&region{start: addr, end: addr + size, kind: cacheRegion, name: "cache", deny: denied(prot)})
 	}
 	return 0
 }
@@ -251,16 +270,112 @@ func sysGethostuuid(p *Process, a []uint64) int64 {
 	return 0
 }
 
+// Signals are never delivered: the calls that would send one (kill, pthread_kill, a CPU fault, a
+// timer) end the run instead. What a process says about signals is kept and read back as a
+// kernel does, which is all a process can see of it until one arrives.
+
+const (
+	sigKill    = 9
+	sigStop    = 17
+	numSignals = 32
+	ssDisable  = 4     // SS_DISABLE: no alternate signal stack
+	minSigStk  = 32768 // MINSIGSTKSZ
+	// saUser is SA_USERSPACE_MASK: the flags a process reads back. libc also passes SA_USERTRAMP,
+	// which the kernel keeps to itself.
+	saUser = 0x7f
+)
+
+// sigAction is a signal's disposition, as struct sigaction says it: handler, mask, flags.
+type sigAction struct {
+	handler uint64
+	mask    uint32
+	flags   uint32
+}
+
+// sysSigaction sets and reads a signal's disposition. The kernel's argument is struct
+// __sigaction, which has libc's trampoline after the handler; what it hands back is the plain
+// struct sigaction.
 func sysSigaction(p *Process, a []uint64) int64 {
-	if a[2] != 0 {
-		p.write(a[2], make([]byte, 16))
+	sig, act, old := a[0], a[1], a[2]
+	if sig == 0 || sig >= numSignals || act != 0 && (sig == sigKill || sig == sigStop) {
+		return -eINVAL
+	}
+	if old != 0 {
+		was := p.sigactions[sig]
+		p.write(old, append(le64(was.handler), le32(was.mask, was.flags)...))
+	}
+	if act != 0 {
+		b := p.read(act, 24)
+		p.sigactions[sig] = sigAction{handler: le.Uint64(b), mask: le.Uint32(b[16:]), flags: le.Uint32(b[20:]) & saUser}
 	}
 	return 0
 }
 
+// sysSigprocmask sets and reads the calling thread's mask of blocked signals: sigprocmask and
+// pthread_sigmask alike, since Darwin keeps the mask per thread.
 func sysSigprocmask(p *Process, a []uint64) int64 {
-	if a[2] != 0 {
-		p.write(a[2], make([]byte, 4))
+	how, set, old := a[0], a[1], a[2]
+	t := p.current
+	was := t.sigmask
+	if set != 0 {
+		mask := p.u32(set) &^ (1<<(sigKill-1) | 1<<(sigStop-1))
+		switch how {
+		case 1: // SIG_BLOCK
+			t.sigmask |= mask
+		case 2: // SIG_UNBLOCK
+			t.sigmask &^= mask
+		case 3: // SIG_SETMASK
+			t.sigmask = mask
+		default:
+			return -eINVAL
+		}
+	}
+	if old != 0 {
+		p.write(old, le32(was))
+	}
+	return 0
+}
+
+// sysSigaltstack sets and reads the calling thread's alternate signal stack (stack_t).
+func sysSigaltstack(p *Process, a []uint64) int64 {
+	set, old := a[0], a[1]
+	t := p.current
+	if old != 0 {
+		flags := uint32(ssDisable)
+		if t.altstack[1] != 0 {
+			flags = 0
+		}
+		p.write(old, append(le64(t.altstack[0], t.altstack[1]), le32(flags, 0)...))
+	}
+	if set != 0 {
+		b := p.read(set, 24)
+		switch sp, size, flags := le.Uint64(b), le.Uint64(b[8:]), le.Uint32(b[16:]); {
+		case flags&ssDisable != 0:
+			t.altstack = [2]uint64{}
+		case flags != 0:
+			return -eINVAL
+		case size < minSigStk:
+			return -eNOMEM
+		default:
+			t.altstack = [2]uint64{sp, size}
+		}
+	}
+	return 0
+}
+
+// sysSetitimer reads an interval timer, which is never running, and stops it. Starting one would
+// mean a signal later, which nothing delivers.
+func sysSetitimer(p *Process, a []uint64) int64 {
+	which, set, old := a[0], a[1], a[2]
+	if which > 2 {
+		return -eINVAL
+	}
+	if set != 0 && slices.ContainsFunc(p.read(set+16, 16), func(b byte) bool { return b != 0 }) {
+		p.unimplemented("setitimer that starts a timer", a)
+		return -eNOSYS
+	}
+	if old != 0 {
+		p.write(old, make([]byte, 32))
 	}
 	return 0
 }
@@ -354,6 +469,9 @@ const (
 // sysKqueue gives a descriptor that can be described and closed like any other. The events asked
 // of it never happen: only libdispatch's own kqueues, which have no descriptor, are emulated.
 func sysKqueue(p *Process, a []uint64) int64 {
+	if p.full() {
+		return -eMFILE
+	}
 	return int64(p.newFD(&fd{kind: dataFD}))
 }
 
@@ -389,15 +507,139 @@ func sysPtrace(p *Process, a []uint64) int64 {
 	return -eINVAL
 }
 
-func sysGetrlimit(p *Process, a []uint64) int64 {
-	limits := []uint64{0x7FFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF}
-	switch a[0] & 0xFF {
-	case 3: // RLIMIT_STACK
-		limits = []uint64{stackSize, 64 << 20}
-	case 8: // RLIMIT_NOFILE
-		limits = []uint64{256, 10240}
+// sysIopolicysys sets and reads back a process's or thread's I/O policies (iopolicy_set and
+// _get). A disk policy only changes how soon I/O is done, which nothing here can tell. The
+// policies of what a file system shows (access times, modification times, permissions) would
+// change what the guest sees, and stop the run when set.
+func sysIopolicysys(p *Process, a []uint64) int64 {
+	const get, set = 1, 2 // IOPOL_CMD_GET and _SET
+	b := p.read(a[1], 12) // struct _iopol_param_t: scope, type, policy
+	scope, kind, policy := le.Uint32(b), le.Uint32(b[4:]), le.Uint32(b[8:])
+	key := [2]uint32{scope, kind}
+	if scope == 1 { // IOPOL_SCOPE_THREAD: the thread's own
+		key[0] = 1<<16 | uint32(p.current.port)
 	}
-	p.write(a[1], le64(limits...))
+	p.note("  iopolicysys cmd %d scope %d type %d policy %d", a[0], scope, kind, policy)
+	switch {
+	case scope > 2:
+		return -eINVAL
+	case a[0] == set && (kind == 2 || kind == 7 || kind == 8): // ATIME_UPDATES, IGNORE_PERMISSIONS, SKIP_MTIME_UPDATE
+		p.unimplemented("iopolicysys of a policy that changes what files show", a)
+		return -eNOSYS
+	case a[0] == set:
+		if p.iopolicies == nil {
+			p.iopolicies = map[[2]uint32]uint32{}
+		}
+		p.iopolicies[key] = policy
+	case a[0] == get:
+		p.write(a[1]+8, le32(p.iopolicies[key])) // IOPOL_DEFAULT until set
+	default:
+		return -eINVAL
+	}
+	return 0
+}
+
+// sysMemorystatusGetLevel is the percentage of memory free, as kern.memorystatus_level says.
+func sysMemorystatusGetLevel(p *Process, a []uint64) int64 {
+	level, _ := p.sysctlValue("kern.memorystatus_level")
+	p.write(a[0], le32(uint32(level.(uint64))))
+	return 0
+}
+
+// Priorities are a process's nice value, by PRIO_PROCESS, PRIO_PGRP or PRIO_USER of its own pid,
+// group (its pid) or user, as getpriority and setpriority keep them. A user may raise its nice
+// value but not lower it again. Darwin's own kinds (PRIO_DARWIN_THREAD and the like) stop.
+func (p *Process) priorityOf(a []uint64) int64 {
+	which, who := a[0], a[1]
+	switch {
+	case which > 2:
+		p.unimplemented("getpriority or setpriority of a Darwin kind", a)
+		return -eNOSYS
+	case who != 0 && who != uint64(p.pid) && (which != 2 || who != uint64(p.uid)):
+		return -eSRCH
+	}
+	return 0
+}
+
+func sysGetpriority(p *Process, a []uint64) int64 {
+	if errno := p.priorityOf(a); errno != 0 {
+		return errno
+	}
+	if p.nice < 0 { // a negative result here is an errno: only root can have one
+		p.unimplemented("getpriority of a negative nice value", a)
+		return -eNOSYS
+	}
+	return p.nice
+}
+
+func sysSetpriority(p *Process, a []uint64) int64 {
+	if errno := p.priorityOf(a); errno != 0 {
+		return errno
+	}
+	nice := min(max(int64(int32(a[2])), -20), 20)
+	if nice < p.nice && p.uid != 0 {
+		return -eACCES
+	}
+	p.nice = nice
+	return 0
+}
+
+const (
+	rlimInfinity = 1<<63 - 1
+	rlimitStack  = 3
+	rlimitNofile = 8
+	rlimitCount  = 9      // RLIM_NLIMITS
+	rlimitPOSIX  = 0x1000 // _RLIMIT_POSIX_FLAG: refuse, rather than clamp, a soft limit too high
+)
+
+// rlimit is a resource's {soft, hard} limit: what setrlimit made it, or what a process launchd
+// starts on a Mac or an iPhone has. RLIMIT_NPROC's depends on the device's memory and is not
+// known here; it is left unlimited, as the emulator starts no processes.
+func (p *Process) rlimit(resource uint64) [2]uint64 {
+	if l, ok := p.rlimits[resource]; ok {
+		return l
+	}
+	switch resource {
+	case 4: // RLIMIT_CORE: no core files
+		return [2]uint64{0, rlimInfinity}
+	case rlimitStack: // 8 MB and 64 MB, less a guard page
+		return [2]uint64{8<<20 - pageSize, 64<<20 - pageSize}
+	case rlimitNofile:
+		return [2]uint64{256, rlimInfinity}
+	}
+	return [2]uint64{rlimInfinity, rlimInfinity}
+}
+
+func sysGetrlimit(p *Process, a []uint64) int64 {
+	resource := a[0] &^ rlimitPOSIX
+	if resource >= rlimitCount {
+		return -eINVAL
+	}
+	l := p.rlimit(resource)
+	p.write(a[1], le64(l[0], l[1]))
+	return 0
+}
+
+// sysSetrlimit changes a limit as the kernel lets a process: a soft limit no higher than the
+// hard one, and a hard one raised only by root. The descriptors' limit is kept to (see
+// fdLimit); the stack's applies to a process yet to start, which none is here.
+func sysSetrlimit(p *Process, a []uint64) int64 {
+	resource := a[0] &^ rlimitPOSIX
+	if resource >= rlimitCount {
+		return -eINVAL
+	}
+	b := p.read(a[1], 16)
+	soft, hard := le.Uint64(b), le.Uint64(b[8:])
+	if soft > hard {
+		return -eINVAL
+	}
+	if hard > p.rlimit(resource)[1] && p.uid != 0 {
+		return -ePERM
+	}
+	if p.rlimits == nil {
+		p.rlimits = map[uint64][2]uint64{}
+	}
+	p.rlimits[resource] = [2]uint64{soft, hard}
 	return 0
 }
 
@@ -412,18 +654,105 @@ func sysGettimeofday(p *Process, a []uint64) int64 {
 	return 0
 }
 
+// sysMacSyscall answers the __mac_syscall calls guests make as a Mac's kernel answers them for a
+// process that is not sandboxed, as examples/macsyscall.c measures: AMFI's dyld policy, sandbox
+// checks, which allow everything, the sandbox's queries of a process, which find nothing and
+// expect no container, and quarantine, which it takes. Applying a sandbox profile succeeds and
+// confines nothing, by choice (see limits.md). Anything not measured stops.
 func sysMacSyscall(p *Process, a []uint64) int64 {
-	policy := p.cstr(a[0])
-	p.note("  mac_syscall %s %d", policy, a[1])
-	switch {
-	case policy == "AMFI" && a[1] == 90:
-		p.write(p.u64(a[2]+8), le64(0x7F))
+	name := p.cstr(a[0]) + " " + strconv.Itoa(int(uint32(a[1]))) // the policy and its call
+	p.note("  mac_syscall %s", name)
+	switch name {
+	case "AMFI 90": // amfi_check_dyld_policy_self: {flags in, &flags out}
+		p.write(p.u64(a[2]+8), le64(0x1df))
 		return 0
-	case policy == "Sandbox":
+	case "Sandbox 0": // applying a compiled profile: succeeds, confines nothing, by choice
 		return 0
-	case policy == "Quarantine": // nothing is quarantined, and nothing a guest writes will be
+	case "Sandbox 2":
+		return p.sandboxCheck(a)
+	case "Sandbox 4":
+		return p.sandboxQuery(a)
+	case "Sandbox 12":
+		return p.sandboxPassthrough(a)
+	case "Sandbox 22": // a profile the kernel has by name: none, so libsandbox compiles it
+		return -eNOENT
+	case "Sandbox 67": // sandbox_get_container_expected: {&expected, &second}
+		p.write(p.u64(a[2]), le64(0))
+		p.write(p.u64(a[2]+8), le64(0))
+		return 0
+	case "Quarantine 87": // _qtn_proc_apply_to_pid: taken, nothing written
 		return 0
 	}
+	p.unimplemented("__mac_syscall "+name, a)
+	return -eNOSYS
+}
+
+// sandboxCheck is Sandbox 2, {&result, pid, operation, filter type, argument, flags}, of any
+// process, even one that is not there: allowed, with a result of 0, for the filter types the
+// guests use (none, 5, 6, 0x1c, 0x41). A path (type 1) that is not there has a result of 2,
+// which sandbox_check reports as denied even where there is no sandbox. A descriptor (type 0xf0)
+// is EBADF, and the result left as it was, if it is not open. Filter types not measured stop.
+func (p *Process) sandboxCheck(a []uint64) int64 {
+	w := p.read(a[2], 48)
+	pid, kind, arg, flags := le.Uint64(w[8:]), le.Uint64(w[24:]), le.Uint64(w[32:]), le.Uint64(w[40:])
+	result := uint64(0)
+	switch {
+	case kind == 0xf0 && p.fds[arg&0xFFFFFFFF] == nil:
+		return -eBADF
+	case kind == 1:
+		if p.doAccess(p.cstr(arg)) != 0 {
+			result = 2
+		}
+	case kind == 0 && le.Uint64(w[16:]) == 0, kind == 5, kind == 6, kind == 0x1c, kind == 0x41, kind == 0xf0:
+	default:
+		p.unimplemented(fmt.Sprintf("sandbox check of pid %d, filter type %#x, flags %#x", pid, kind, flags), a)
+		return -eNOSYS
+	}
+	p.write(le.Uint64(w), le64(result))
+	return 0
+}
+
+// sandboxPassthrough is Sandbox 12, sandbox_passthrough_access(descriptor, flags), as
+// CFPreferences calls it for a plist it opened: allowed for a regular file with the flags 0x2 and
+// 0x100 or neither, EACCES for one with 0x1 and for a directory, EBADF if the descriptor is not
+// open. Other descriptors and flags stop.
+func (p *Process) sandboxPassthrough(a []uint64) int64 {
+	w := p.read(a[2], 16)
+	n, flags := le.Uint64(w), le.Uint64(w[8:])
+	f := p.fds[n&0xFFFFFFFF]
+	if f == nil {
+		return -eBADF
+	}
+	var kind uint16 // as fstat shows it, of the descriptors measured
+	if f.kind == cacheFD || f.kind == dirFD || f.kind == hostFD {
+		if info, errno := p.describeFD(f); errno == 0 {
+			kind = info.mode & syscall.S_IFMT
+		}
+	}
+	regular, dir := kind == syscall.S_IFREG, kind == syscall.S_IFDIR
+	switch {
+	case dir && flags == 0x102, regular && flags == 1:
+		return -eACCES
+	case regular && flags&^0x102 == 0:
+		return 0
+	}
+	p.unimplemented(fmt.Sprintf("sandbox passthrough access of descriptor %d, flags %#x", n, flags), a)
+	return -eNOSYS
+}
+
+// sandboxQuery is Sandbox 4, {pid, kind, buffer, size, ...}: kind 0, a process's container, is
+// not supported where there is no sandbox, and kind 1 finds no such process, whichever it is
+// asked of. Neither writes the buffer.
+func (p *Process) sandboxQuery(a []uint64) int64 {
+	w := p.read(a[2], 16)
+	pid, kind := le.Uint64(w), le.Uint64(w[8:])
+	switch {
+	case kind == 0 && (pid == uint64(p.pid) || p.m.process(uint32(pid)) != nil): // of a dead process: not measured
+		return -eNOTSUP
+	case kind == 1:
+		return -eSRCH
+	}
+	p.unimplemented(fmt.Sprintf("sandbox query %d of pid %d", kind, pid), a)
 	return -eNOSYS
 }
 
@@ -551,38 +880,45 @@ const (
 	osVariantIOS = 0x70010000FBAAAAAA
 )
 
-// cpuFamilyFirestorm is CPUFAMILY_ARM_FIRESTORM_ICESTORM, of the A14 and the M1: a Mac's here.
+// cpuFamilyFirestorm is CPUFAMILY_ARM_FIRESTORM_ICESTORM, of the A14 and of every M1.
 const cpuFamilyFirestorm = 0x1b588bb3
 
 // cpuFamilies is the CPUFAMILY_ARM_* of mach/machine.h of the chip in each iPhone and iPad an iOS
-// release of 14 or later runs on, by the product type's generation (iPhone14) or, where one
-// generation has two chips, by the product type itself.
+// release of 14 or later runs on, and in the Macs with an M1, by the product type's generation
+// (iPhone14) or, where one generation has two chips, by the product type itself. A product it
+// does not know has no hw.cpufamily, rather than another chip's.
 var cpuFamilies = map[string]uint64{
-	"iPhone11":   0x07d34b9f,         // A12 (Vortex and Tempest)
-	"iPhone12":   0x462504d2,         // A13 (Lightning and Thunder)
-	"iPhone13":   cpuFamilyFirestorm, // A14 (Firestorm and Icestorm)
-	"iPhone14":   0xda33d83d,         // A15 (Avalanche and Blizzard)
-	"iPhone15":   0x8765edea,         // A16 (Everest and Sawtooth)
-	"iPhone16":   0x2876f5b5,         // A17 Pro (Coll)
-	"iPhone17":   0x204526d0,         // A18 (Tupai)
-	"iPhone17,1": 0x75d4acb9,         // A18 Pro (Tahiti)
-	"iPhone17,2": 0x75d4acb9,
-	"iPad8":      0x07d34b9f,         // A12X and A12Z
-	"iPad11":     0x07d34b9f,         // A12
-	"iPad12":     0x462504d2,         // A13
-	"iPad13":     cpuFamilyFirestorm, // A14 and M1
-	"iPad14":     0xda33d83d,         // A15 and M2
-	"iPad15":     0xfa33415e,         // M3 (Ibiza)
-	"iPad15,7":   0x8765edea,         // A16
-	"iPad15,8":   0x8765edea,
-	"iPad16":     0x6f5129ac, // M4 (Donan)
-	"iPad16,1":   0x2876f5b5, // A17 Pro
-	"iPad16,2":   0x2876f5b5,
+	"Macmini9":     cpuFamilyFirestorm, // M1
+	"MacBookAir10": cpuFamilyFirestorm,
+	"MacBookPro17": cpuFamilyFirestorm,
+	"iMac21":       cpuFamilyFirestorm,
+	"MacBookPro18": cpuFamilyFirestorm, // M1 Pro and M1 Max
+	"Mac13":        cpuFamilyFirestorm, // M1 Max and M1 Ultra (Mac Studio)
+	"iPhone11":     0x07d34b9f,         // A12 (Vortex and Tempest)
+	"iPhone12":     0x462504d2,         // A13 (Lightning and Thunder)
+	"iPhone13":     cpuFamilyFirestorm, // A14 (Firestorm and Icestorm)
+	"iPhone14":     0xda33d83d,         // A15 (Avalanche and Blizzard)
+	"iPhone15":     0x8765edea,         // A16 (Everest and Sawtooth)
+	"iPhone16":     0x2876f5b5,         // A17 Pro (Coll)
+	"iPhone17":     0x204526d0,         // A18 (Tupai)
+	"iPhone17,1":   0x75d4acb9,         // A18 Pro (Tahiti)
+	"iPhone17,2":   0x75d4acb9,
+	"iPad8":        0x07d34b9f,         // A12X and A12Z
+	"iPad11":       0x07d34b9f,         // A12
+	"iPad12":       0x462504d2,         // A13
+	"iPad13":       cpuFamilyFirestorm, // A14 and M1
+	"iPad14":       0xda33d83d,         // A15 and M2
+	"iPad15":       0xfa33415e,         // M3 (Ibiza)
+	"iPad15,7":     0x8765edea,         // A16
+	"iPad15,8":     0x8765edea,
+	"iPad16":       0x6f5129ac, // M4 (Donan)
+	"iPad16,1":     0x2876f5b5, // A17 Pro
+	"iPad16,2":     0x2876f5b5,
 }
 
-// chipFamily is the hw.cpufamily of the device of a product type (iPhone11,2), or fallback for
-// one cpuFamilies does not know.
-func chipFamily(product string, fallback uint64) uint64 {
+// chipFamily is the hw.cpufamily of the device of a product type (iPhone11,2), or 0 for one
+// cpuFamilies does not know.
+func chipFamily(product string) uint64 {
 	if family, ok := cpuFamilies[product]; ok {
 		return family
 	}
@@ -590,7 +926,7 @@ func chipFamily(product string, fallback uint64) uint64 {
 	if family, ok := cpuFamilies[generation]; ok {
 		return family
 	}
-	return fallback
+	return 0
 }
 
 // sysctlValue is a uint64 or a string.
@@ -607,37 +943,38 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			"hw.pagesize": n(16384), "hw.pagesize32": n(16384), "vm.pagesize": n(16384), "hw.ncpu": n(1), "hw.activecpu": n(1),
 			"hw.physicalcpu": n(1), "hw.physicalcpu_max": n(1), "hw.logicalcpu": n(1), "hw.logicalcpu_max": n(1),
 			"hw.memsize": n(guestMemory), "hw.physmem": n(guestMemory), "hw.byteorder": n(1234), "hw.cputype": n(cpuARM64),
-			"hw.cpusubtype": n(cpuSubtypeARM64E), "hw.cpufamily": n(cpuFamilyFirestorm), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128),
-			"hw.l1dcachesize": n(65536), "hw.l1icachesize": n(131072), "hw.l2cachesize": n(4 << 20), "hw.packages": n(1),
+			"hw.cpusubtype": n(cpuSubtypeARM64E), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128), "hw.packages": n(1),
 			"hw.nperflevels": n(1), "hw.perflevel0.logicalcpu": n(1), "hw.perflevel0.physicalcpu": n(1),
-			"hw.perflevel0.logicalcpu_max": n(1), "hw.machine": "arm64", "hw.model": os("model", "Macmini9,1"), "hw.targettype": "J274",
-			"hw.cpubrand": "Apple M1", "kern.ostype": "Darwin", "kern.hostname": "emu.local", "kern.argmax": n(1 << 20),
-			"kern.usrstack64": n(stackTop), "kern.safeboot": n(0), "kern.ngroups": n(16), "kern.maxfilesperproc": n(10240),
+			"hw.perflevel0.logicalcpu_max": n(1), "hw.machine": "arm64", "hw.model": os("model", "Macmini9,1"),
+			"kern.ostype": "Darwin", "kern.hostname": "emu.local", "kern.argmax": n(1 << 20),
+			"kern.usrstack64": n(stackTop), "kern.safeboot": n(0), "kern.ngroups": n(16),
 			"kern.secure_kernel": n(0), "kern.bootargs": "", "kern.osvariant_status": n(osVariantMac), "kern.willshutdown": n(0),
 			"kern.hv_vmm_present": n(0), "sysctl.proc_translated": n(0), "kern.osrelease": os("release", "22.1.0"),
 			"kern.osversion": os("build", "22A400"), "kern.osproductversion": os("version", "13.0.1"),
-			"kern.version": "Darwin Kernel Version (emulated)", "kern.osproductversioncompat": "10.16",
-			"kern.iossupportversion": "16.1", "hw.optional.arm64": n(1), "hw.optional.floatingpoint": n(1),
+			"hw.optional.arm64": n(1), "hw.optional.floatingpoint": n(1),
 			"hw.optional.neon": n(1), "hw.optional.armv8_1_atomics": n(1), "hw.optional.armv8_crc32": n(1),
 			"hw.optional.arm.FEAT_LSE": n(1), "hw.optional.arm.FEAT_CRC32": n(1), "hw.optional.AdvSIMD": n(1),
 			"hw.optional.arm.AdvSIMD": n(1), "security.mac.lockdown_mode_state": n(0), "kern.development": n(0),
-			"vm.vm_page_free_target": n(4000), "kern.memorystatus_level": n(50),
+			"vm.vm_page_free_target": n(4000), "kern.memorystatus_level": n(50), // half free, as host_statistics says
+		}
+		// The board, as the restore image's build manifest names it (J274AP), less its suffix.
+		board := os("board", "")
+		if board != "" {
+			p.sysctls["hw.targettype"] = strings.TrimSuffix(board, "AP")
 		}
 		if p.cache.Platform == dyldcache.IOS {
 			// An iPhone names its product where a Mac says arm64, and its board where a Mac
 			// names its product.
-			board := os("board", "")
 			p.sysctls["hw.machine"], p.sysctls["hw.model"] = os("model", "iPhone"), board
-			p.sysctls["hw.targettype"] = strings.TrimSuffix(board, "AP")
 			p.sysctls["kern.osvariant_status"] = n(osVariantIOS)
-			// Its processor is the device's chip, not the Mac's M1.
-			p.sysctls["hw.cpufamily"] = n(chipFamily(os("model", ""), cpuFamilyFirestorm))
-			// What a Mac says of the macOS version it reports to old programs (10.16) and of the
-			// iOS its Catalyst apps see: an iPhone has neither. Nor has it hw.cpubrand, which no
-			// kernel has (a Mac's brand is machdep.cpu.brand_string).
-			delete(p.sysctls, "kern.osproductversioncompat")
-			delete(p.sysctls, "kern.iossupportversion")
-			delete(p.sysctls, "hw.cpubrand")
+		}
+		family := chipFamily(os("model", "Macmini9,1"))
+		if family != 0 {
+			p.sysctls["hw.cpufamily"] = n(family)
+		}
+		if family == cpuFamilyFirestorm && p.cache.Platform != dyldcache.IOS {
+			// What every M1 Mac reports: the efficiency cores' caches.
+			p.sysctls["hw.l1icachesize"], p.sysctls["hw.l1dcachesize"], p.sysctls["hw.l2cachesize"] = n(128<<10), n(64<<10), n(4<<20)
 		}
 	}
 	if v, ok := p.sysctls[name]; ok {

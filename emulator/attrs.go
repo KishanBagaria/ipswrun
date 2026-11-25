@@ -54,6 +54,12 @@ func (p *Process) describePath(op, path string, follow bool) (target, fileInfo, 
 		p.note("  ENOENT %s %s", op, path)
 		return t, fileInfo{}, -eNOENT
 	}
+	if t.link != "" && !follow { // the link itself, not the directory it leads to
+		t = target{kind: t.kind, path: p.absolute(path), link: t.link}
+		info, errno := p.describe(t.kind, t.path, 0, nil)
+		info.mode, info.size = modeLink, int64(len(t.link))
+		return t, info, errno
+	}
 	info, errno := p.describe(t.kind, t.path, t.fd().size(), func(st *syscall.Stat_t) error {
 		if t.root != nil {
 			return statInRoot(t.root, t.rel, follow, st)

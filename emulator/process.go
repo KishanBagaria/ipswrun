@@ -13,6 +13,7 @@ package emulator
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -135,7 +136,13 @@ type region struct {
 	shared     *sharedMemory
 	off        uint64
 	name       string
+	deny       uint32 // what of protAll its pages may not be accessed for (mprotect)
 }
+
+func (r *region) prot() uint32 { return protAll &^ r.deny }
+
+// denied is what a protection does not allow, as a region keeps it.
+func denied(prot uint32) uint32 { return protAll &^ (prot & protAll) }
 
 // stop is the panic value that ends a run: the guest did something the emulator cannot carry on
 // from. fault is the panic value for a system call touching unmapped guest memory, which the
@@ -184,6 +191,9 @@ type SystemFile struct {
 	Real string
 	// ReadDir lists the directory's entries when Dir is true and the volume backs it.
 	ReadDir func() ([]string, error)
+	// Link, of a directory the path's last part only links to, is that symbolic link's text: what
+	// lstat and readlink see.
+	Link string
 }
 
 // Config describes the machine the guests run on.
@@ -257,7 +267,13 @@ type Process struct {
 	named       map[*port]uint32  // the name it has for a port it can receive from or send to
 	eventData   uint64            // where a kevent says a message it did not deliver is
 	ignored     map[int]int       // kevent filters nothing emulates, and how many changes each was sent
-	threadStart uint64            // libpthread's entry points, and what it said of a pthread
+	sigactions  [numSignals]sigAction
+	rlimits     map[uint64][2]uint64 // what setrlimit changed, by resource: {soft, hard}
+	cmask       uint32               // umask, once changed (cmaskSet)
+	cmaskSet    bool
+	nice        int64                // setpriority's, of the process
+	iopolicies  map[[2]uint32]uint32 // iopolicysys's, by {scope, type}
+	threadStart uint64               // libpthread's entry points, and what it said of a pthread
 	wqThread    uint64
 	pthreadSize uint64
 	tsdOffset   uint64
@@ -543,7 +559,8 @@ type allocation struct {
 	shared    *sharedMemory  // instead of either: the mapping is this memory, from off
 	off       uint64
 	name      string
-	keepOther bool // a fixed request fails instead of replacing what is there
+	keepOther bool   // a fixed request fails instead of replacing what is there
+	deny      uint32 // see region
 }
 
 // alloc reserves guest address space; false when a fixed request cannot be honored.
@@ -563,8 +580,48 @@ func (p *Process) alloc(size uint64, a allocation) (uint64, bool) {
 		start = align(p.brk, max(a.mask+1, pageSize))
 		p.brk = start + size + pageSize
 	}
-	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, file: a.file, shared: a.shared, off: a.off, name: a.name})
+	p.addRegion(&region{start: start, end: start + size, kind: a.kind, data: a.data, file: a.file, shared: a.shared, off: a.off, name: a.name, deny: a.deny})
 	return start, true
+}
+
+// split makes at, if it is inside a region, the start of one.
+func (p *Process) split(at uint64) {
+	if r := p.findRegion(at); r != nil && r.start < at {
+		tail := *r
+		tail.start, tail.off = at, r.off+(at-r.start)
+		r.end = at
+		p.addRegion(&tail)
+	}
+}
+
+// protect gives the pages of [start, end) the protection prot (of protAll), as mprotect does;
+// false if any of them is not mapped. Pages Unicorn has get it now, the others when touched.
+func (p *Process) protect(start, end uint64, prot uint32) bool {
+	for a := start; a < end; {
+		r := p.findRegion(a)
+		if r == nil {
+			return false
+		}
+		a = r.end
+	}
+	p.split(start)
+	p.split(end)
+	for _, r := range p.overlaps(start, end) {
+		r.deny = denied(prot)
+	}
+	for a := start; a < end; {
+		if !p.isMapped(a) {
+			a += pageSize
+			continue
+		}
+		b := a
+		for b < end && p.isMapped(b) {
+			b += pageSize
+		}
+		p.uc.memProtect(a, b-a, prot)
+		a = b
+	}
+	return true
 }
 
 // materialize gives Unicorn the 16-page block around addr, filled from the region's backing.
@@ -586,11 +643,11 @@ func (p *Process) materialize(addr uint64) bool {
 		}
 		if r.kind == sharedRegion {
 			o := r.off + (a - r.start)
-			p.uc.memMapHost(a, r.shared.data[o:o+(b-a)])
+			p.uc.memMapHost(a, r.shared.data[o:o+(b-a)], r.prot())
 			a = b
 			continue
 		}
-		p.uc.memMap(a, b-a)
+		p.uc.memMap(a, b-a, r.prot())
 		switch r.kind {
 		case cacheRegion:
 			data, err := away(p.m.clock, func() ([]byte, error) { return p.cache.Page(a-p.slide, b-a, p.slide) })
@@ -625,6 +682,15 @@ func (p *Process) unmapped(addr uint64, size int) (ok bool) {
 		p.fault = fmt.Sprintf("unmapped access %#x size %d", addr, size)
 	}
 	return ok
+}
+
+// protected is an access the page's protection does not allow: the end of the run, as a fault
+// would be the end of the process with no handler for its signal.
+func (p *Process) protected(kind int32, addr uint64, size int) bool {
+	defer p.hookGuard(nil)
+	what := map[int32]string{22: "write to", 23: "read of", 24: "instruction fetch from"}[kind]
+	p.fault = fmt.Sprintf("%s protected memory %#x size %d (%s)", what, addr, size, p.where(addr))
+	return false
 }
 
 func (p *Process) invalid() bool {
@@ -722,7 +788,7 @@ func (p *Process) u64(addr uint64) uint64 { return le.Uint64(p.read(addr, 8)) }
 func (p *Process) setupMMU() error {
 	const l0, n = uint64(pageTables), uint64(vaLimit >> 39)
 	size := align((n+2)*4096, pageSize)
-	p.uc.memMap(l0, size)
+	p.uc.memMap(l0, size, protAll)
 	p.addRegion(&region{start: l0, end: l0 + size, name: "pagetables"})
 	for a := l0; a < l0+size; a += pageSize {
 		p.mapped[a/pageSize] = struct{}{}
@@ -763,6 +829,11 @@ func (p *Process) setupMMU() error {
 	return nil
 }
 
+// amx says whether an instruction is one of Apple's matrix coprocessor (AMX), which every Apple
+// chip of a supported release has and Unicorn does not: 0x00201000, its operation in bits 5 to 9
+// and its operand register or immediate in bits 0 to 4.
+func amx(instruction uint32) bool { return instruction&^0x3FF == 0x00201000 }
+
 func (p *Process) setupCommpage() {
 	for _, base := range []uint64{commPage, commPageRO} {
 		page := hostPage(base, pageSize)
@@ -778,14 +849,21 @@ func (p *Process) setupCommpage() {
 			page[0x90] = 0         // USER_TIMEBASE_NONE: mach_absolute_time is a trap, not the counter
 			page[0x91] = 0         // nor does the counter keep mach_continuous_time
 			page[0x10C] = 0        // no TPRO: dyld falls back to mprotect
-			// Hide CPU features the emulated core lacks (DIT, SHA3, SHA512, SPECRES) and report one CPU.
+			// Hide CPU features the emulated core lacks (DIT, SHA3, SHA512, SPECRES) and report one CPU,
+			// in one cluster: malloc sizes its per-cluster tables by _COMM_PAGE_CPU_CLUSTERS, and the
+			// host's count with one CPU makes them overlap (cfprefsd faulted in xzone malloc on 26B131).
 			caps := le.Uint64(page[0x10:]) &^ (0x0200000000000000 | 0x100000000 | 0x80000000 | 0x0000100000000000)
 			caps = caps&^0x00FF0000 | 0x00010000
 			le.PutUint64(page[0x10:], caps)
 			le.PutUint32(page[0x20:], uint32(caps))
-			page[0x22], page[0x34], page[0x35], page[0x36] = 1, 1, 1, 1
+			page[0x22], page[0x2F], page[0x34], page[0x35], page[0x36] = 1, 1, 1, 1, 1
+			// The chip is the guest's, as hw.cpufamily says, not the host's: libraries that pick
+			// their kernels by chip (libBLAS) read it here.
+			family, _ := p.sysctlValue("hw.cpufamily")
+			n, _ := family.(uint64)              // none, CPUFAMILY_UNKNOWN, for a product of unknown chip
+			le.PutUint32(page[0x80:], uint32(n)) // _COMM_PAGE_CPUFAMILY
 		}
-		p.uc.memMap(base, pageSize)
+		p.uc.memMap(base, pageSize, protAll)
 		p.uc.memWrite(base, page)
 		p.mapped[base/pageSize] = struct{}{}
 		p.addRegion(&region{start: base, end: base + pageSize, name: "commpage"})
@@ -946,10 +1024,20 @@ func (p *Process) load(argv, env []string) error {
 	if err != nil {
 		return fmt.Errorf("guest executable: %w", err)
 	}
+	cdhash := ""
 	if image, _, _ := p.loadMachO(exe, "guest", 0); image.CodeSignature() != nil {
 		signed := image.CodeSignature()
+		rank := -1
 		for _, directory := range signed.CodeDirectories {
 			p.identity = directory.ID
+			// The kernel's hash of the executable is that of its code directory of the strongest
+			// hash it knows, cut to 20 bytes. dyld checks it against the launch closures the
+			// shared cache has for the system's own executables, and uses one only if it matches.
+			if r := slices.Index([]uint8{1, 3, 2, 4}, uint8(directory.Header.HashType)); r > rank && len(directory.CDHash) >= 40 {
+				if _, err := hex.DecodeString(directory.CDHash); err == nil {
+					rank, cdhash = r, directory.CDHash[:40]
+				}
+			}
 		}
 		p.entitlements, p.entitlementsDER = signed.Entitlements, signed.EntitlementsDER
 	}
@@ -957,8 +1045,11 @@ func (p *Process) load(argv, env []string) error {
 		fmt.Sprintf("main_stack=%#x,%#x,%#x,%#x", uint64(stackTop), uint64(stackSize), uint64(stackTop), uint64(stackSize)),
 		fmt.Sprintf("executable_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(exeInode)),
 		fmt.Sprintf("dyld_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(dyldInode)),
-		"executable_cdhash=" + strings.Repeat("11", 20), "executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", fmt.Sprintf("th_port=%#x", mainThreadPort),
+		"executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", fmt.Sprintf("th_port=%#x", mainThreadPort),
 		"ptrauth_disabled=1", "dyld_flags=0x0", "stack_guard=0x5a17c0de5a17c000", "malloc_entropy=0x1122334455667788,0x8877665544332211"}
+	if cdhash != "" { // an executable with no code signature has none
+		apple = append(apple, "executable_cdhash="+cdhash)
+	}
 	var text []byte
 	var offsets [][]uint64
 	for _, group := range [][]string{argv, env, apple} {
@@ -1045,13 +1136,19 @@ func (p *Process) interrupt(number uint32) {
 	}
 	if number != 2 {
 		pc := p.uc.reg(regPC)
-		words := "?"
+		words, instruction := "?", uint32(0)
 		func() {
 			defer func() { recover() }()
+			instruction = p.u32(pc)
 			w := p.read(pc-8, 16)
 			words = fmt.Sprintf("%08x %08x %08x %08x", le.Uint32(w), le.Uint32(w[4:]), le.Uint32(w[8:]), le.Uint32(w[12:]))
 		}()
 		p.fault = fmt.Sprintf("CPU exception %d at %s (code around pc: %s)", number, p.where(pc), words)
+		if number == 1 && amx(instruction) {
+			p.fault = fmt.Sprintf("AMX instruction %08x at %s: Accelerate's BLAS and LAPACK need Apple's matrix coprocessor, which is not emulated",
+				instruction, p.where(pc))
+			p.faultKind = StopUnimplemented
+		}
 		p.uc.stop()
 		return
 	}

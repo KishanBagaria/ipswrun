@@ -189,16 +189,8 @@ func (c *Cache) Mapping(addr uint64) *Mapping {
 // it; path is empty when no image's text does.
 func (c *Cache) Image(addr uint64) (path string, offset uint64, err error) {
 	main := c.Files[""]
-	if c.texts == nil {
-		t, err := main.Pread(int64(c.textsOff), int64(c.textsCount)*32)
-		if err != nil {
-			return "", 0, err
-		}
-		c.texts = []imageText{}
-		for ; len(t) >= 32; t = t[32:] {
-			c.texts = append(c.texts, imageText{le.Uint64(t[16:]), le.Uint32(t[24:]), le.Uint32(t[28:])})
-		}
-		sort.Slice(c.texts, func(i, j int) bool { return c.texts[i].address < c.texts[j].address })
+	if err := c.readTexts(); err != nil {
+		return "", 0, err
 	}
 	i := sort.Search(len(c.texts), func(i int) bool { return c.texts[i].address > addr }) - 1
 	if i < 0 || addr >= c.texts[i].address+uint64(c.texts[i].size) {
@@ -209,6 +201,48 @@ func (c *Cache) Image(addr uint64) (path string, offset uint64, err error) {
 		return "", 0, err
 	}
 	return cstring(name), addr - c.texts[i].address, nil
+}
+
+// readTexts reads the table of the images' text segments, once.
+func (c *Cache) readTexts() error {
+	if c.texts != nil {
+		return nil
+	}
+	t, err := c.Files[""].Pread(int64(c.textsOff), int64(c.textsCount)*32)
+	if err != nil {
+		return err
+	}
+	c.texts = []imageText{}
+	for ; len(t) >= 32; t = t[32:] {
+		c.texts = append(c.texts, imageText{le.Uint64(t[16:]), le.Uint32(t[24:]), le.Uint32(t[28:])})
+	}
+	sort.Slice(c.texts, func(i, j int) bool { return c.texts[i].address < c.texts[j].address })
+	return nil
+}
+
+// ImagePaths are the install names of the images in the cache.
+func (c *Cache) ImagePaths() ([]string, error) {
+	if err := c.readTexts(); err != nil {
+		return nil, err
+	}
+	if len(c.texts) == 0 {
+		return nil, nil
+	}
+	first, last := c.texts[0].path, c.texts[0].path
+	for _, t := range c.texts {
+		first, last = min(first, t.path), max(last, t.path)
+	}
+	names, err := c.Files[""].Pread(int64(first), int64(last-first)+1024) // the paths are together, in one read
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(c.texts))
+	for _, t := range c.texts {
+		if off := int(t.path - first); off < len(names) {
+			paths = append(paths, cstring(names[off:]))
+		}
+	}
+	return paths, nil
 }
 
 func (m *Mapping) slideInfo() (*slideInfo, error) {

@@ -35,6 +35,7 @@ const (
 	routineJobValue     = 301 // a process asking for one of the values launchd keeps about its job, by number
 	routineStarted      = 802 // libxpc of iOS 14 to 16.0 telling launchd of the process as it starts: its environment, where it is from
 	routineUncork       = 803 // and then that launchd may start the services the process declares (_xpc_uncork_domain)
+	routineImages       = 800 // and, as it loads more (dlopen), the paths of those images, as 802 gives those it started with
 
 	// The values a process asks for.
 	jobManagerUID  = 3 // the user of the launchd domain the process is in
@@ -77,7 +78,7 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 	case routine == routineEventStream:
 		// What launchd has for a daemon on one of its streams of events, by name: nothing.
 		reply.set("events", []any{})
-	case routine == routineStarted, routine == routineUncork:
+	case routine == routineStarted, routine == routineUncork, routine == routineImages:
 		// An answer is all the process waits for, and it reads nothing in it. Without one it
 		// stops, or, unanswered after it started, finds no service at all.
 	case routine == routineJobValue:

@@ -26,6 +26,7 @@ const (
 	eACCES    = 13
 	eFAULT    = 14
 	eEXIST    = 17
+	eMFILE    = 24
 	eXDEV     = 18
 	eNOTDIR   = 20
 	eISDIR    = 21
@@ -112,6 +113,7 @@ type target struct {
 	data    []byte
 	cache   dyldcache.File
 	readDir func() ([]string, error)
+	link    string // of a symbolic link on the system volume to the directory it is (see SystemFile.Link)
 }
 
 // fd is the descriptor for a target that is not a host file.
@@ -280,15 +282,20 @@ func (p *Process) resolve(path string) (target, bool) {
 	if path == "" {
 		return target{}, false
 	}
-	if !strings.HasPrefix(path, "/") {
-		path = p.cwd + "/" + path
-	}
-	path = canonical(path)
+	path = p.absolute(path)
 	t, ok := p.lookup(path)
 	if t.path == "" {
 		t.path = path
 	}
 	return t, ok
+}
+
+// absolute is the canonical form of a guest path, relative to the working directory or not.
+func (p *Process) absolute(path string) string {
+	if !strings.HasPrefix(path, "/") {
+		path = p.cwd + "/" + path
+	}
+	return canonical(path)
 }
 
 func (p *Process) lookup(path string) (target, bool) {
@@ -331,7 +338,7 @@ func (p *Process) lookup(path string) (target, bool) {
 			stopf("%v", err)
 		}
 		if f.Dir {
-			return target{kind: dirFD, path: f.Real, readDir: f.ReadDir}, true
+			return target{kind: dirFD, path: f.Real, readDir: f.ReadDir, link: f.Link}, true
 		}
 		if f.File != nil {
 			return target{kind: cacheFD, cache: f.File}, true
@@ -365,6 +372,7 @@ const (
 	fixedMtime = 1700000000
 	modeDir    = syscall.S_IFDIR | 0o755
 	modeFile   = syscall.S_IFREG | 0o755
+	modeLink   = syscall.S_IFLNK | 0o755
 )
 
 // putStat writes the struct stat64 of a file that was described without an error.
@@ -397,6 +405,9 @@ func sysFstat64(p *Process, a []uint64) int64 {
 }
 
 func (p *Process) doOpen(path string, flags, mode uint64) int64 {
+	if p.full() {
+		return -eMFILE
+	}
 	t, ok := p.resolve(path)
 	if !ok {
 		p.note("  ENOENT open %s", path)
@@ -422,7 +433,15 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 			err error
 		)
 		if t.root != nil {
+			// A file it creates has the mode asked for less the guest's umask, not the host's.
+			var st syscall.Stat_t
+			created := flags&0x200 != 0 && statInRoot(t.root, t.rel, false, &st) != nil
 			h, err = openInRoot(t.root, t.rel, hostFlags, uint32(mode&0o777))
+			if err == nil && created {
+				if err = syscall.Fchmod(h, uint32(mode&0o777)&^p.umask()); err != nil {
+					syscall.Close(h)
+				}
+			}
 		} else {
 			h, err = syscall.Open(t.host, hostFlags|syscall.O_CLOEXEC, uint32(mode&0o777))
 		}
@@ -438,6 +457,52 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 }
 
 const maxFD = 10240
+
+// umask is the process's file mode creation mask: 022, as launchd gives, until it changes it.
+func (p *Process) umask() uint32 {
+	if !p.cmaskSet {
+		return 0o22
+	}
+	return p.cmask
+}
+
+func sysUmask(p *Process, a []uint64) int64 {
+	old := p.umask()
+	p.cmask, p.cmaskSet = uint32(a[0])&0o777, true
+	return int64(old)
+}
+
+// sysFsync writes a host file's data out, through the host's fsync, which also answers for the
+// standard descriptors (EINVAL for a pipe, as here). What is read from the system volume has
+// nothing to write. Of shared memory and kqueues, what a kernel answers is not known here.
+func sysFsync(p *Process, a []uint64) int64 {
+	f := p.fds[a[0]]
+	switch {
+	case f == nil:
+		return -eBADF
+	case f.kind == hostFD || f.kind == stdioFD:
+		if err := syscall.Fsync(f.host); err != nil {
+			return hostErrno(err)
+		}
+		return 0
+	case f.shared == nil && f.path != "":
+		return 0
+	}
+	p.unimplemented("fsync of shared memory or a kqueue", a)
+	return -eNOSYS
+}
+
+// sysSync flushes what the guests wrote, which is the host's to write: through the host's sync.
+func sysSync(p *Process, a []uint64) int64 {
+	syscall.Sync()
+	return 0
+}
+
+// fdLimit is the first descriptor number a process may not have: RLIMIT_NOFILE's soft limit.
+func (p *Process) fdLimit() uint64 { return min(p.rlimit(rlimitNofile)[0], maxFD) }
+
+// full says whether the process has as many descriptors as its limit lets it (EMFILE).
+func (p *Process) full() bool { return p.allocFD(0) >= p.fdLimit() }
 
 // allocFD returns the lowest unused file descriptor number at or above minFD.
 func (p *Process) allocFD(minFD uint64) uint64 {
@@ -518,6 +583,7 @@ func (p *Process) closeFD(n uint64) int64 {
 	delete(p.fds, n)
 	if f.kind == hostFD {
 		closeHost(f.host)
+		p.m.retryLocks() // its locks went with it, if it was the last descriptor of its file
 	}
 	if f.shared != nil {
 		f.shared.release()
@@ -763,6 +829,7 @@ func (p *Process) doUnlink(path string, dir bool) int64 {
 	case !dir && fi.IsDir():
 		return -ePERM
 	}
+	p.forgetFile(t)
 	return hostCall(t.root.Remove(t.rel))
 }
 
@@ -777,7 +844,10 @@ func (p *Process) doMkdir(path string, mode uint64) int64 {
 	if !ok {
 		return -eACCES
 	}
-	return hostCall(t.root.Mkdir(t.rel, os.FileMode(mode&0o777)))
+	if err := t.root.Mkdir(t.rel, os.FileMode(mode&0o777)); err != nil {
+		return hostErrno(err)
+	}
+	return hostCall(t.root.Chmod(t.rel, os.FileMode(uint32(mode&0o777)&^p.umask())))
 }
 
 func sysMkdir(p *Process, a []uint64) int64 { return p.doMkdir(p.cstr(a[0]), a[1]) }
@@ -794,6 +864,7 @@ func (p *Process) doRename(from, to string) int64 {
 	if t1.root != t2.root {
 		return -eXDEV
 	}
+	p.forgetFile(t2) // what it replaces, if anything
 	return hostCall(t1.root.Rename(t1.rel, t2.rel))
 }
 
@@ -834,13 +905,16 @@ func sysTruncate(p *Process, a []uint64) int64 {
 
 // doReadlink serves the links a guest makes under its home or a mount; nothing else is a symbolic link.
 func (p *Process) doReadlink(path string, buf, size uint64) int64 {
-	t, ok := p.writableTarget(path)
-	if !ok {
+	t, ok := p.resolve(path)
+	link := t.link // one of the system volume's
+	switch {
+	case t.root != nil:
+		var err error
+		if link, err = t.root.Readlink(t.rel); err != nil {
+			return hostErrno(err)
+		}
+	case !ok || link == "":
 		return -eINVAL
-	}
-	link, err := t.root.Readlink(t.rel)
-	if err != nil {
-		return hostErrno(err)
 	}
 	n := min(uint64(len(link)), size)
 	p.write(buf, []byte(link)[:n])
@@ -956,7 +1030,7 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	if int64(minFD) < 0 || minFD >= maxFD {
+	if int64(minFD) < 0 || minFD >= p.fdLimit() {
 		if exact {
 			return -eBADF
 		}
@@ -984,8 +1058,11 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 	n := minFD
 	if exact {
 		p.closeFD(n) // if open
-	} else {
-		n = p.allocFD(minFD)
+	} else if n = p.allocFD(minFD); n >= p.fdLimit() {
+		if dup.kind == hostFD {
+			syscall.Close(dup.host)
+		}
+		return -eMFILE
 	}
 	p.fds[n] = dup
 	return int64(n)

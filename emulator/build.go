@@ -69,8 +69,16 @@ type Run struct {
 
 var leadingDigits = regexp.MustCompile(`^\d+`)
 
-// nestedFramework matches the directory of a framework that is inside another.
-var nestedFramework = regexp.MustCompile(`^/System/Library/(Private)?Frameworks/.+\.framework/.+\.framework$`)
+// inCacheDir says whether path is one of dirs or below one, other than / itself: whether it, or
+// a symbolic link on its way, could lead into one.
+func inCacheDir(dirs map[string]bool, path string) bool {
+	for d := path; d != "/" && d != "."; d = pathpkg.Dir(d) {
+		if dirs[d] {
+			return true
+		}
+	}
+	return false
+}
 
 // realDirectory is the path of a directory of the system volume with every symbolic link on the
 // way to it followed; empty if there is no such directory.
@@ -101,6 +109,23 @@ func realDirectory(image *rangefs.Image, path string) (string, error) {
 		}
 	}
 	return real, nil
+}
+
+// visibleEntries lists a directory of the volume with only the entries visible says may be seen.
+func visibleEntries(image *rangefs.Image, vol, dir string, visible func(string) bool) func() ([]string, error) {
+	return sync.OnceValues(func() ([]string, error) { // the image does not change
+		entries, err := image.ReadDir(vol, dir)
+		if err != nil {
+			return nil, err
+		}
+		var shown []string
+		for _, name := range entries {
+			if visible(pathpkg.Join(dir, name)) {
+				shown = append(shown, name)
+			}
+		}
+		return shown, nil
+	})
 }
 
 // RunBuild starts the guest, and the daemons beside it, inside the userland of the build in image
@@ -181,6 +206,32 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		}
 		return false
 	}
+	// cacheDirs are the directories on the way to the shared cache's images, by their install
+	// names, without symbolic links.
+	cacheDirs := sync.OnceValues(func() (map[string]bool, error) {
+		paths, err := cache.ImagePaths()
+		if err != nil {
+			return nil, err
+		}
+		dirs := map[string]bool{}
+		for _, p := range paths {
+			for d := pathpkg.Dir(p); d != "/" && d != "." && !dirs[d]; d = pathpkg.Dir(d) {
+				dirs[d] = true
+			}
+		}
+		return dirs, nil
+	})
+	reals := map[string]string{} // realDirectory, once for each path: walks share their directories
+	realDir := func(path string) (string, error) {
+		if real, ok := reals[path]; ok {
+			return real, nil
+		}
+		real, err := realDirectory(image, path)
+		if err == nil {
+			reals[path] = real
+		}
+		return real, err
+	}
 	known := map[string]SystemFile{}
 	system := func(path string) (SystemFile, error) {
 		if f, ok := known[path]; ok {
@@ -194,19 +245,43 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 			vol, rel = rangefs.SystemOS, "/"+inCryptex
 		}
 		if !isAllowed(rel) {
-			// A framework inside another is reached through a symbolic link (Frameworks, for
-			// Versions/Current/Frameworks). Its code is in the shared cache under its real path,
-			// which dyld finds by opening the framework's directory: that much of it exists.
-			if vol != rangefs.FileSystem || !nestedFramework.MatchString(path) {
+			// A sealed system volume has the directories on the way to every image of the shared
+			// cache, although the images' code is only in the cache, and dyld looks at them: it
+			// finds a framework by its directory, and dlopen walks the path it is given, through
+			// symbolic links (a framework inside another is reached through Frameworks, for
+			// Versions/Current/Frameworks). Those directories are there, as the volume has them,
+			// listing only what is allowed or leads to the cache; nothing else is.
+			if vol != rangefs.FileSystem {
 				return SystemFile{}, nil
 			}
-			real, err := realDirectory(image, path)
+			dirs, err := cacheDirs()
 			if err != nil {
 				return SystemFile{}, err
 			}
+			real := ""
+			if inCacheDir(dirs, path) {
+				if real, err = realDir(path); err != nil {
+					return SystemFile{}, err
+				}
+			}
 			var f SystemFile
-			if real != "" && real != path {
-				f = SystemFile{Dir: true, Real: real}
+			if dirs[real] {
+				f = SystemFile{Dir: true, ReadDir: visibleEntries(image, vol, real, func(p string) bool { return dirs[p] || isAllowed(p) })}
+				if real != path {
+					// Its last part may be a link itself, which those who walk the path see.
+					parent, err := realDir(pathpkg.Dir(path))
+					if err != nil {
+						return SystemFile{}, err
+					}
+					entry, err := image.Stat(vol, pathpkg.Join(parent, pathpkg.Base(path)))
+					if err != nil {
+						return SystemFile{}, err
+					}
+					f.Real = real
+					if entry.Kind == rangefs.Symlink {
+						f.Link = entry.Target
+					}
+				}
 			}
 			known[path] = f
 			return f, nil
@@ -222,20 +297,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		var f SystemFile
 		switch entry.Kind {
 		case rangefs.Directory:
-			dirPath := rel
-			f = SystemFile{Dir: true, ReadDir: sync.OnceValues(func() ([]string, error) { // the image does not change
-				entries, err := image.ReadDir(vol, dirPath)
-				if err != nil {
-					return nil, err
-				}
-				var visible []string
-				for _, name := range entries {
-					if isAllowed(pathpkg.Join(dirPath, name)) {
-						visible = append(visible, name)
-					}
-				}
-				return visible, nil
-			})}
+			f = SystemFile{Dir: true, ReadDir: visibleEntries(image, vol, rel, isAllowed)}
 		case rangefs.Regular:
 			f = SystemFile{File: entry.File}
 		}

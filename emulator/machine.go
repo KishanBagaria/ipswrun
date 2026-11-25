@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -20,11 +21,12 @@ type Machine struct {
 	dyld     []byte    // the build's dyld, as the emulated CPU runs it
 	mounts   []mounted // the home among them; longest guest path first
 	procs    []*Process
-	running  *Process                 // the process whose thread has, or last had, the turn
-	services map[string]*service      // what launchd knows (see launchd.go)
-	shared   []*sharedMemory          // every memory of the host's that mappings share (see shared.go)
-	named    map[string]*sharedMemory // those shm_open knows by a name
-	ioMain   *port                    // what IOKit's searches are sent to, once a process has asked for it
+	running  *Process                       // the process whose thread has, or last had, the turn
+	services map[string]*service            // what launchd knows (see launchd.go)
+	shared   []*sharedMemory                // every memory of the host's that mappings share (see shared.go)
+	named    map[string]*sharedMemory       // those shm_open knows by a name
+	xattrs   map[hostFile]map[string][]byte // the extended attributes of the home's and mounts' files (see metadata.go)
+	ioMain   *port                          // what IOKit's searches are sent to, once a process has asked for it
 	clock    *clock
 	deadline time.Time // of the run, as every time here by the machine's clock
 	settling time.Time // once the main guest has exited: when the daemons are no longer waited for
@@ -59,7 +61,7 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, named: map[string]*sharedMemory{}, clock: newClock()}, nil
+	return &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, clock: newClock()}, nil
 }
 
 // Spawn makes a process of a guest, ready to run from dyld's entry point. Two guests may not
@@ -141,6 +143,9 @@ func (m *Machine) exit(p *Process, how string) {
 	p.exited = true
 	p.note("exited %s", how)
 	p.reap()
+	for _, n := range slices.Sorted(maps.Keys(p.fds)) { // and its files, with the locks on them
+		p.closeFD(n)
+	}
 	if p == m.procs[0] {
 		// The others are asked to end, as launchd asks its daemons when they are no longer
 		// wanted, and have a while to do what they do about that.
