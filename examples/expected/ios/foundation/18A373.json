@@ -1,0 +1,7 @@
+{
+  "build": "18A373",
+  "cache_uuid": "697D6E36-0D7B-3237-9F15-4777E3A773AE",
+  "exit_code": 0,
+  "output": "os 14.0.0\nargs 1 home /var/mobile\ndict 1000 last key999\njson {\"a\":[1,2.5,\"three\",null],\"b\":{\"c\":true}}\njson round trip 1\nplist 113 bytes, date 86400\ndate 2023-11-14T22:13:20Z\ncalendar year 1970 weekday 5\nregex 2 matches\nnumber 1.234.567,891\nurl host example.com port 8443 path /a b/c items 2\nbase64 aMOpbGxvIHfDtnJsZA== upper STRASSE\nfiles ok 0 read 0 listing  size 0\nerror Error Domain=NSCocoaErrorDomain Code=260 \"(null)\" UserInfo={NSFilePath=/var/mobile/out/nested/note.txt, NSUnderlyingError=0x400426c70 {Error Domain=NSPOSIXErrorDomain Code=2 \"No such file or directory\"}}\nbuild 18A373\nuuid length 36\n",
+  "version": "14.0"
+}

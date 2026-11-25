@@ -1,0 +1,7 @@
+{
+  "build": "19A346",
+  "cache_uuid": "6F028D68-85D6-300F-929A-AA58CA8327AA",
+  "exit_code": 0,
+  "output": "request 1 not answered: XPC_ERROR_CONNECTION_INVALID\nrequest 2 not answered: XPC_ERROR_CONNECTION_INVALID\nno such service: the listener was told 1, XPC_ERROR_CONNECTION_INVALID\n",
+  "version": "15.0"
+}

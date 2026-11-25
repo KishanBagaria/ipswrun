@@ -1,0 +1,7 @@
+{
+  "build": "19A346",
+  "cache_uuid": "6F028D68-85D6-300F-929A-AA58CA8327AA",
+  "exit_code": 0,
+  "output": "sha1   2fd4e1c67a2d28fced849ee1bb76e7391b93eb12\nsha256 d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592\nsha512 07e547d9586f6a73f73fbac0435ed769\nhmac   f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\npbkdf2 0 c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a\naes    0 48 a227a86517caec4afbe9e91f3c5ea2ed\naes    0 round trip 1\nrandom 0 0\necdsa  signature 1 verify 1\nec     public key 65 bytes\necdh   32 bytes agree 1\nrsa    256 bytes round trip 1\ncert   ipswrun test key 1\n",
+  "version": "15.0"
+}

@@ -1,0 +1,7 @@
+{
+  "build": "19G82",
+  "cache_uuid": "E21ED098-697D-3D64-86C1-4713CDB10217",
+  "exit_code": 0,
+  "output": "os 15.6.1\nargs 1 home /var/mobile\ndict 1000 last key999\njson {\"a\":[1,2.5,\"three\",null],\"b\":{\"c\":true}}\njson round trip 1\nplist 113 bytes, date 86400\ndate 2023-11-14T22:13:20Z\ncalendar year 1970 weekday 5\nregex 2 matches\nnumber 1.234.567,891\nurl host example.com port 8443 path /a b/c items 2\nbase64 aMOpbGxvIHfDtnJsZA== upper STRASSE\nfiles ok 1 read 21 listing a.json,note.txt size 21\nbuild 19G82\nuuid length 36\n",
+  "version": "15.6.1"
+}

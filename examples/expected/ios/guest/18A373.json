@@ -1,0 +1,7 @@
+{
+  "build": "18A373",
+  "cache_uuid": "697D6E36-0D7B-3237-9F15-4777E3A773AE",
+  "exit_code": 0,
+  "output": "iOS 14.0 (18A373)\nloaded /System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking\nsqlite 3.32.3: 1 row(s) in /var/mobile/guest.sqlite\n",
+  "version": "14.0"
+}

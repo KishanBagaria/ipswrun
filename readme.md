@@ -180,13 +180,15 @@ What the guest gets is what it gets on macOS, but as an iPhone has it: it runs a
 - **macOS 13 and 14, and iOS 16 and 17, by range.** Their images keep the shared cache in a deflate-compressed ZIP member, which cannot be read by range. `--stream-compressed` downloads that one member (3.6–4.5 GB for macOS, 1.1–1.4 GB for iOS).
 - **`mach_vm_remap` of a file's memory.** It copies instead of sharing: enough for code (the Objective-C block trampolines), wrong for a mapped file that is written afterwards.
 - **Some CPU features.** The emulated core has a 44-bit address space and reports no DIT, SHA-3 or SHA-512 instructions.
+- **iOS 12 and 13.** Their system volume cannot be read by range yet, so they are left out of the releases of an iPhone or iPad and refused when named.
+- **On iOS 14, services between guests.** libxpc of iOS 14 asks launchd in a way that is not answered yet, so a guest finds no service another provides (`client`, `service`), and on 14.0 the files `foundation` writes in the home are not written, for a reason not yet found.
 - **System calls nobody has needed yet.** An unimplemented call stops the run with a message and a guest backtrace instead of guessing. `--missing` carries on past them, to find in one run everything a guest needs.
 
 ## What is tested
 
 Restore images from macOS 11.0.1 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency, Mach messages with what is built on them (libdispatch sources, `CFRunLoop`, XPC), a Mach service with its client in one process and in two, and daemons of the release's own serving a client. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected).
 
-iOS so far only with executables of the release's own (`truncate`, `vm_stat`): iOS 14.8, 15.6.1, 17.7 and 18.7.12 for an iPhone11,2 and 27.2.1 for an iPhone15,2 start them and run them into `main`, and those of 18 and 27 run `truncate` through to writing a file in the home. The guests in `examples` are not yet built for iOS.
+On iOS the same guests, built with `make -C examples PLATFORM=ios`, run from iOS 14.0 to 27.2.1 (an iPhone11,2 to 18.7.12, an iPhone15,2 from 26.0): `examples/matrix.sh --device=iPhone11,2` and `--device=iPhone15,2` diff them against [`examples/expected/ios`](examples/expected/ios). From iOS 15 every one of them runs as on macOS. The exceptions are iOS 14's, below, and `adi`, which is not run on iOS: the `adid` there is FairPlay's, and needs more of an iPhone than there is.
 
 ## How it works
 

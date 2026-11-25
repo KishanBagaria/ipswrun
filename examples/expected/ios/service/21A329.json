@@ -1,0 +1,7 @@
+{
+  "build": "21A329",
+  "cache_uuid": "B7D3C571-8528-3CB9-BEA9-590D0B87D85E",
+  "exit_code": 0,
+  "output": "request 1 answered \"HELLO, SERVICE\", the service's request 1\nrequest 2 answered \"AND AGAIN\", the service's request 2\nthe service had 1 connection, from this process 1, and 2 requests\n",
+  "version": "17.0"
+}

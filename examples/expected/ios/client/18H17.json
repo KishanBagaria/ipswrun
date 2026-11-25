@@ -1,0 +1,7 @@
+{
+  "build": "18H17",
+  "cache_uuid": "3C01FCEA-4C63-3553-8C06-31731FDB76A7",
+  "exit_code": 0,
+  "output": "echo 1: no such service\necho 2: no such service\nreverse: no such service\n",
+  "version": "14.8"
+}

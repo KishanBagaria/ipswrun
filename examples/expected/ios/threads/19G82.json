@@ -1,0 +1,7 @@
+{
+  "build": "19G82",
+  "cache_uuid": "E21ED098-697D-3D64-86C1-4713CDB10217",
+  "exit_code": 0,
+  "output": "pthread  4 threads: mutex 80000 atomic 80000 thread-local 80004 destructors 4\ncond     4 turns in order\nsleep    joined a sleeping thread, main there 0 here 1\nrwlock   writer kept out by readers 1, then let in 1\nrwlock   5 readers and a writer waited: readers consistent 1, value 11\nasync    ran 1 off the main thread 1 timed out 0\ngroup    100 blocks sum 5050 timed out 0\nserial   50 blocks in order 1\napply    64 iterations sum 2016\nonce     1 call\nafter    fired 1 timed out 0\ntimer    3 ticks 1 timed out 0\nmain     block on the main thread 0\n",
+  "version": "15.6.1"
+}

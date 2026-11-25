@@ -34,8 +34,8 @@ jobs:
           path: examples/bin/
           if-no-files-found: error
 
-  # Runs three guests against two releases on both kinds of host, with the same binaries, so that a
-  # difference between hosts shows up as one.
+  # Runs the guests against two releases of macOS and three of iOS on both kinds of host, with the
+  # same binaries, so that a difference between hosts shows up as one.
   run:
     needs: build
     strategy:
@@ -53,8 +53,8 @@ jobs:
         with:
           name: guests
           path: examples/bin
-      - run: chmod +x examples/bin/*
-      # What ipswrun fetched of the two releases, kept between runs: without it every run downloads
+      - run: chmod +x examples/bin/* examples/bin/ios/*
+      # What ipswrun fetched of the releases, kept between runs: without it every run downloads
       # a few hundred megabytes of each from Apple.
       - uses: actions/cache@v4
         with:
@@ -64,39 +64,11 @@ jobs:
       - run: examples/matrix.sh --guest=crypto,threads,swiftasync,ipc,service,client,prefs,adi 15.0 27.2
         env:
           IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix
-
-  # TEMPORARY: runs every guest against the iOS releases, to record what they print.
-  explore-ios:
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - uses: actions/download-artifact@v4
-        with:
-          name: guests
-          path: examples/bin
-      - run: chmod +x examples/bin/* examples/bin/ios/*
-      - run: examples/matrix.sh --device=iPhone11,2 --guest=all --stream-compressed --update --jobs=6 || true
+      # The same guests built for iOS, against the first iOS release with all of them and the last
+      # for each device (adi is not run on iOS).
+      - run: examples/matrix.sh --device=iPhone11,2 --guest=crypto,threads,swiftasync,ipc,service,client,prefs 15.0 18.7
         env:
-          IPSWRUN_CACHE: ${{ runner.temp }}/cache
-          RESULTS: ${{ runner.temp }}/results
-      - run: examples/matrix.sh --device=iPhone15,2 --guest=all --update --jobs=6 26 27 || true
+          IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix
+      - run: examples/matrix.sh --device=iPhone15,2 --guest=crypto,threads,swiftasync,ipc,service,client,prefs 27.2
         env:
-          IPSWRUN_CACHE: ${{ runner.temp }}/cache
-          RESULTS: ${{ runner.temp }}/results
-      - run: |
-          for f in examples/expected/ios/*/*.json; do echo "== $f"; jq -c '{version, build, exit_code, output}' "$f"; done
-      - run: |
-          tar -cz examples/expected/ios | base64 -w0 | fold -w 4000 | sed 's/^/TARB64 /'
-      - run: |
-          cd ${{ runner.temp }}/results
-          for f in */*.err; do [ -s "$f" ] || continue; echo "== $f"; grep -m3 "^ipswrun:" "$f" || true; tail -n 12 "$f"; done
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ios-expected
-          path: examples/expected/ios/
+          IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix
