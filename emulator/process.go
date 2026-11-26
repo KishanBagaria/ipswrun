@@ -338,6 +338,7 @@ type Process struct {
 	// The port its own task may be read by (task_read_for_pid of itself), while it has a right
 	// to it.
 	taskRead   *port
+	policy     taskPolicy    // what it asked of how it is run (see taskpolicy.go)
 	target     *thread       // of a request to a thread's port: the thread
 	asked      message       // the request to a port of the kernel's that is being answered
 	registered [3]carried    // the ports it keeps for whoever asks (see kernelports.go)

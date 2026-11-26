@@ -414,6 +414,8 @@ func init() {
 		3403: migPortsRegister,
 		3404: migPortsLookup,
 		3405: migTaskInfo,
+		3420: migTaskPolicySet,
+		3421: migTaskPolicyGet,
 		3612: migThreadInfo,
 		3205: migPortDestroy,
 		3207: migPortGetRefs,

@@ -474,6 +474,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 	}
 	next.fds, p.fds = p.fds, map[uint64]*fd{}
 	next.inherits()
+	next.policy.role = p.policy.role // the kind of program it said it was goes with it, and not the tiers
 	for _, q := range m.procs {
 		if q.parent == p {
 			q.parent = next

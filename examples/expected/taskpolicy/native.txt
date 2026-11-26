@@ -1,0 +1,8 @@
+as it starts, the kind of program it is: 0 (0), 1 word; asked what is usual: 0 (0)
+saying it is: one for the user, as an editor says (7): 0, and it is then 7 (0); in front (1): 0, and it is then 1 (0); behind (2): 0, and it is then 2 (0); one that controls others (3): 4, and it is then 2 (0); the one that draws the screen (4): 4, and it is then 2 (0); throttled (5): 4, and it is then 2 (0); one with no windows (6): 4, and it is then 2 (0); of no kind (0): 4, and it is then 2 (0); renicing itself (-1): 4, and it is then 2 (0); of a kind there is not (99): 4, and it is then 2 (0);
+asking for tiers: the first of each, as a daemon asks: 0, and they are then 0xff0001 and 0xfe0001 (0); the last of each: 0, and they are then 0xff0006 and 0xfe0006 (0); none said: 0, and they are then 0 and 0 (0); one past the last: 4, and they are then 0 and 0 (0); each of the other's: 4, and they are then 0 and 0 (0); plain numbers: 4, and they are then 0 and 0 (0);
+to be over what the task asks for itself: the first of each: 0, and they are then 0xff0001 and 0xfe0001 (0); the third of each: 0, and they are then 0xff0003 and 0xfe0003 (0);
+having said it is one for the user, with the second tier: the kind of program 7, its first tier 0xff0002
+a copy of it: the kind of program 0, its first tier 0
+the program the copy becomes, having said the same: the kind of program 7, its first tier 0
+with no room for the kind: 4; with room for one tier of two: 4; a kind of asking there is not: 4, and to be told of it: 4; told of the kind into no room: 4; asked of the host: 4
