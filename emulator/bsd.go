@@ -59,7 +59,7 @@ func init() {
 		"sigaltstack": {2, sysSigaltstack}, "setitimer": {3, sysSetitimer}, "getitimer": {2, sysGetitimer}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
 		"bsdthread_register": {6, sysBsdthreadRegister}, "bsdthread_create": {5, sysBsdthreadCreate},
 		"bsdthread_terminate": {4, sysBsdthreadTerminate}, "__semwait_signal": {6, sysSemwaitSignal},
-		"sigsuspend": {1, sysSigsuspend}, "__sigwait": {2, sysSigwait}, "kevent_qos": {8, sysKeventQos}, "kevent": {6, sysKevent}, "kevent64": {7, sysKevent64}, "kevent_id": {8, sysKeventID}, "psynch_mutexwait": {5, sysPsynchMutexwait}, "psynch_mutexdrop": {5, sysPsynchMutexdrop}, "psynch_cvwait": {8, sysPsynchCvwait},
+		"sigsuspend": {1, sysSigsuspend}, "__sigwait": {2, sysSigwait}, "kevent_qos": {8, sysKeventQos}, "kqueue_workloop_ctl": {4, sysKqueueWorkloopCtl}, "kevent": {6, sysKevent}, "kevent64": {7, sysKevent64}, "kevent_id": {8, sysKeventID}, "psynch_mutexwait": {5, sysPsynchMutexwait}, "psynch_mutexdrop": {5, sysPsynchMutexdrop}, "psynch_cvwait": {8, sysPsynchCvwait},
 		"psynch_cvsignal": {8, sysPsynchCvsignal}, "psynch_cvbroad": {7, sysPsynchCvbroad}, "psynch_cvclrprepost": {7, constant(0)},
 		"psynch_rw_rdlock": {5, sysPsynchRWRdlock}, "psynch_rw_wrlock": {5, sysPsynchRWWrlock}, "psynch_rw_unlock": {5, sysPsynchRWUnlock}, "bsdthread_ctl": {4, constant(0)}, "workq_open": {0, constant(0)},
 		"workq_kernreturn": {4, sysWorkqKernreturn}, "kdebug_trace64": {0, constant(0)}, "kdebug_trace": {0, constant(0)},

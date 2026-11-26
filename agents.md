@@ -14,4 +14,5 @@ ipswrun runs Apple's own userland code from macOS and iOS restore images.
 ## Workflow
 
 - Verify against real restore images, and record expected outputs from real runs.
+- Read the kernel's own source (Apple's xnu, github.com/apple-oss-distributions/xnu) for which cases a call has before probing it, and then measure each on a real kernel: the source is a release behind and has none of the extensions, so it says where to look and a measurement says what is so. Say in `limits.md` when something is from the source and was not measured.
 - Update `limits.md` when a limit is found, fixed or ruled out.

@@ -116,6 +116,13 @@ type kqueue struct {
 	request  *kevent
 	servicer *thread
 	woken    map[uint64]bool
+	made     bool // by name, with kqueue_workloop_ctl, and not by the first event asked of it
+}
+
+// idle is whether a kqueue holds nothing: no event to watch for, none that has happened or was
+// refused, and no thread asked for or given.
+func (q *kqueue) idle() bool {
+	return len(q.timers)+len(q.users)+len(q.signals)+len(q.ports)+len(q.pipes)+len(q.procs)+len(q.errors)+len(q.ready)+len(q.woken) == 0 && q.request == nil && q.servicer == nil
 }
 
 type timer struct {
@@ -140,6 +147,63 @@ func sysKeventQos(p *Process, a []uint64) int64 {
 		return 0
 	}
 	return p.kevents(p.kqueue(0), a)
+}
+
+// sysKqueueWorkloopCtl is kqueue_workloop_ctl(command, options, parameters, their size): a
+// workloop made by name with how its thread is to be scheduled, or destroyed, as a program
+// that plays sound makes one for each of its queues. It is as the kernel's own source has it
+// (xnu's kqueue_workloop_ctl_internal) and as macOS 27.2.1 was measured to do each thing
+// (examples/workloops.c). The parameters say their own size, and what they do not reach is
+// nothing. A name is not 0 or all ones. One is made with at least one of a priority from 1 to
+// 63, a policy that is 1, 2 or 4, and a share of a processor from 1 to 100 hundredths over up
+// to 0xffffff thousandths of a second; a workloop that is there, made so or by an event asked
+// of it, is EEXIST. Destroying one made so gives it up, and it is gone when it holds nothing;
+// one that is not there is ENOENT, and one that an event made, or that was given up already
+// and still holds events, EINVAL. A command that is neither is 0. Threads have no priorities
+// here, so how it is scheduled is taken and not used.
+func sysKqueueWorkloopCtl(p *Process, a []uint64) int64 {
+	const create, destroy = 1, 2
+	var params [32]byte // its size, what it has, its name, a priority, a policy, a share and the time it is over
+	size := a[3]
+	if size < 4 {
+		return -eINVAL
+	}
+	copy(params[:], p.read(a[2], min(size, uint64(len(params))))) // a fault here is EFAULT
+	if uint64(le.Uint32(params[:])) != size {
+		return -eINVAL
+	}
+	if a[0] != create && a[0] != destroy {
+		return 0
+	}
+	flags, id := le.Uint32(params[4:]), le.Uint64(params[8:])
+	priority, policy, share, over := int32(le.Uint32(params[16:])), le.Uint32(params[20:]), int32(le.Uint32(params[24:])), int32(le.Uint32(params[28:]))
+	// A workloop is there while it was made by name and not given up, or holds anything.
+	q := p.kqueues[id]
+	there := q != nil && (q.made || !q.idle() || slices.ContainsFunc(p.threads, func(t *thread) bool { return t.serving == q }))
+	const hasPriority, hasPolicy, hasShare = 1, 2, 4
+	switch {
+	case a[0] == create && (flags == 0 || flags&^(hasPriority|hasPolicy|hasShare) != 0):
+		return -eINVAL
+	case a[0] == create && flags&hasPriority != 0 && (priority < 1 || priority > 63):
+		return -eINVAL
+	case a[0] == create && flags&hasPolicy != 0 && policy != 1 && policy != 2 && policy != 4:
+		return -eINVAL
+	case a[0] == create && flags&hasShare != 0 && (share < 1 || share > 100 || over < 1 || over > 0xffffff):
+		return -eINVAL
+	case id == 0 || id == ^uint64(0):
+		return -eINVAL
+	case a[0] == create && there:
+		return -eEXIST
+	case a[0] == create:
+		p.kqueue(id).made = true
+	case !there:
+		return -eNOENT
+	case !q.made:
+		return -eINVAL
+	default:
+		q.made = false
+	}
+	return 0
 }
 
 func sysKeventID(p *Process, a []uint64) int64 { return p.kevents(p.kqueue(a[0]), a) }
