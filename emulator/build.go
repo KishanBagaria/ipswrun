@@ -628,6 +628,11 @@ func launcher(image *rangefs.Image, program func(string) ([]byte, bool, error), 
 		for _, name := range slices.Sorted(maps.Keys(job.EnvironmentVariables)) {
 			g.Env = append(g.Env, name+"="+job.EnvironmentVariables[name])
 		}
+		// What launchd gives every job it starts, as the environment of a Mac's own launch agents
+		// has it (macOS 27.2.1): the job's name, and flags whose first bit libxpc takes to mean
+		// that launchd manages the process. configd, finding it is not managed, makes a copy of
+		// itself to be the daemon, and launchd gives that copy no service.
+		g.Env = append(g.Env, "XPC_SERVICE_NAME="+job.Label, "XPC_FLAGS=1")
 		return g, nil
 	}
 }

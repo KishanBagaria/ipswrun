@@ -41,6 +41,8 @@ const (
 	// The values a process asks for.
 	jobManagerUID  = 3 // the user of the launchd domain the process is in
 	jobManagerName = 6 // and the name of that domain
+	jobManagerPID  = 4 // the launchd that manages it
+	jobOther       = 9 // what it is of is not known: 0, of a program started from a shell
 
 	noSuchService = 3 // ESRCH, as launchd says it
 	launchdPID    = 1
@@ -106,6 +108,12 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 			reply.set("out", "Aqua")
 		case key == jobManagerUID:
 			reply.set("out", int64(p.uid))
+		case key == jobManagerPID:
+			reply.set("out", int64(launchdPID))
+		case jobRefused[key] != 0 && !p.m.job(p):
+			reply.set("error", jobRefused[key])
+		case key == jobOther && !p.m.job(p):
+			reply.set("out", int64(0))
 		default:
 			p.note("  to launchd, routine %d: %v", routine, request)
 			return false
@@ -169,4 +177,22 @@ func (m *Machine) onDemand(p *Process, name string) {
 			stopf("starting %s for the service %s: %v", g.Executable, name, err)
 		}
 	})
+}
+
+// jobRefused is what launchd answers a program started from a shell that asks it for the values
+// it does not give, by key, as measured on macOS 27.2.1 (whether launchd manages the process,
+// key 5, is one: libxpc answers that itself). What it answers a job of its own was not measured,
+// and such a question stops being answered, as before.
+var jobRefused = map[uint64]int64{1: 135, 2: 45, 5: 45, 10: 135, 11: 135, 12: 126}
+
+// job says whether launchd started a process to provide a service: one of the daemons and agents
+// given to the run, or started when its service was first looked up. A copy such a process makes
+// of itself is none.
+func (m *Machine) job(p *Process) bool {
+	for _, s := range m.services {
+		if s.provider == p {
+			return true
+		}
+	}
+	return false
 }
