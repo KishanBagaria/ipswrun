@@ -116,6 +116,25 @@ Every Mach-O executable in `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` and `/usr/li
 
 After everything below was added, the survey was run once more: 1,172 make no call that is not implemented, and 119 make at least one, of which 8 only sent a message to no port at all (a lookup of theirs had found nothing), which a Mac's kernel refuses as it is refused here and is no longer listed. What is still asked for by more than five: launchd's event streams (routine 401, by 15 programs, for a stream such as `com.apple.remoted.service`; what launchd answers is its own protocol and was not measured) and the properties of the registry's root (10, the kext tools). Nothing else is asked for by more than five programs that only start: what is left of the ranked list (signals, `fork`, sockets, the daemons) shows in programs that do their work, which this survey does not run.
 
+The survey was run a fourth time (commit `0e03750`), since `fcntl` and `proc_pidinfo` stop for what they have no answer for: 1,192 make no call that is not implemented, and 101 make at least one. What is asked for and not there, by how many programs ask, which is the order to do them in:
+
+| Programs | What is not there | What it is |
+| --- | --- | --- |
+| 15 | launchd's routine in message 1073742225 | event streams (routine 401); launchd's own protocol, not measured |
+| 8 | the properties of the registry's root | the kext tools, and `say` |
+| 6 | `proc_info` call 8, flavours 1 and 2 | `proc_dirtycontrol`: a daemon telling the kernel it may be ended when idle |
+| 5 | `memorystatus_control` | several commands |
+| 5 | `proc_info` call 5, flavour 2 | a thread naming itself (`pthread_setname_np`) |
+| 5 | launchd's routine in message 1073742624 | not looked into |
+| 4 each | Mach messages 3403 and 3404 | `mach_ports_register` and `mach_ports_lookup`, which `csh` and `tcsh` ask |
+| 4 | Mach message 3420 | `task_policy_set` (`vim` among them) |
+| 4 | Mach message 4807 | `mach_vm_copy` |
+| 3 each | `necp_client_action`; a sandbox check of the caller's own pid; the kqueue filter for a file's changes (-4), whose events never happen; the properties of the registry's `memory-map` | |
+| 2 each | `proc_info_extended_id`, `proc_rlimit_control`, `sem_open`, `proc_pid_rusage` flavour 6, `thread_info` (3612), `thread_policy` (3616), six IOKit requests (2800, 2801, 2813, 2830, 2854, 2871), host requests 225 and 227, three more of launchd's, `__mac_syscall` Quarantine 84 and AMFI 102 | |
+| 1 each | `acct`, `vfs_purge`, `change_fdguard_np`, `initgroups`, `quotactl`, `nfssvc`, `posix_spawn` with flag 0x40, and others | |
+
+The names of the Mach routines are from the kernel's source (xnu's `.defs`) and were not checked against a run.
+
 In the first two runs, what was asked for most that was not there, by programs asking: `getrusage` (21; [there now](#what-a-process-has-used)), launchd's routine in message 1073742225 (16), the kqueue filter for user events (13), `pipe` (9), the properties of the registry's root (9, the kext tools), `kqueue_workloop_ctl`, `memorystatus_control` and `mach_port_get_attributes` (5 each; the last is [there now](#a-ports-status)).
 
 One run of it filled the disk: `/usr/bin/yes` writes without end, and a guest's output was kept until it ended, with no limit on how much (27 GB in its 60 seconds). Since then the output of a run against one release is passed on as it is written, and where it has to be kept (several releases, whose outputs are compared, and the guests started beside the first) a guest that writes more than 64 MB stops the run and says so.
