@@ -13,6 +13,7 @@ type fileInfo struct {
 	size  int64
 	ino   uint64
 	mtime int64
+	links uint16 // the names it has, if more than the one
 	owner *Owner // if it is not the guests' user's (see Machine.owners)
 }
 
@@ -32,6 +33,13 @@ func (p *Process) describe(kind fdKind, path string, size int64, hostStat func(*
 			return fileInfo{}, hostErrno(err)
 		}
 		info.mode, info.size, info.mtime = uint16(st.Mode), st.Size, mtimeSeconds(&st)
+		switch st.Mode & syscall.S_IFMT {
+		case syscall.S_IFLNK:
+			info.mode = modeLink // as a Mac's file system has every link, whatever the host's says
+			fallthrough
+		case syscall.S_IFREG:
+			info.links = uint16(st.Nlink)
+		}
 		if owner, ok := p.m.owners[hostFileOf(&st)]; ok {
 			info.owner = &owner
 		}
@@ -114,6 +122,19 @@ type attrContext struct {
 
 func (c *attrContext) isDir() bool { return c.mode&syscall.S_IFMT == syscall.S_IFDIR }
 
+// attrFinderInfo is a file's Finder info, which is its attribute com.apple.FinderInfo: nil if
+// it has none, which is all zeros to those who ask.
+func attrFinderInfo(c *attrContext) []byte {
+	if c.p.m == nil {
+		return nil
+	}
+	_, id, errno := c.p.changeable(c.path, true)
+	if errno != 0 {
+		return nil
+	}
+	return c.p.m.xattrs[id][finderInfo]
+}
+
 // always is the value of an attribute that is the same for every file.
 func always(b []byte) func(*attrContext) []byte {
 	b = b[:len(b):len(b)] // shared, so never appended to in place
@@ -168,7 +189,7 @@ var (
 		{0x20, 8, attrObjID}, {0x40, 8, attrObjID}, {0x80, 8, attrPar32},
 		{0x100, 4, nil}, // script
 		{0x200, 16, attrTime}, {0x400, 16, attrTime}, {0x800, 16, attrTime}, {0x1000, 16, attrTime},
-		{0x2000, 16, nil}, {0x4000, -32, nil}, // backup time, no Finder info
+		{0x2000, 16, nil}, {0x4000, -32, attrFinderInfo}, // backup time, and Finder info if it is set
 		{0x8000, 4, func(c *attrContext) []byte { return le32(c.p.m.ownerOf(c.fileInfo).UID) }},
 		{0x10000, 4, func(c *attrContext) []byte { return le32(c.p.m.ownerOf(c.fileInfo).GID) }},
 		{0x20000, 4, func(c *attrContext) []byte { return le32(uint32(c.mode)) }},
@@ -274,9 +295,18 @@ func packAttrs(c *attrContext, want [5]uint32, options uint64) (out []byte, ok b
 				continue
 			}
 			if a.size < 0 {
-				if want[0]&attrReturned == 0 || options&optPackInvalid != 0 {
-					fixed = append(fixed, make([]byte, -a.size)...)
+				var value []byte
+				if a.value != nil {
+					value = a.value(c)
+				}
+				switch {
+				case want[0]&attrReturned == 0 || options&optPackInvalid != 0:
+					fixed = append(append(fixed, value...), make([]byte, -a.size-len(value))...)
 					returned[g] |= a.bit
+				case value != nil:
+					// Whether a caller that asks which attributes it was given is given one that
+					// APFS has only for some files was not measured.
+					c.p.unimplemented("getattrlist of Finder info that is set, asked with which attributes are returned", nil)
 				}
 				continue
 			}

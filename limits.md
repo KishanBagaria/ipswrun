@@ -24,10 +24,11 @@ This list was made by reading the code, and then checked by one [survey](#survey
 
 ## What to fix first
 
-These two would unlock the most code for the least work, and each keeps to the rules above.
+These three would unlock the most code for the least work, and each keeps to the rules above.
 
 1. **opendirectoryd under `--on-demand`.** notifyd and logd run, the second on a data volume ([below](#the-data-volume)). opendirectoryd is what nearly every program looks up next, and it calls `reboot`; until it runs, `--on-demand '*'` does not get far, and is not the default.
-2. **Taking a thread off the CPU** (limit 7). Signals, their handlers, faults and timers are there, but a thread that spins takes no signal, and nothing else runs meanwhile.
+2. **The system volume, open by default** (limit 8). Of the everyday tools that still differ ([below](#everyday-tools)), most do for want of a file the release has and a guest may not read. Whether to open it is a default, and a matter of how much of the image a run may fetch.
+3. **Taking a thread off the CPU** (limit 7). Signals, their handlers, faults and timers are there, but a thread that spins takes no signal, and nothing else runs meanwhile.
 
 ## Stubs that answer success
 
@@ -64,10 +65,11 @@ The calls guests make are answered as a Mac's kernel answers a process that is n
 | Sandbox 2, a check, of any process (even one that is not there) | 0, with a result of 0, allowed, for the filter types the guests use (none, a path, 5, 6, 0x1c, 0x41, a descriptor), except a path that does not exist, whose result is 2. That 2 was measured on this Mac only. A descriptor (0xf0) is EBADF, and the result left as it was, if it is not open |
 | Sandbox 4, a query of a process | ENOTSUP for its container (kind 0), ESRCH for kind 1; the buffer is not written |
 | Sandbox 12, `sandbox_passthrough_access`, as CFPreferences calls it for a plist it opened | 0 for a regular file with the flags 0x2 and 0x100 or neither; EACCES for one with 0x1 and for a directory; EBADF for a descriptor that is not open |
-| Sandbox 22, a profile the kernel has by name | ENOENT, as on this Mac for cfprefsd's: libsandbox then compiles the profile itself |
+| Sandbox 22, a profile the kernel has by name | ENOENT, as on this Mac for cfprefsd's, notifyd's, logd's and others': libsandbox then compiles the profile itself. A Mac's kernel does have some by name (it answers 0 for `com.apple.opendirectoryd`), and which it has is not known here ([below](#daemons-on-demand)) |
 | Sandbox 0, applying a compiled profile | 0, and nothing is confined (below) |
 | Sandbox 67, `sandbox_get_container_expected` (iOS 18 and later, as every process starts) | 0, with both words it is given set to 0: no container is expected |
 | Quarantine 87, `_qtn_proc_apply_to_pid` | 0, nothing written |
+| Quarantine 82 and 80, what a file is in quarantine by, asked by a descriptor (`cp`, `gzip`) or by a path (`tar`): {the file, &room, a buffer} | The file's attribute `com.apple.quarantine` after `q/`, and how long that is; ENOATTR for a file that has none, ERANGE with too little room, EINVAL for a pipe, and of a symbolic link the link itself is asked. [examples/copied.c](examples/copied.c) prints the same natively |
 
 **A deliberate exception: a profile that is applied confines nothing.** cfprefsd enters its sandbox as it starts, and a real kernel would hold it to its profile from then on. Here applying the profile succeeds and changes nothing, so a guest can do whatever its profile forbids, and sandbox behaviour can't be studied with ipswrun. This was chosen over stopping, so that cfprefsd, and the prefs guest beside it, run.
 
@@ -125,6 +127,30 @@ Left as they were, still stopping or listed by name:
 
 - **`confstr(_CS_DARWIN_USER_CACHE_DIR)` and the like**, which 15 programs end on. The directory is made by the release's `dirhelper`, and that was followed as far as it goes. Started by hand (`--daemon com.apple.bsd.dirhelper=system:/usr/libexec/dirhelper`) it checks in and takes the request. It needs `/var/folders`, which is on a device's data volume and so in no restore image (`--mount /var/folders=<dir>` gives one). It then makes `/var/folders/zz` and marks it with a call of the sandbox's (number 261 on macOS 27.2.1, given the directory and the word `folders`), which on a Mac leaves the directory with the extended attribute `com.apple.rootless` set to `folders`. That call is one of System Integrity Protection's: its number is a release's own, and what it answers can only be measured by a process that is root and entitled by Apple, so it stays unimplemented and dirhelper gives up there. Starting dirhelper when it is looked up would not change that.
 
+## Everyday tools
+
+The survey above starts each program and no more. So 76 commands that do a tool's work (`mkdir -p`, `cp -R`, `mv`, `ln`, `rm -r`, `find`, `grep`, `sed`, `awk`, `sort | uniq`, `tar`, `gzip`, `zip`, `plutil`, `sqlite3`, `zsh -c` and the like) were each run by the release's own `/bin/sh` on macOS 27.2.1 and by this Mac's, in a new directory, and what they printed compared. At first none got through: the directory was made with `mkdir -p`, which stopped. After what follows, 64 print the same.
+
+What was missing, each measured natively and now there:
+
+- **The stat calls that also tell of a file's security** (`stat64_extended`, `lstat64_extended`, `fstat64_extended`), which `mkdir -p`, `ls -l` and `cp` make. No file here has an access control list, and of one that has none a Mac's kernel writes 44 bytes that say so.
+- **Whether a file is in quarantine** (Quarantine 80 and 82, [above](#__mac_syscall)), which `cp`, `tar` and `gzip` ask of what they copy.
+- **Symbolic and hard links** (`symlink`, `symlinkat`, `link`, `linkat`), a file's count of names, `O_NOFOLLOW` of a link (ELOOP), and `unlinkat` as `rm -r` calls it (the flag 0x100 for a directory): [examples/links.c](examples/links.c). A symbolic link under the home or a mount is the host's, so one that leads out of its mount, as any with a whole path does, can be read but not followed (EACCES). `link` of a symbolic link, and `linkat` following one with a whole path, stop as unimplemented.
+- **A semaphore's count.** `semaphore_create` made every semaphore with none, whatever it was asked for, so `sort` of a file, which makes one with a count and waits on it, waited for good. `semaphore_destroy` is there too ([examples/semaphore.c](examples/semaphore.c)); destroying one that is waited on stops as unimplemented.
+- **Scripts** ([below](#starting-programs)), and a program that is a symbolic link on the system volume (`/usr/bin/tar` is one to `bsdtar`), which could not be seen or started.
+- **`fchmod_extended`,** which `gzip` and `cp` call to give a copy its owner and mode (with an access control list it stops as unimplemented), and **Finder info**, which `gzip` copies: it is the file's attribute `com.apple.FinderInfo`, 32 bytes, and none if they are all zeros ([examples/copied.c](examples/copied.c)).
+- **A directory takes no blocks** to `stat`, as on a Mac's file system, so `ls -l` says the same total.
+
+What still differs, of the 12:
+
+- **Five are the closed system volume** ([limit 8](#ranked-limits)): `perl` and the scripts in it (`shasum`) need `libperl` under `/System/Library/Perl`, `file` its magic, `openssl` its configuration, and `sysctl` asks for an oid's format, which is not answered. `--system` opens what is named.
+- **Three are who the user is**: `id -un` and `whoami` say `emu`, and there is less in the environment.
+- **`tar`** makes and lists its archive, and says twice on its standard error that it could not discover entitlements, which a Mac's does not say.
+- **One pipeline** (`PlistBuddy ... 2>&1 | head -2`) ends with the shell's "Bad file descriptor", for a reason not found; `2>&1` with a pipe is otherwise as on a Mac.
+- **Two are the survey's own**: the directory it lists has another mode, and the home it gave had no `tmp` for `man`.
+
+It was run on one release, and on macOS only.
+
 ## Daemons on demand
 
 `--on-demand <service>` has launchd start the build's own provider of a Mach service when the service is first looked up and no guest provides it: the daemon or agent whose launchd plist (in `/System/Library/LaunchDaemons` or `LaunchAgents`) names the service, with the program, arguments and environment the plist gives beside the guest's own environment, as root or as the user the plist names (by the build's own `/etc/passwd`), or for an agent as the guests' user. A pattern names several services, and `*` every one. The service is there at once, as launchd has it, and what is sent to it waits for the daemon to check in. Reading the plists, some 900 of them on macOS 27.2.1, takes about 2.6 seconds and 14 MB of the image, once a run, when the first service is looked for.
@@ -136,7 +162,7 @@ Left as they were, still stopping or listed by name:
 It is not the default, and `'*'` does not get far: a daemon that makes a call that is not implemented stops the run and names it, as any guest does, and two that nearly every program looks up each do, on macOS 27.2.1:
 
 - **logd** (`com.apple.logd`) runs, given a data volume to keep its files on ([below](#the-data-volume)) and the notifyd it asks: `--data <dir> --on-demand 'com.apple.logd*' --on-demand com.apple.system.notification_center`. [examples/oslog.c](examples/oslog.c) prints the same with it as natively on every macOS release in the matrix, and on macOS 15.6.1 and 27.2.1 what the guest logged was found in the `tracev3` file logd wrote. Three things it asks are not there, each named by `--missing`, and it goes on without them: two requests of the host's port (messages 225 and 425, the second for the kernel's extensions, which it says on its standard error it could not read) and a kqueue's watch of a file (`EVFILT_VNODE`). What it needed on the way: `fchmodat` and `fchownat`, a file's owner kept, `kern.boottime`, `kern.bootsessionuuid`, and the trap for exclaves (88), each [below](#what-logd-asked-for). Not on iOS, which has no data volume here.
-- **opendirectoryd** (`com.apple.system.opendirectoryd.libinfo`) calls `reboot`, which is how a daemon asks the kernel something of the boot here, and is not implemented.
+- **opendirectoryd** (`com.apple.system.opendirectoryd.libinfo`) gives up as it starts: its `sandbox_init` fails with "profile not found", and it then asks the kernel to panic (`reboot` with RB_PANIC, which is not implemented and stops the run). Its profile is no file of the release's: a Mac's kernel has it by name, built into its sandbox extension (Sandbox 22 answers 0 for `com.apple.opendirectoryd` on macOS 27.2.1, and ENOENT for the seven other daemons tried). Which names a release's kernel has is in its kernelcache, and was looked for there: the names are in it, but so are the same names in other lists (the daemons whose profiles the kernel does not have among them), so telling them apart means reading the sandbox extension's own table of profiles, whose layout is each release's. Left there: without opendirectoryd a program's users and groups come from `/etc/passwd`, as before.
 
 A daemon whose plist names a user the build's password file does not have, or whose program is not on the system volume, is not started, and its service is not there. The other keys of a plist (`LaunchEvents`, `Sockets`, `KeepAlive`, the session an agent is limited to, `RunAtLoad`) are not acted on: a daemon is started for a lookup of one of its Mach services and for nothing else.
 
@@ -185,7 +211,7 @@ What is not there, or not as a Mac has it:
 - **`vfork`,** which stops as unimplemented.
 - **The ports a task registers for its copies.** `fork` in libSystem sends `mach_ports_register` and `mach_ports_lookup` to the task's port, and neither is answered: the message is refused as one to a port that is gone, as any message nothing implements is, and libSystem goes on. `--missing` lists both. A copy starts with launchd's port and no other right; one whose parent registered ports would not find them.
 - **A copy's memory is copied when it is made,** every page its parent has touched, where a Mac's kernel copies a page only when one of the two writes to it. It was first copied a page at a time, which took 11 seconds a `fork` (the engine is slow over each mapping it is given); in runs of pages it takes a fraction of a second, and more for a parent that has touched more.
-- **A script.** The kernel hands a file that starts with `#!` to its interpreter; here starting one stops as unimplemented. Any other file that is no program is ENOEXEC.
+- **A script** is handed to the program its first line names (`#!`), as a Mac's kernel hands it: that program's path, the words after it on the line, the script's path, and the script's arguments ([examples/script.c](examples/script.c), as natively). A script whose program is itself a script stops as unimplemented. Any other file that is no program is ENOEXEC.
 - **What was not measured stops as unimplemented:** the flags of `posix_spawn` other than those for the signals, the process group and the descriptors to close (starting suspended, `POSIX_SPAWN_SETEXEC`, a new session), its port actions, `wait4` for a process group or with options other than `WNOHANG` and `WUNTRACED`, `execve` by a process with more than one thread, and `getrusage` of the children of a process that has started some.
 - **The memory of a process that has ended is kept until the run ends.** Closing its engine while others run took memory of theirs with it (a fault inside Unicorn on the next stretch of emulation), so the engines are closed together at the end.
 - **`/private/var/select/sh`,** which says which shell `/bin/sh` is, is on a device's data volume: the release's `sh` says on its standard error that it cannot open it, and runs `bash`, as it does on a Mac where the link is not there.

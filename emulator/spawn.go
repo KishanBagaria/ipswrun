@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,7 +46,7 @@ type waiting4 struct {
 
 // program is the executable at a path, and the name to run it under; or the error posix_spawn
 // answers with for a path that cannot be run.
-func (p *Process) program(path string) ([]byte, int64) {
+func (p *Process) fileToRun(path string) ([]byte, int64) {
 	abs := p.absolute(path)
 	if abs == p.path {
 		return p.exe, 0
@@ -86,18 +87,51 @@ func (p *Process) program(path string) ([]byte, int64) {
 		}
 		image = data
 	}
+	return image, 0
+}
+
+// program is what is to be run for a path and the arguments it is given: the program at the
+// path, or for a script, a file that begins with #!, the program its first line names, which is
+// started with the words after it on that line, the script's path, and the script's arguments
+// after its name. It answers with the program, its path, and what it is started with.
+func (p *Process) program(path string, argv []string) ([]byte, string, []string, int64) {
+	image, errno := p.fileToRun(path)
+	if errno != 0 {
+		return nil, "", nil, errno
+	}
+	if words, ok := scriptLine(image); ok {
+		if len(words) == 0 {
+			return nil, "", nil, -eNOEXEC
+		}
+		if image, errno = p.fileToRun(words[0]); errno != 0 {
+			return nil, "", nil, errno
+		}
+		if _, nested := scriptLine(image); nested {
+			p.unimplemented("a script whose program is a script", nil)
+			return nil, "", nil, -eNOEXEC
+		}
+		argv = append(append(slices.Clone(words), path), argv[min(1, len(argv)):]...)
+		path = words[0]
+	}
 	if _, err := macho.NewFatFile(bytes.NewReader(image)); err != nil {
 		if _, err := macho.NewFile(bytes.NewReader(image)); err != nil {
-			if bytes.HasPrefix(image, []byte("#!")) {
-				p.unimplemented("posix_spawn of a script, which the kernel hands to its interpreter", nil)
-			}
-			return nil, -eNOEXEC
+			return nil, "", nil, -eNOEXEC
 		}
 	}
 	if _, err := thin(image, 0, cpuSubtypeARM64E); err != nil {
-		return nil, -eBADARCH
+		return nil, "", nil, -eBADARCH
 	}
-	return image, 0
+	return image, p.absolute(path), argv, 0
+}
+
+// scriptLine is the words of a script's first line after its #!, and whether the file is one.
+func scriptLine(file []byte) ([]string, bool) {
+	line, ok := bytes.CutPrefix(file[:min(len(file), 512)], []byte("#!"))
+	if !ok {
+		return nil, false
+	}
+	line, _, _ = bytes.Cut(line, []byte("\n"))
+	return strings.Fields(string(line)), true
 }
 
 // away3 is away for a fetch of two results.
@@ -145,13 +179,13 @@ func sysPosixSpawn(p *Process, a []uint64) int64 {
 		p.unimplemented(fmt.Sprintf("posix_spawn with the flags %#x", other), a)
 		return -eINVAL
 	}
-	image, errno := p.program(path)
+	image, abs, argv, errno := p.program(path, p.strings(a[3]))
 	if errno != 0 {
 		return errno
 	}
 	// The rest is done between two stretches of emulation and not inside this one: a new
 	// process is a new engine, which is not to be made, or started, from within another's.
-	abs, argv, env, parent, t, cwd := p.absolute(path), p.strings(a[3]), p.strings(a[4]), p.current, p.current, p.workingDirectory()
+	env, parent, t, cwd := p.strings(a[4]), p.current, p.current, p.workingDirectory()
 	// The group it is to be in: its parent's, or one it is told, which with 0 is one of its own.
 	sigdefault, sigmask, group, ownGroup := uint32(0), parent.sigmask, p.group(), false
 	if a[2] != 0 && flags&(spawnSetPgroup|spawnSetSigdef|spawnSetSigmask) != 0 {
@@ -371,7 +405,7 @@ func sysGetppid(p *Process, a []uint64) int64 { return int64(p.ppid) }
 // called, as the same process: with its pid, its parent and children, and the descriptors it is
 // to keep. It answers only if the program cannot be run.
 func sysExecve(p *Process, a []uint64) int64 {
-	image, errno := p.program(p.cstr(a[0]))
+	image, abs, argv, errno := p.program(p.cstr(a[0]), p.strings(a[1]))
 	if errno != 0 {
 		return errno
 	}
@@ -381,7 +415,7 @@ func sysExecve(p *Process, a []uint64) int64 {
 		p.unimplemented("execve by a process with more than one thread", a)
 		return -eNOTSUP
 	}
-	abs, argv, env, t := p.absolute(p.cstr(a[0])), p.strings(a[1]), p.strings(a[2]), p.current
+	env, t := p.strings(a[2]), p.current
 	p.m.deferred = append(p.m.deferred, func() {
 		if errno := p.exec(abs, image, argv, env); errno != 0 {
 			t.answer = &result{x0: uint64(-errno), carry: true}

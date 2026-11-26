@@ -648,6 +648,33 @@ func (p *Process) semWait(sem uint32, deadline time.Time, late result) {
 	}
 }
 
+// migSemaphoreCreate is semaphore_create(task, policy, count): a semaphore that as many waits
+// as its count pass before one has to wait for a signal. A count below none is refused.
+func migSemaphoreCreate(p *Process, body []byte) migReply {
+	count := int32(le.Uint32(body[36:]))
+	if count < 0 {
+		return migCode(kernInvalidArg)
+	}
+	name := p.newPort()
+	p.semaphores[name] = int(count)
+	return migPort(name)
+}
+
+// semaphoreGone is the count of a semaphore that was destroyed: its name is no semaphore's.
+const semaphoreGone = -1
+
+// migSemaphoreDestroy is semaphore_destroy(task, semaphore). What a thread that waits on it is
+// then told was not measured.
+func migSemaphoreDestroy(p *Process, body []byte) migReply {
+	name := le.Uint32(body[28:])
+	if p.firstWaiter(waitSemaphore, uint64(name)) != nil {
+		p.unimplemented("semaphore_destroy of a semaphore that is waited on", nil)
+		return migCode(kernFailure)
+	}
+	p.semaphores[name] = semaphoreGone
+	return migCode(0)
+}
+
 func machSemaphoreSignal(p *Process, a []uint64) int64 {
 	p.signal(uint32(a[0]))
 	return 0
@@ -661,12 +688,18 @@ func machSemaphoreSignalAll(p *Process, a []uint64) int64 {
 }
 
 func machSemaphoreWait(p *Process, a []uint64) int64 {
+	if p.semaphores[uint32(a[0])] == semaphoreGone {
+		return kernInvalidName
+	}
 	p.semWait(uint32(a[0]), time.Time{}, result{})
 	return 0
 }
 
 func machSemaphoreTimedwait(p *Process, a []uint64) int64 {
 	timeout := relative(a[1]&0xFFFFFFFF, a[2])
+	if p.semaphores[uint32(a[0])] == semaphoreGone {
+		return kernInvalidName
+	}
 	if timeout <= 0 && p.semaphores[uint32(a[0])] == 0 {
 		return kernTimedOut
 	}

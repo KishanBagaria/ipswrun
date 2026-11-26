@@ -1,0 +1,7 @@
+{
+  "build": "22A3354",
+  "cache_uuid": "4D95BD3E-6831-3A99-A66C-B4DDB316E2E0",
+  "exit_code": 0,
+  "output": "made with a count of 2: 0\nwaits: 0, 0, then with nothing left and no time to wait: 0x31\nsignalled: 0; a wait: 0; another: 0x31\nmade with none: 0; a wait with no time: 0x31; a wait that another thread ends: 0\nmade with a count below none: 0x4\ndestroyed: 0; a wait on it: 0xf\n",
+  "version": "18.0"
+}

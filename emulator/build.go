@@ -246,7 +246,8 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		return real, err
 	}
 	known := map[string]SystemFile{}
-	system := func(path string) (SystemFile, error) {
+	var system func(path string) (SystemFile, error)
+	system = func(path string) (SystemFile, error) {
 		if f, ok := known[path]; ok {
 			return f, nil
 		}
@@ -313,6 +314,20 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 			f = SystemFile{Dir: true, ReadDir: visibleEntries(image, vol, rel, isAllowed)}
 		case rangefs.Regular:
 			f = SystemFile{File: entry.File}
+		case rangefs.Symlink:
+			// A link to a file, as /usr/bin/tar is to bsdtar: what it leads to, if a guest may
+			// read that too, and the link's own text for those who ask what it is.
+			to := entry.Target
+			if !strings.HasPrefix(to, "/") {
+				to = pathpkg.Join(pathpkg.Dir(path), to)
+			}
+			known[path] = SystemFile{} // a link that leads back to itself leads nowhere
+			if f, err = system(to); err != nil {
+				return SystemFile{}, err
+			}
+			if f.Dir || f.File != nil {
+				f.Link = entry.Target
+			}
 		}
 		known[path] = f
 		return f, nil
@@ -322,7 +337,9 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 	program := func(path string) ([]byte, bool, error) {
 		entry, err := image.Stat(rangefs.FileSystem, path)
 		for links := 0; err == nil && entry.Kind == rangefs.Symlink && links < 16; links++ {
-			if path = entry.Target; !strings.HasPrefix(path, "/") {
+			if strings.HasPrefix(entry.Target, "/") {
+				path = entry.Target
+			} else {
 				path = pathpkg.Join(pathpkg.Dir(path), entry.Target)
 			}
 			entry, err = image.Stat(rangefs.FileSystem, path)

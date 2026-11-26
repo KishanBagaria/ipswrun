@@ -34,6 +34,7 @@ const (
 	eINVAL    = 22
 	eNOTTY    = 25
 	eSPIPE    = 29
+	eLOOP     = 62
 	eRANGE    = 34
 	eAGAIN    = 35
 	ePIPE     = 32
@@ -389,7 +390,7 @@ func (p *Process) lookup(path string) (target, bool) {
 			return target{kind: dirFD, path: f.Real, readDir: f.ReadDir, link: f.Link}, true
 		}
 		if f.File != nil {
-			return target{kind: cacheFD, cache: f.File}, true
+			return target{kind: cacheFD, cache: f.File, link: f.Link}, true
 		}
 	}
 	if under(pathpkg.Dir(p.path), path) { // on the way to its own executable
@@ -403,7 +404,7 @@ func statBuf(i fileInfo, owner user) []byte {
 	b := make([]byte, 144)
 	le.PutUint32(b[0:], i.dev)
 	le.PutUint16(b[4:], i.mode)
-	le.PutUint16(b[6:], 1)
+	le.PutUint16(b[6:], max(i.links, 1))
 	le.PutUint64(b[8:], i.ino)
 	if i.owner != nil {
 		owner.uid, owner.gid = i.owner.UID, i.owner.GID
@@ -414,7 +415,9 @@ func statBuf(i fileInfo, owner user) []byte {
 		le.PutUint64(b[at:], uint64(i.mtime))
 	}
 	le.PutUint64(b[96:], uint64(i.size))
-	le.PutUint64(b[104:], align(uint64(i.size), volumeBlockSize)/512)
+	if i.mode&syscall.S_IFMT != syscall.S_IFDIR { // a directory's names take no blocks of its own
+		le.PutUint64(b[104:], align(uint64(i.size), volumeBlockSize)/512)
+	}
 	le.PutUint32(b[112:], volumeBlockSize)
 	return b
 }
@@ -444,6 +447,44 @@ func sysLstat64(p *Process, a []uint64) int64 { return p.doStat(p.cstr(a[0]), a[
 
 func sysFstatat64(p *Process, a []uint64) int64 {
 	return p.atPath(a[0], a[1], func(path string) int64 { return p.doStat(path, a[2], a[3]&0x20 == 0) })
+}
+
+// The stat calls that also tell of a file's security (stat64_extended and the like, which
+// mkdir -p, ls -l and cp use): {path or descriptor, where the status goes, where the security
+// goes, and how much room there is for it, then how much it takes}. No file here has an access
+// control list, and a Mac's kernel was measured to say of one that has none: 44 bytes, which
+// are a mark, no owner's and no group's identifier, and that there is no list. With less room
+// nothing is written but how much it takes; of a pipe or a socket it takes none.
+func (p *Process) statExtended(a []uint64, stat func() int64, vnode bool) int64 {
+	security, size := a[2], a[3]
+	if security != 0 && size == 0 {
+		return -eFAULT
+	}
+	if errno := stat(); errno != 0 || security == 0 {
+		return errno
+	}
+	var none []byte
+	if vnode {
+		none = append(append(le32(0x012CC16D), make([]byte, 32)...), le32(0xFFFFFFFF, 0)...)
+		if p.u64(size) >= uint64(len(none)) {
+			p.write(security, none)
+		}
+	}
+	p.write(size, le64(uint64(len(none))))
+	return 0
+}
+
+func sysStat64Extended(p *Process, a []uint64) int64 {
+	return p.statExtended(a, func() int64 { return p.doStat(p.cstr(a[0]), a[1], true) }, true)
+}
+
+func sysLstat64Extended(p *Process, a []uint64) int64 {
+	return p.statExtended(a, func() int64 { return p.doStat(p.cstr(a[0]), a[1], false) }, true)
+}
+
+func sysFstat64Extended(p *Process, a []uint64) int64 {
+	f := p.fds[a[0]]
+	return p.statExtended(a, func() int64 { return sysFstat64(p, a) }, f == nil || !f.streams())
 }
 
 func sysFstat64(p *Process, a []uint64) int64 {
@@ -505,7 +546,11 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 		if t.root != nil {
 			// A file it creates has the mode asked for less the guest's umask, not the host's.
 			var st syscall.Stat_t
-			created := flags&0x200 != 0 && statInRoot(t.root, t.rel, false, &st) != nil
+			missing := statInRoot(t.root, t.rel, false, &st) != nil
+			created := flags&0x200 != 0 && missing
+			if flags&0x100 != 0 && !missing && st.Mode&syscall.S_IFMT == syscall.S_IFLNK {
+				return -eLOOP // told not to follow, and it is a link
+			}
 			h, err = openInRoot(t.root, t.rel, hostFlags, uint32(mode&0o777))
 			if err == nil && created {
 				if err = syscall.Fchmod(h, uint32(mode&0o777)&^p.umask()); err != nil {
@@ -1037,7 +1082,81 @@ func (p *Process) doUnlink(path string, dir bool) int64 {
 func sysUnlink(p *Process, a []uint64) int64 { return p.doUnlink(p.cstr(a[0]), false) }
 func sysRmdir(p *Process, a []uint64) int64  { return p.doUnlink(p.cstr(a[0]), true) }
 func sysUnlinkat(p *Process, a []uint64) int64 {
-	return p.atPath(a[0], a[1], func(path string) int64 { return p.doUnlink(path, a[2]&0x80 != 0) }) // AT_REMOVEDIR
+	// As a directory if told so (AT_REMOVEDIR, or AT_REMOVEDIR_DATALESS as rm tells it); a
+	// flag there is not is not minded.
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.doUnlink(path, a[2]&(0x80|0x100) != 0) })
+}
+
+// doSymlink makes a symbolic link at a path, to whatever text it is given.
+func (p *Process) doSymlink(text, path string) int64 {
+	t, ok := p.writableTarget(path)
+	if !ok {
+		return -eACCES
+	}
+	if err := t.root.Symlink(text, t.rel); err != nil {
+		return hostErrno(err)
+	}
+	p.created(t)
+	return 0
+}
+
+func sysSymlink(p *Process, a []uint64) int64 { return p.doSymlink(p.cstr(a[0]), p.cstr(a[1])) }
+func sysSymlinkat(p *Process, a []uint64) int64 {
+	return p.atPath(a[1], a[2], func(path string) int64 { return p.doSymlink(p.cstr(a[0]), path) })
+}
+
+// doLink gives a file a second name. Of a symbolic link it is the link that gets it, unless the
+// link is to be followed first.
+func (p *Process) doLink(from, to string, follow bool) int64 {
+	t1, ok1 := p.writableTarget(from)
+	t2, ok2 := p.writableTarget(to)
+	switch {
+	case !ok1 || !ok2:
+		return -eACCES
+	case t1.root != t2.root:
+		return -eXDEV
+	}
+	rel := t1.rel
+	for links := 0; follow; links++ {
+		text, err := t1.root.Readlink(rel)
+		if err != nil {
+			break // no link, or nothing
+		}
+		if strings.HasPrefix(text, "/") || links == 32 {
+			p.unimplemented("a hard link to what a symbolic link with a whole path names", nil)
+			return -eNOSYS
+		}
+		rel = pathpkg.Join(pathpkg.Dir(rel), text)
+	}
+	return hostCall(t1.root.Link(rel, t2.rel))
+}
+
+// sysLink is link(a file, another name for it). What a Mac's kernel does when the file is a
+// symbolic link was measured for linkat only.
+func sysLink(p *Process, a []uint64) int64 {
+	from := p.cstr(a[0])
+	if t, ok := p.writableTarget(from); ok {
+		if _, err := t.root.Readlink(t.rel); err == nil {
+			p.unimplemented("link of a symbolic link", a)
+			return -eNOSYS
+		}
+	}
+	return p.doLink(from, p.cstr(a[1]), false)
+}
+
+// sysLinkat is linkat(directory, path, directory, path, flags): AT_SYMLINK_FOLLOW has a
+// symbolic link followed.
+func sysLinkat(p *Process, a []uint64) int64 {
+	const followLink = 0x40
+	if a[4]&^followLink != 0 {
+		p.unimplemented("linkat with flags other than AT_SYMLINK_FOLLOW", a)
+		return -eNOSYS
+	}
+	from, errno := p.at(a[0], a[1])
+	if errno != 0 {
+		return errno
+	}
+	return p.atPath(a[2], a[3], func(to string) int64 { return p.doLink(from, to, a[4]&followLink != 0) })
 }
 
 func (p *Process) doMkdir(path string, mode uint64) int64 {

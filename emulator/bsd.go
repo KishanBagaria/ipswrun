@@ -36,7 +36,7 @@ func init() {
 		"mkdir": {2, sysMkdir}, "rename": {2, sysRename}, "readlink": {3, sysReadlink}, "readlinkat": {4, sysReadlinkat},
 		"mkdirat": {3, sysMkdirat}, "rmdir": {1, sysRmdir}, "unlinkat": {3, sysUnlinkat}, "renameat": {4, sysRenameat},
 		"renameatx_np": {5, sysRenameatx}, "faccessat": {4, sysFaccessat}, "truncate": {2, sysTruncate}, "fcntl": {3, sysFcntl}, "dup": {1, sysDup}, "dup2": {2, sysDup2},
-		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir}, "chmod": {2, sysChmod}, "fchmod": {2, sysFchmod}, "fchmodat": {4, sysFchmodat}, "chown": {3, sysChown}, "fchownat": {5, sysFchownat},
+		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir}, "chmod": {2, sysChmod}, "fchmod": {2, sysFchmod}, "fchmodat": {4, sysFchmodat}, "fchmod_extended": {5, sysFchmodExtended}, "symlink": {2, sysSymlink}, "symlinkat": {3, sysSymlinkat}, "link": {2, sysLink}, "linkat": {5, sysLinkat}, "stat64_extended": {4, sysStat64Extended}, "lstat64_extended": {4, sysLstat64Extended}, "fstat64_extended": {4, sysFstat64Extended}, "chown": {3, sysChown}, "fchownat": {5, sysFchownat},
 		"lchown": {3, sysLchown}, "fchown": {3, sysFchown}, "utimes": {2, sysUtimes}, "futimes": {2, sysFutimes},
 		"setattrlist": {5, sysSetattrlist}, "fsetattrlist": {5, sysFsetattrlist}, "flock": {2, sysFlock},
 		"getxattr": {6, sysGetxattr}, "fgetxattr": {6, sysFgetxattr}, "setxattr": {6, sysSetxattr}, "fsetxattr": {6, sysFsetxattr},
@@ -712,9 +712,67 @@ func sysMacSyscall(p *Process, a []uint64) int64 {
 		return 0
 	case "Quarantine 87": // _qtn_proc_apply_to_pid: taken, nothing written
 		return 0
+	case "Quarantine 82":
+		return p.quarantineOf(a, false)
+	case "Quarantine 80":
+		return p.quarantineOf(a, true)
+	}
+	if a[2] != 0 && p.trace { // what it was given, for whoever measures it on a Mac
+		p.note("  mac_syscall %s is given %s", name, hexArgs(func() []uint64 {
+			b, w := p.read(a[2], 64), make([]uint64, 8)
+			for i := range w {
+				w[i] = le.Uint64(b[8*i:])
+			}
+			return w
+		}()))
 	}
 	p.unimplemented("__mac_syscall "+name, a)
 	return -eNOSYS
+}
+
+// quarantineOf is Quarantine 82, {a descriptor, &room, a buffer}: what a file is in quarantine
+// by, as copyfile asks of a file it copies. That is the file's attribute com.apple.quarantine
+// after "q/", with room set to how long it is; a file that has none is not in quarantine
+// (ENOATTR), and with too little room nothing is written (ERANGE). Of what is no file it is
+// EINVAL.
+//
+// Quarantine 80 asks the same of a path, {a path, &room, a buffer}, as tar asks of what it
+// archives: of the file itself, not of what a symbolic link leads to.
+func (p *Process) quarantineOf(a []uint64, byPath bool) int64 {
+	args := p.read(a[2], 24)
+	room, buffer := le.Uint64(args[8:]), le.Uint64(args[16:])
+	var (
+		id    hostFile
+		errno int64
+	)
+	if byPath {
+		if le.Uint64(args) == 0 {
+			return -eFAULT
+		}
+		if _, id, errno = p.changeable(p.cstr(le.Uint64(args)), false); errno == -eNOENT {
+			return errno
+		}
+	} else {
+		f := p.fds[le.Uint64(args)]
+		switch {
+		case f == nil:
+			return -eBADF
+		case f.streams():
+			return -eINVAL
+		}
+		id, errno = p.xattrFile(0, int64(le.Uint64(args)), 0)
+	}
+	value, ok := p.m.xattrs[id]["com.apple.quarantine"]
+	if errno != 0 || !ok { // nothing that is not the guest's to change has attributes
+		return -eNOATTR
+	}
+	label := append([]byte("q/"), value...)
+	if p.u64(room) < uint64(len(label)) {
+		return -eRANGE
+	}
+	p.write(buffer, label)
+	p.write(room, le64(uint64(len(label))))
+	return 0
 }
 
 // sandboxCheck is Sandbox 2, {&result, pid, operation, filter type, argument, flags}, of any

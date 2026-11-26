@@ -31,10 +31,12 @@ const (
 	resourceFork    = "com.apple.ResourceFork" // the one attribute read and written at a position
 	attrCmnModTime  = 0x400
 	attrCmnAccTime  = 0x1000
+	attrCmnFndrInfo = 0x4000
+	finderInfo      = "com.apple.FinderInfo" // the attribute Finder info is, when it is not all zeros
 	attrCmnOwnerID  = 0x8000
 	attrCmnGroupID  = 0x10000
 	attrCmnAccMask  = 0x20000
-	attrSetSupports = attrCmnModTime | attrCmnAccTime | attrCmnOwnerID | attrCmnGroupID | attrCmnAccMask
+	attrSetSupports = attrCmnModTime | attrCmnAccTime | attrCmnFndrInfo | attrCmnOwnerID | attrCmnGroupID | attrCmnAccMask
 )
 
 // hostFile is a host file as the host knows it, whatever the guest calls it.
@@ -134,6 +136,38 @@ func sysFchmodat(p *Process, a []uint64) int64 {
 		}
 		return hostCall(t.root.Chmod(t.rel, fileMode(a[2])))
 	})
+}
+
+// sysFchmodExtended is fchmod_extended(descriptor, user, group, mode, security), which sets
+// whichever of them it is given: KAUTH_UID_NONE and KAUTH_GID_NONE (-101) are no user and no
+// group, all ones no mode, and nothing no security. gzip and cp call it with what they found of
+// the file they copied. An access control list is not kept here.
+func sysFchmodExtended(p *Process, a []uint64) int64 {
+	const none = 0xFFFFFF9B
+	uid, gid, mode := uint32(a[1]), uint32(a[2]), uint32(a[3])
+	if a[4] != 0 {
+		p.unimplemented("fchmod_extended with an access control list", a)
+		return -eNOSYS
+	}
+	f, id, errno := p.changeableFD(a[0])
+	if errno != 0 {
+		return errno
+	}
+	if uid != none || gid != none {
+		if uid == none {
+			uid = ^uint32(0)
+		}
+		if gid == none {
+			gid = ^uint32(0)
+		}
+		if errno := p.chown(id, uid, gid, a); errno != 0 {
+			return errno
+		}
+	}
+	if mode != ^uint32(0) {
+		return hostCall(syscall.Fchmod(f.host, mode&0o7777))
+	}
+	return 0
 }
 
 func sysFchmod(p *Process, a []uint64) int64 {
@@ -291,7 +325,7 @@ func (p *Process) setattrlist(path string, list, buf, size, options uint64, a []
 	if errno != 0 {
 		return errno
 	}
-	values := p.read(buf, min(size, 64))
+	values := p.read(buf, min(size, 128))
 	value := func(n int) []byte {
 		if len(values) < n {
 			panic(fault{"setattrlist: buffer too short"})
@@ -310,6 +344,20 @@ func (p *Process) setattrlist(path string, list, buf, size, options uint64, a []
 	}
 	if common&attrCmnAccTime != 0 {
 		atime = timespec()
+	}
+	// Finder info is the file's attribute of that name: 32 bytes, and none if they are all zeros.
+	if common&attrCmnFndrInfo != 0 {
+		if len(values) < 32 {
+			return -eINVAL
+		}
+		if info := slices.Clone(value(32)); slices.ContainsFunc(info, func(c byte) bool { return c != 0 }) {
+			if p.m.xattrs[id] == nil {
+				p.m.xattrs[id] = map[string][]byte{}
+			}
+			p.m.xattrs[id][finderInfo] = info
+		} else {
+			delete(p.m.xattrs[id], finderInfo)
+		}
 	}
 	uid, gid := ^uint32(0), ^uint32(0)
 	if common&attrCmnOwnerID != 0 {
@@ -426,6 +474,8 @@ func (p *Process) setxattr(path uint64, fdn int64, a []uint64) int64 {
 		return -eINVAL
 	case size > xattrMaxValue || position > xattrMaxValue:
 		return -eNOMEM
+	case name == finderInfo && size != 32:
+		return -eRANGE
 	}
 	attrs := p.m.xattrs[id]
 	old, exists := attrs[name]

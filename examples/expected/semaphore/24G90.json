@@ -1,0 +1,7 @@
+{
+  "build": "24G90",
+  "cache_uuid": "4C1223E5-CACE-3982-A003-6110A7A8A25C",
+  "exit_code": 0,
+  "output": "made with a count of 2: 0\nwaits: 0, 0, then with nothing left and no time to wait: 0x31\nsignalled: 0; a wait: 0; another: 0x31\nmade with none: 0; a wait with no time: 0x31; a wait that another thread ends: 0\nmade with a count below none: 0x4\ndestroyed: 0; a wait on it: 0xf\n",
+  "version": "15.6.1"
+}

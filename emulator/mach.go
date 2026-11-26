@@ -384,8 +384,9 @@ func init() {
 		3228: migPortGetContext,
 		3240: func(*Process, []byte) migReply { return migData(le64(0)) }, // mach_port_is_connection_for_service: it is, under no sandbox filter
 		3409: migTaskGetSpecialPort,
-		3410: ok,        // task_set_special_port
-		3418: freshPort, // semaphore_create
+		3410: ok, // task_set_special_port
+		3418: migSemaphoreCreate,
+		3419: migSemaphoreDestroy,
 		4811: migVMMap,
 		4817: migMakeMemoryEntry,
 		4813: migVMRemap,

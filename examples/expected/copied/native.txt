@@ -1,0 +1,33 @@
+in quarantine, by a descriptor:
+a file not in quarantine: -1 errno 93; args changed: 0; buffer written up to 0: [room 0x180 -> 0x180] 
+a directory: -1 errno 93; args changed: 0; buffer written up to 0: [room 0x180 -> 0x180] 
+no descriptor: -1 errno 9; args changed: 0; buffer written up to 0: [room 0x180 -> 0x180] 
+a pipe: -1 errno 22; args changed: 0; buffer written up to 0: [room 0x180 -> 0x180] 
+a system file: -1 errno 93; args changed: 0; buffer written up to 0: [room 0x180 -> 0x180] 
+setxattr: 0
+a file in quarantine: 0 errno 0; args changed: 0; buffer written up to 22: [room 0x180 -> 0x16] q/0081;00000000;Probe;
+in quarantine, room for 8: -1 errno 34; args changed: 0; buffer written up to 0: [room 0x8 -> 0x8] 
+in quarantine, room for none: -1 errno 34; args changed: 0; buffer written up to 0: [room 0 -> 0] 
+out of quarantine again: -1 errno 93; args changed: 0; buffer written up to 0: [room 0x180 -> 0x180] 
+by a path:
+a file not in quarantine: -1 errno 93; room 0x180 -> 0x180; buffer written up to 0: 
+a directory: -1 errno 93; room 0x180 -> 0x180; buffer written up to 0: 
+nothing: -1 errno 2; room 0x180 -> 0x180; buffer written up to 0: 
+a system file: -1 errno 93; room 0x180 -> 0x180; buffer written up to 0: 
+no path: -1 errno 14; room 0x180 -> 0x180; buffer written up to 0: 
+setxattr: 0
+a file in quarantine: 0 errno 0; room 0x180 -> 0x16; buffer written up to 22: q/0081;00000000;Probe;
+a link to it: -1 errno 93; room 0x180 -> 0x180; buffer written up to 0: 
+in quarantine, room for 8: -1 errno 34; room 0x8 -> 0x8; buffer written up to 0: 
+Finder info:
+new: getattrlist 0, 36 bytes, first 00 00, last 00; the attribute: -1 Attribute not found
+set to nothing: 0
+after: getattrlist 0, 36 bytes, first 00 00, last 00; the attribute: -1 Attribute not found
+set: 0
+after: getattrlist 0, 36 bytes, first 54 45, last 09; the attribute: 32
+set with 16 bytes: -1 errno 22
+set to nothing again: 0
+after: getattrlist 0, 36 bytes, first 00 00, last 00; the attribute: -1 Attribute not found
+by the attribute: 0
+after: getattrlist 0, 36 bytes, first 00 00, last 00; the attribute: 32
+by the attribute, 16 bytes: -1 errno 34
