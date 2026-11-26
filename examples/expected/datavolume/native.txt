@@ -13,3 +13,6 @@
 /var/db is really /private/var/db
 the preferences file begins "<?xml"
 a file made in /private/var/tmp: made; written: 4; read back by its other name: "kept"; removed: 0; then: No such file or directory
+a file of /private/tmp moved to the user's own temporary directory: moved; where it was: No such file or directory; where it is: a file
+a second name for it back in /private/tmp: made; it has 2 names; copied there by the file system: copied, holding "moved"
+tidied: 0

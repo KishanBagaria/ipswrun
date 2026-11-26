@@ -122,6 +122,7 @@ type target struct {
 	path    string // canonical
 	host    string
 	root    *os.Root // under the home or a mount: every host access stays inside it, and the guest may change it
+	dataOn  uint64   // and that is the home or a path of the data volume: the host's device it is kept on, plus one (see volume.go)
 	rel     string   // relative path inside root ("." for the mount root itself)
 	data    []byte
 	cache   dyldcache.File
@@ -148,8 +149,9 @@ func hostErrno(err error) int64 {
 
 // mounted is an open host directory mounted at a canonical guest directory.
 type mounted struct {
-	guest string
-	root  *os.Root
+	guest  string
+	root   *os.Root
+	dataOn uint64 // of the home or a path of the data volume: the host's device it is kept on, plus one
 	// Of a path of the data volume (see data.go): what the release's template has there, the
 	// directories that have been given it, and the file that is kept of which.
 	template  func(rel string) (TemplateEntry, error)
@@ -171,6 +173,15 @@ func openMounts(mounts []Mount) ([]mounted, error) {
 			return nil, err
 		}
 		mt := mounted{guest: canonical(m.Guest), root: root, template: m.Template}
+		if m.Data {
+			var st syscall.Stat_t
+			if err := syscall.Stat(host, &st); err != nil {
+				root.Close()
+				closeMounts(out)
+				return nil, err
+			}
+			mt.dataOn = uint64(st.Dev) + 1
+		}
 		if err := mt.openRecord(m.Record); err != nil {
 			root.Close()
 			closeMounts(out)
@@ -280,6 +291,9 @@ func crcInode(path string) uint64 { return uint64(crc32.ChecksumIEEE([]byte(path
 // Mount is a host directory the guest sees, and may change, at a guest directory. The home is one.
 type Mount struct {
 	Guest, Host string
+	// Data says the mount is the home or a path of the data volume, which are one volume to a
+	// guest. Any other mount is a volume of its own.
+	Data bool
 	// Template, of a path of the data volume, is what the release's template of one has at a
 	// path under it, and Record the host file kept of the directories given that (see data.go).
 	Template func(rel string) (TemplateEntry, error)
@@ -366,7 +380,7 @@ func (p *Process) lookup(path string) (target, bool) {
 		switch {
 		case under(path, m.guest):
 			p.m.populate(&p.mounts[i], m.rel(path))
-			return target{kind: hostFD, root: m.root, rel: m.rel(path)}, true
+			return target{kind: hostFD, root: m.root, rel: m.rel(path), dataOn: m.dataOn}, true
 		case under(m.guest, path): // on the way to it
 			return target{kind: dirFD}, true
 		}
@@ -1134,12 +1148,11 @@ func (p *Process) doLink(from, to string, follow bool) int64 {
 	switch {
 	case !ok1 || !ok2:
 		return -eACCES
-	case t1.root != t2.root:
+	case !sameVolume(t1, t2):
 		return -eXDEV
 	}
-	rel := t1.rel
 	for links := 0; follow; links++ {
-		text, err := t1.root.Readlink(rel)
+		text, err := t1.root.Readlink(t1.rel)
 		if err != nil {
 			break // no link, or nothing
 		}
@@ -1147,9 +1160,9 @@ func (p *Process) doLink(from, to string, follow bool) int64 {
 			p.unimplemented("a hard link to what a symbolic link with a whole path names", nil)
 			return -eNOSYS
 		}
-		rel = pathpkg.Join(pathpkg.Dir(rel), text)
+		t1.rel = pathpkg.Join(pathpkg.Dir(t1.rel), text)
 	}
-	return hostCall(t1.root.Link(rel, t2.rel))
+	return p.linkHost(t1, t2)
 }
 
 // sysLink is link(a file, another name for it). What a Mac's kernel does when the file is a
@@ -1225,11 +1238,11 @@ func (p *Process) doRename(from, to string) int64 {
 	if !ok1 || !ok2 {
 		return -eACCES
 	}
-	if t1.root != t2.root {
+	if !sameVolume(t1, t2) {
 		return -eXDEV
 	}
 	p.forgetFile(t2) // what it replaces, if anything
-	return hostCall(t1.root.Rename(t1.rel, t2.rel))
+	return p.renameHost(t1, t2)
 }
 
 func sysRename(p *Process, a []uint64) int64 { return p.doRename(p.cstr(a[0]), p.cstr(a[1])) }

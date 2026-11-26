@@ -390,7 +390,7 @@ func (p *Process) setattrlist(path string, list, buf, size, options uint64, a []
 // linkTimes sets the dates of what a name is, a symbolic link's own if it is one; a zero time is
 // left as it is.
 func linkTimes(t target, atime, mtime time.Time) error {
-	dir, err := t.root.Open(filepath.Dir(t.rel))
+	dir, name, err := t.parent()
 	if err != nil {
 		return err
 	}
@@ -401,7 +401,7 @@ func linkTimes(t target, atime, mtime time.Time) error {
 		}
 		return unix.NsecToTimespec(at.UnixNano())
 	}
-	return unix.UtimesNanoAt(int(dir.Fd()), filepath.Base(t.rel), []unix.Timespec{spec(atime), spec(mtime)}, unix.AT_SYMLINK_NOFOLLOW)
+	return unix.UtimesNanoAt(int(dir.Fd()), name, []unix.Timespec{spec(atime), spec(mtime)}, unix.AT_SYMLINK_NOFOLLOW)
 }
 
 func sysSetattrlist(p *Process, a []uint64) int64 {

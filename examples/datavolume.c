@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/clonefile.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -49,5 +50,30 @@ int main(void) {
 	printf("\"%.*s\"", n > 0 ? (int)n : 0, back);
 	close(fd);
 	printf("; removed: %d; then: %s\n", unlink(path), kind(path));
+
+	// It is one volume, the user's own directories with it: a file is moved from one part of it
+	// to another, is given a second name there, and is copied by the file system, none of which
+	// is done between two volumes.
+	char there[512], linked[512], cloned[512];
+	const char *own = getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp";
+	snprintf(path, sizeof path, "/private/tmp/datavolume.%d", getpid());
+	snprintf(there, sizeof there, "%s/datavolume.%d", own, getpid());
+	snprintf(linked, sizeof linked, "/private/tmp/datavolume.%d.linked", getpid());
+	snprintf(cloned, sizeof cloned, "/private/tmp/datavolume.%d.cloned", getpid());
+	fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+	write(fd, "moved", 5);
+	close(fd);
+	printf("a file of /private/tmp moved to the user's own temporary directory: %s", rename(path, there) ? strerror(errno) : "moved");
+	printf("; where it was: %s; where it is: %s\n", kind(path), kind(there));
+	struct stat s = {0};
+	printf("a second name for it back in /private/tmp: %s", link(there, linked) ? strerror(errno) : "made");
+	stat(there, &s);
+	printf("; it has %d names", s.st_nlink);
+	printf("; copied there by the file system: %s", clonefile(there, cloned, 0) ? strerror(errno) : "copied");
+	fd = open(cloned, O_RDONLY);
+	n = fd < 0 ? -1 : read(fd, back, sizeof back);
+	close(fd);
+	printf(", holding \"%.*s\"\n", n > 0 ? (int)n : 0, back);
+	printf("tidied: %d\n", unlink(there) + unlink(linked) + unlink(cloned));
 	return 0;
 }

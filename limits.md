@@ -174,11 +174,11 @@ What still differs, of the 32:
 
 Found on the way and left:
 
-- **Every mount is taken for a volume of its own** by `link`, `rename` and `clonefile` (EXDEV between two). Under `--data` the paths of the data volume are mounts each, where on a Mac they are one volume with the home, so a file cannot be moved from `/private/tmp` into the home without being copied.
+- **The home and the paths of the data volume are one volume,** as on a Mac, where they were a volume each: a file is moved (`rename`), given a second name (`link`) and copied by the file system (`clonefile`) between `/private/tmp` and the user's own directories, where each was EXDEV. They are still directories of the host's each, so it is done between two of them, each name found inside its own, and one that the host keeps on another file system of its own stays a volume of its own (EXDEV). `stat` and `statfs` do not say so yet: of every file of the home, the data volume and a mount they name the root's device, where a Mac's data volume has its own. A mount given with `--mount` is still a volume of its own, and so is the system's. [examples/datavolume.c](examples/datavolume.c) prints the same natively.
 - **What the machine knows of a file** (its attributes, its owner, that it is a named pipe) is three tables, which a clone copies and a removal clears one by one.
 - **An int that is no descriptor** (the command of `fcntl`, the operation of `flock`) is still read with whatever is above it in the register, where it is not narrowed by hand.
 - **How wide an integer sysctl is** still follows the room it is asked into where its kind is not in the table, and the kinds in the table carry flags measured on one release.
-- The directories of the data volume are all mode 755, where a Mac's `/private/tmp` is 1777, for the image's directories are read without their modes.
+- **The data volume's directories are all the user's and mode 755,** where a Mac's are root's and have their own modes (`/private/tmp` and `/Users/Shared` are 1777, `/private/var/root` 750, `/Library/Caches` root's and admin's). What they should be is in the image, in the template's own directories, and the library that reads the image (go-apfs) gives a file's mode and nothing of a directory's, nor any owner: it needs a change there before anything here. Nor is a guest refused what its owner and mode would refuse it: who may do what is the host's to say.
 
 Both runs were of one release, and on macOS only.
 

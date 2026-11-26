@@ -458,7 +458,7 @@ func dataVolume(image *rangefs.Image, host string) ([]Mount, error) {
 		if err := os.MkdirAll(dir, 0o777); err != nil {
 			return nil, err
 		}
-		mounts = append(mounts, Mount{Guest: guest, Host: dir, Record: filepath.Join(host, "filled"), Template: func(sub string) (TemplateEntry, error) {
+		mounts = append(mounts, Mount{Guest: guest, Host: dir, Data: true, Record: filepath.Join(host, "filled"), Template: func(sub string) (TemplateEntry, error) {
 			path := pathpkg.Join(at, sub)
 			entry, err := image.Stat(rangefs.FileSystem, path)
 			switch {

@@ -37,7 +37,7 @@ func (p *Process) clone(from, to string, flags uint64, a []uint64) int64 {
 		return -eNOENT
 	case !ok2:
 		return -eACCES
-	case t1.root != t2.root: // another volume, which the system's is of the home's too
+	case !sameVolume(t1, t2): // another volume, which the system's is of the home's too
 		return -eXDEV
 	}
 	var st syscall.Stat_t
