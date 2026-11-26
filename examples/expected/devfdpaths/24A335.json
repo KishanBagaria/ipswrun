@@ -1,0 +1,7 @@
+{
+  "build": "24A335",
+  "cache_uuid": "D997B0E9-E31B-35FE-B129-3171B279B087",
+  "exit_code": 0,
+  "output": "chmod: 0, the file's mode then 600; chown to its own owner: 0; utimes: 0, the file's date then 2000\naccess, of one open to read and write: to write 0, to run -1 (Permission denied)\nan attribute set: -1 (Operation not permitted); read: -1 (Operation not permitted); listed: -1 (Operation not permitted); removed: -1 (Operation not permitted)\nreadlink: -1 (Invalid argument); truncate: -1 (Invalid argument), the file still of 6 bytes; pathconf: -1 (Invalid argument)\nunlink: -1 (Operation not permitted); renamed: -1 (Cross-device link); a file renamed to it: -1 (Cross-device link); a link to it: -1 (Operation not permitted)\nmade as a link: -1 (Operation not permitted); as a directory: -1 (File exists); as a pipe: -1 (File exists); as a new file and no other: -1 (File exists)\nrmdir: -1 (Not a directory); chdir: -1 (Not a directory); opened as a directory: -1 (Not a directory)\na directory's: chdir -1 (Not a directory); opened 1, as a directory -1 (Not a directory); a file below it: -1 (No such file or directory)\na program's: access to run -1 (Permission denied); started: 13 (Permission denied)\nof a descriptor that is not open: chmod -1 (Bad file descriptor); unlink -1 (Bad file descriptor); an attribute read -1 (Bad file descriptor)\ntidied: 0\n",
+  "version": "15.0"
+}

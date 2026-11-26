@@ -64,8 +64,64 @@ func (p *Process) openDescriptor(n, flags uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	if have, want := f.accessMode(), flags&3; have != 2 && have != want {
+	switch have, want := f.accessMode(), flags&3; {
+	case flags&(oCreate|oExcl) == oCreate|oExcl:
+		return -eEXIST // it is there
+	case flags&oDirectory != 0:
+		return -eNOTDIR // and is no directory, whatever the descriptor is of
+	case have != 2 && have != want:
 		return -eACCES
 	}
 	return p.dupFD(n, 0, false)
+}
+
+// A descriptor's name given to a call that takes a path (examples/devfdpaths.c). A few act on
+// the open file, as the call that takes the descriptor does; the rest are told of a file of the
+// device file system that is no directory and no link, that is there already, and that is not
+// to be run, renamed, linked or removed. Of a descriptor that is not open all are EBADF.
+type descriptorPath struct {
+	arg    int    // which argument is the path
+	as     string // the call that does it to a descriptor, if it acts on the file
+	refuse int64  // or what it is told
+}
+
+var descriptorPaths = map[string][]descriptorPath{
+	"chmod": {{as: "fchmod"}}, "chown": {{as: "fchown"}}, "utimes": {{as: "futimes"}},
+	"setxattr": {{refuse: ePERM}}, "getxattr": {{refuse: ePERM}}, "listxattr": {{refuse: ePERM}}, "removexattr": {{refuse: ePERM}},
+	"readlink": {{refuse: eINVAL}}, "truncate": {{refuse: eINVAL}}, "pathconf": {{refuse: eINVAL}},
+	"unlink": {{refuse: ePERM}}, "rename": {{refuse: eXDEV}, {arg: 1, refuse: eXDEV}}, "link": {{refuse: ePERM}}, "symlink": {{arg: 1, refuse: ePERM}},
+	"mkdir": {{refuse: eEXIST}}, "mkfifo": {{refuse: eEXIST}}, "rmdir": {{refuse: eNOTDIR}}, "chdir": {{refuse: eNOTDIR}},
+	"execve": {{refuse: eACCES}}, "posix_spawn": {{arg: 1, refuse: eACCES}},
+}
+
+// init has each of those calls look for a descriptor's name before it does what it does of any
+// other path.
+func init() {
+	for call, rules := range descriptorPaths {
+		of := bsdHandlers[call]
+		if of.fn == nil {
+			panic("no call " + call + " to take a descriptor's name")
+		}
+		for i := range rules {
+			if as := rules[i].as; as != "" && bsdHandlers[as].fn == nil {
+				panic("no call " + as + " to do " + call + " to a descriptor")
+			}
+		}
+		bsdHandlers[call] = handler{of.args, func(p *Process, a []uint64) int64 {
+			for _, rule := range rules {
+				n, ok := p.descriptorAt(p.cstr(a[rule.arg]))
+				switch {
+				case !ok:
+					continue
+				case p.fds[n] == nil:
+					return -eBADF
+				case rule.as == "":
+					return -rule.refuse
+				}
+				a[rule.arg] = n
+				return bsdHandlers[rule.as].fn(p, a)
+			}
+			return of.fn(p, a)
+		}}
+	}
 }

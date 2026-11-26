@@ -9,9 +9,10 @@ import "syscall"
 // it (mach_make_memory_entry) or it is mapped a second time (mach_vm_remap).
 
 const (
-	oCreate   = 0x200
-	oExcl     = 0x800
-	mapShared = 0x1
+	oCreate    = 0x200
+	oExcl      = 0x800
+	oDirectory = 0x100000
+	mapShared  = 0x1
 )
 
 // sharedMemory is memory of the host's that mappings share. It is kept for as long as anything

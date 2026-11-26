@@ -993,9 +993,18 @@ func (p *Process) doAccess(path string) int64 {
 	return 0
 }
 
-func sysAccess(p *Process, a []uint64) int64 { return p.doAccess(p.cstr(a[0])) }
+func sysAccess(p *Process, a []uint64) int64 { return p.accessFor(p.cstr(a[0]), a[1]) }
+
+// accessFor is access of a path for a purpose. A descriptor's name is not to be run (X_OK),
+// whatever it is of, as measured; otherwise the purpose is not looked at.
+func (p *Process) accessFor(path string, mode uint64) int64 {
+	if n, ok := p.descriptorAt(path); ok && p.fds[n] != nil && mode&1 != 0 {
+		return -eACCES
+	}
+	return p.doAccess(path)
+}
 func sysFaccessat(p *Process, a []uint64) int64 {
-	return p.atPath(a[0], a[1], func(path string) int64 { return p.doAccess(path) })
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.accessFor(path, a[2]) })
 }
 
 func sysChdir(p *Process, a []uint64) int64 { return p.changeDirectory(p.cstr(a[0])) }
