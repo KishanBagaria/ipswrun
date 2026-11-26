@@ -328,6 +328,7 @@ type Process struct {
 	// The port its own task may be read by (task_read_for_pid of itself), while it has a right
 	// to it.
 	taskRead *port
+	lineage        // what tells it from every other process there has been (see lineage.go)
 	task     *port // the task's own port, while the process has a right to it (see kernelports.go)
 	// Where what it was started with begins, which is the top of its stack from the program's path
 	// up, and how many arguments, as the kernel keeps them for whoever asks (kern.procargs2).
@@ -1114,7 +1115,11 @@ func (p *Process) load(argv, env []string) error {
 		return fmt.Errorf("guest executable: %w", err)
 	}
 	cdhash := ""
-	if image, _, _ := p.loadMachO(exe, "guest", 0); image.CodeSignature() != nil {
+	image, _, _ := p.loadMachO(exe, "guest", 0)
+	if u := image.UUID(); u != nil {
+		p.uuid = u.UUID
+	}
+	if image.CodeSignature() != nil {
 		signed := image.CodeSignature()
 		rank := -1
 		for _, directory := range signed.CodeDirectories {

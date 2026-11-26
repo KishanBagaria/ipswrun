@@ -228,6 +228,7 @@ func (p *Process) spawn(abs, cwd string, image []byte, argv, env []string, actio
 		stopf("posix_spawn of %s: %v", abs, err)
 	}
 	child.parent, child.ppid, child.execed = p, p.pid, true
+	child.lineage = p.m.descend(p.lineage, child.uuid)
 	child.cwd = cwd // the directory of the thread that started it
 	p.handOn(child, false)
 	// What a new program keeps of its parent's signals: those it ignores, and those the thread
@@ -445,6 +446,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 	}
 	m.procs = m.procs[:len(m.procs)-1] // where newProcess put it
 	next.pid, next.parent, next.ppid, next.began = p.pid, p.parent, p.ppid, p.began
+	next.lineage = lineage{uuid: next.uuid, unique: p.unique, parentUnique: p.parentUnique, version: m.moveOn(), parentVersion: p.parentVersion} // the same process, of a later version
 	next.cwd, next.usage, next.early, next.pgroup, next.childrenUsed = p.cwd, p.usage, p.early, p.pgroup, p.childrenUsed
 	next.charged = [2]time.Duration{p.usage.user, p.usage.system} // all of it by threads that are gone
 	p.handOn(next, false)
@@ -685,6 +687,7 @@ func (p *Process) fork() *Process {
 		stopf("fork: %v", err)
 	}
 	child.parent, child.ppid, child.pgroup = p, p.pid, p.group()
+	child.lineage = m.descend(p.lineage, p.uuid)
 	child.cwd, child.brk = p.workingDirectory(), p.brk
 	child.identity, child.entitlements, child.entitlementsDER = p.identity, p.entitlements, p.entitlementsDER
 	child.started, child.argc = p.started, p.argc // a copy has its parent's stack

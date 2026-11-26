@@ -1,0 +1,7 @@
+{
+  "build": "19A346",
+  "cache_uuid": "6F028D68-85D6-300F-929A-AA58CA8327AA",
+  "exit_code": 0,
+  "output": "of itself: 56 bytes; the UUID is its program's 1; a number of its own 1, and its parent's 1; a version 1; the rest zeros 1\nof launchd: 56 bytes; a UUID 1; its number 1, its parent's 0; a version 1, its parent's 0\nof the kernel: 56 bytes, all zeros 1; of no process: 0\na copy: the same program 1; a later number of its own 1, its parent's is this one's 1; a later version 1, its parent's is this one's 1\nthe program a copy becomes: its own number still 1, its parent's still 1, its version later 1, its parent's version still 1\nanother copy: a number later than the first's 1, and a later version 1\nof it once it has ended, not waited for: 0; and this one's own are as they were 1\n",
+  "version": "15.0"
+}

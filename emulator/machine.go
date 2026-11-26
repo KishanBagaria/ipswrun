@@ -40,6 +40,9 @@ type Machine struct {
 	polls        []carried          // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
 	pipes        uint64             // how many pipes were ever made: the next one's number
 	host, clocks *port              // the host's port and its clock's, while any process has a right to them (see kernelports.go)
+	uniques      uint64             // how many processes were given a number of their own, after launchd's
+	versions     uint32             // how many versions were given, after launchd's (see lineage)
+	launchdUUID  *[16]byte          // the UUID of the release's launchd, once a process has asked for it
 	started      uint32             // how many processes were ever made: a pid is not given twice, whatever has ended since
 	ioRoot       *ioEntry           // the root of the I/O Registry, once a process has asked for it (see registry.go)
 	clock        *clock
@@ -110,6 +113,7 @@ func (m *Machine) start(g Guest) (p *Process, err error) {
 	if p, err = m.newProcess(g.Executable, image, path); err != nil {
 		return nil, err
 	}
+	p.lineage = m.descend(launchdLineage, p.uuid)
 	if g.Root {
 		p.uid, p.gid = 0, 0
 	}
