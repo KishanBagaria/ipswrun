@@ -3,6 +3,7 @@ package emulator
 import (
 	"bytes"
 	"fmt"
+	"strings"
 )
 
 // What a process tells the kernel of itself through proc_info, as the kernel's own source has
@@ -105,4 +106,103 @@ func (p *Process) procDirtyControl(pid uint32, flavor, arg uint64, a []uint64) i
 		return -eNOSYS
 	}
 	return 0
+}
+
+// sysProcRlimitControl is proc_rlimit_control(pid, kind, argument), by which a daemon asked for
+// a limit on how often it may be woken: the kernel takes that and keeps nothing, its source
+// says, and as measured (examples/daemonasks.c). The pid is -1 for the caller; another user's
+// process is EACCES, none ESRCH, and a kind there is not EINVAL. The kinds that do something
+// (how much of a processor it may use, and its memory over a time) stop.
+func sysProcRlimitControl(p *Process, a []uint64) int64 {
+	const wakeups, last = 1, 4
+	pid, kind := int32(a[0]), uint32(a[1])
+	about := p
+	if pid == 0 {
+		p.unimplemented("proc_rlimit_control of the kernel, pid 0", a)
+		return -eNOSYS
+	}
+	if pid != -1 && uint32(pid) != p.pid {
+		if about = p.m.process(uint32(pid)); about == nil && uint32(pid) != launchdPID {
+			return -eSRCH
+		}
+	}
+	switch {
+	case p.uid != 0 && (about == nil || about.uid != p.uid): // launchd is root's
+		return -eACCES
+	case kind == wakeups:
+		return 0
+	case kind > wakeups && kind <= last:
+		p.unimplemented(fmt.Sprintf("proc_rlimit_control of kind %d", kind), a)
+		return -eNOSYS
+	}
+	return -eINVAL
+}
+
+// sysProcInfoExtendedID is proc_info_extended_id(call, pid, flavour, how, id, argument, buffer,
+// size): proc_info, and for what is asked of a process by its pid (call 2) the process must
+// also be the one with a version (1) or a number of its own (2), as a daemon asks of a client
+// it knows by its audit token. One that is another by then is ESRCH, once it is found; to ask
+// by both is EINVAL, as measured. The other calls take no notice of it, the source says.
+func sysProcInfoExtendedID(p *Process, a []uint64) int64 {
+	const byVersion, byNumber = 1, 2
+	how := uint32(a[3])
+	switch {
+	case how == byVersion|byNumber:
+		return -eINVAL
+	case how&^(byVersion|byNumber) != 0:
+		p.unimplemented(fmt.Sprintf("proc_info_extended_id told to compare %#x", how), a)
+		return -eNOSYS
+	case a[0] == 2 && how != 0:
+		p.mustBe = &sameProcess{byNumber: how == byNumber, id: a[4]}
+		defer func() { p.mustBe = nil }()
+	}
+	return sysProcInfo(p, []uint64{a[0], a[1], a[2], a[5], a[6], a[7]})
+}
+
+// sameProcess is what a process asked of by its pid must also be: the one with a version, or
+// with a number of its own.
+type sameProcess struct {
+	byNumber bool
+	id       uint64
+}
+
+// another is whether a process is not the one that was meant.
+func (s *sameProcess) another(is lineage) bool {
+	if s == nil {
+		return false
+	}
+	if s.byNumber {
+		return s.id != is.unique
+	}
+	return s.id != uint64(is.version)
+}
+
+// sysInitgroups is initgroups(how many, groups, user), which sets a process's groups and is
+// root's to do: more than 16 is EINVAL, and a user is refused (EPERM), as measured. What root
+// is told stops.
+func sysInitgroups(p *Process, a []uint64) int64 {
+	if uint32(a[0]) > 16 {
+		return -eINVAL
+	}
+	p.read(a[1], 4*uint64(uint32(a[0]))) // the groups are read before it is asked who asks: a fault is EFAULT
+	if p.uid != 0 {
+		return -ePERM
+	}
+	p.unimplemented("initgroups by root", a)
+	return -eNOSYS
+}
+
+// sysMemorystatusControl is memorystatus_control(command, pid, flags, buffer, size), by which
+// daemons ask of and set how processes are ended when memory is short. It is root's, or a
+// program's with the entitlement for it: any other is refused (EPERM), as the source has it
+// and as measured of three commands. What those two are told, and the three commands the
+// source lets anyone ask (whether a process may be frozen), stop.
+func sysMemorystatusControl(p *Process, a []uint64) int64 {
+	const entitlement = "com.apple.private.memorystatus"
+	switch command := uint32(a[0]); {
+	case command == 18 || command == 19 || command == 24, p.uid == 0, strings.Contains(p.entitlements, entitlement):
+		p.unimplemented(fmt.Sprintf("memorystatus_control command %d", command), a)
+		return -eNOSYS
+	}
+	return -ePERM
 }

@@ -95,15 +95,16 @@ type outOfLine struct {
 // A guest's message has its rights and memory still to be given to whoever receives it. What
 // the kernel and launchd send is written for the process that holds the port already.
 type machMessage struct {
-	data   []byte
-	reply  carried // the right to answer it with, if it came with one
-	rights []carried
-	memory []outOfLine
-	aux    []byte // what was sent beside it, if anything
-	sender uint32
-	from   *Process
-	moved  bool // the send right it was sent with was given up for it, and ends when it is received
-	once   bool // it was sent with a right to send once, which ends when it is received
+	data    []byte
+	reply   carried // the right to answer it with, if it came with one
+	rights  []carried
+	memory  []outOfLine
+	aux     []byte // what was sent beside it, if anything
+	sender  uint32
+	version uint32 // of the sender's pid, as it was when the message was sent
+	from    *Process
+	moved   bool // the send right it was sent with was given up for it, and ends when it is received
+	once    bool // it was sent with a right to send once, which ends when it is received
 }
 
 const (
@@ -277,7 +278,11 @@ func (p *Process) sendRight(q *port) uint32 {
 
 // enqueue queues on q a message that is not a guest's own: the kernel's (sender 0) or launchd's.
 func enqueue(q *port, bits, id uint32, body []byte, sender uint32, memory ...outOfLine) {
-	post(q, machMessage{data: append(header(bits, uint32(24+len(body)), 0, id), body...), memory: memory, sender: sender, once: bits>>8&0x1F == moveSendOnce})
+	version := uint32(0) // the kernel's; launchd's is the first
+	if sender == launchdPID {
+		version = launchdLineage.version
+	}
+	post(q, machMessage{data: append(header(bits, uint32(24+len(body)), 0, id), body...), memory: memory, sender: sender, version: version, once: bits>>8&0x1F == moveSendOnce})
 }
 
 // notify sends q one of the kernel's notifications, if it is still there to be told.
@@ -851,7 +856,7 @@ func (p *Process) outgoing(m message, out []byte) (machMessage, bool) {
 		bits &^= 0x1F
 	}
 	copy(out, header(bits, uint32(len(out)), 0, m.id))
-	sent := machMessage{data: out, sender: p.pid, from: p}
+	sent := machMessage{data: out, sender: p.pid, version: p.version, from: p}
 	if m.bits&bitsComplex != 0 {
 		if _, ok := descriptors(out, func(int, byte) {}); !ok {
 			return sent, false // before anything is taken from the sender
@@ -998,7 +1003,7 @@ func (p *Process) hand(q *port, m message) int64 {
 	}
 	// The format (0) and size; a sequence number; the sender's user and group; its audit token;
 	// the port's context; and nothing of the access checks the last words are for.
-	tail := append(append(le32(0, uint32(trailer), seqno, uid, gid), auditToken(uid, gid, next.sender)...), le64(q.context, 0)...)
+	tail := append(append(le32(0, uint32(trailer), seqno, uid, gid), auditToken(uid, gid, next.sender, next.version)...), le64(q.context, 0)...)
 	p.write(m.rcvMsg, append(data, tail[:trailer]...))
 	switch {
 	case uint64(len(next.aux)) <= m.auxRcvSize && len(next.aux) > 0:

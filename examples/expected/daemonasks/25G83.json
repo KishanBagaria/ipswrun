@@ -1,0 +1,7 @@
+{
+  "build": "25G83",
+  "cache_uuid": "F2E86C53-6052-388B-BA71-5A0C9B569413",
+  "exit_code": 0,
+  "output": "a limit on its wakeups: 0; by its pid: 0; of launchd: -1 (Permission denied); of no process: -1 (No such process); a kind of limit there is not: -1 (Invalid argument)\nthe version its token has is its own 1\nits path, by its pid and its version: its path; and a version that is not its own: No such process; by its number: its path; and one that is not: No such process; by both at once: Invalid argument; by neither: its path\nthe groups of a user set, by one who is not root: -1 (Operation not permitted); seventeen of them: -1 (Invalid argument)\nasked how much memory it may use: -1 (Operation not permitted); to be kept from being ended while idle: -1 (Operation not permitted); to be told when memory is short before others: -1 (Operation not permitted)\n",
+  "version": "26.6.2"
+}

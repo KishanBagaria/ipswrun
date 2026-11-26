@@ -648,8 +648,8 @@ func migHostStatistics64(p *Process, body []byte) migReply {
 // auditToken is who a process is, as the kernel says it: its audit user (none), its user and
 // group twice over, effective and real, its pid, its audit session, and which of its executions
 // this is.
-func auditToken(uid, gid, pid uint32) []byte {
-	return le32(0, uid, gid, uid, gid, pid, 100000, guestExecution)
+func auditToken(uid, gid, pid, version uint32) []byte {
+	return le32(0, uid, gid, uid, gid, pid, 100000, version)
 }
 
 func migTaskInfo(p *Process, body []byte) migReply {
@@ -659,7 +659,7 @@ func migTaskInfo(p *Process, body []byte) migReply {
 	case 17: // TASK_DYLD_INFO
 		return counted(append(le64(p.imageInfo[:]...), le32(1)...))
 	case 15: // TASK_AUDIT_TOKEN
-		return counted(auditToken(p.uid, p.gid, p.pid))
+		return counted(auditToken(p.uid, p.gid, p.pid, p.version))
 	case 10: // TASK_SCHED_TIMESHARE_INFO, of which a Mac's kernel gives one word: the task's priority, 31 less how nice it is (measured at 0 and at 5)
 		if le.Uint32(body[36:]) < 1 {
 			return migCode(kernInvalidArg)

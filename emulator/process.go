@@ -68,7 +68,6 @@ const (
 	// The machine a guest sees, however it asks, the pid of the first process, and the user every
 	// process that is not root's runs as.
 	guestPID         = 4242
-	guestExecution   = 1 // how many programs the process has run: the version of its pid
 	guestUID         = 501
 	guestGID         = 20
 	guestMemory      = 8 << 30
@@ -338,6 +337,7 @@ type Process struct {
 	// The port its own task may be read by (task_read_for_pid of itself), while it has a right
 	// to it.
 	taskRead   *port
+	mustBe     *sameProcess  // of a proc_info that asks of a process by more than its pid (see procctl.go)
 	policy     taskPolicy    // what it asked of how it is run (see taskpolicy.go)
 	target     *thread       // of a request to a thread's port: the thread
 	asked      message       // the request to a port of the kernel's that is being answered

@@ -68,7 +68,7 @@ func init() {
 		"setrlimit": {2, sysSetrlimit}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
-		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getsid": {1, sysGetsid}, "task_read_for_pid": {3, sysTaskReadForPID}, "reboot": {2, sysReboot}, "setsid": {0, sysSetsid}, "setpgid": {2, sysSetpgid}, "clonefileat": {5, sysClonefileat}, "fclonefileat": {4, sysFclonefileat}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "__pthread_canceled": {1, sysPthreadCanceled}, "sigpending": {1, sysSigpending}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+		"ulock_wake": {3, sysUlockWake}, "proc_rlimit_control": {3, sysProcRlimitControl}, "proc_info_extended_id": {8, sysProcInfoExtendedID}, "initgroups": {3, sysInitgroups}, "memorystatus_control": {5, sysMemorystatusControl}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getsid": {1, sysGetsid}, "task_read_for_pid": {3, sysTaskReadForPID}, "reboot": {2, sysReboot}, "setsid": {0, sysSetsid}, "setpgid": {2, sysSetpgid}, "clonefileat": {5, sysClonefileat}, "fclonefileat": {4, sysFclonefileat}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "__pthread_canceled": {1, sysPthreadCanceled}, "sigpending": {1, sysSigpending}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
 	}
 	for name, v := range trivial {
 		bsdHandlers[name] = handler{4, constant(v)}
@@ -871,20 +871,38 @@ func (p *Process) sandboxPassthrough(a []uint64) int64 {
 	return -eNOSYS
 }
 
-// sandboxQuery is Sandbox 4, {pid, kind, buffer, size, ...}: kind 0, a process's container, is
-// not supported where there is no sandbox, and kind 1 finds no such process, whichever it is
-// asked of. Neither writes the buffer.
+// sandboxQuery is Sandbox 4, {pid, a version, buffer, size, how, ...}: a process's container,
+// which is not supported where there is no sandbox (ENOTSUP), as measured on macOS 27.2.1. Told
+// to (the first bit of how), the process must be the one of that version, as one known by its
+// audit token is asked of, and is otherwise none (ESRCH); not told to, the version is not
+// looked at. Of launchd a user is refused (EPERM), and of no process it is ESRCH. The buffer
+// is not written. Of the kernel, pid 0, and of a process that has ended, it stops.
 func (p *Process) sandboxQuery(a []uint64) int64 {
-	w := p.read(a[2], 16)
-	pid, kind := le.Uint64(w), le.Uint64(w[8:])
+	w := p.read(a[2], 40)
+	pid, version, exact := le.Uint64(w), le.Uint64(w[8:]), le.Uint64(w[32:])&1 != 0
+	var is lineage
+	about := p.m.process(uint32(pid))
 	switch {
-	case kind == 0 && (pid == uint64(p.pid) || p.m.process(uint32(pid)) != nil): // of a dead process: not measured
-		return -eNOTSUP
-	case kind == 1:
+	case pid == 0 || pid>>32 != 0 || about == nil && pid != launchdPID && p.m.ended(uint32(pid)) != nil:
+		p.unimplemented(fmt.Sprintf("sandbox query of pid %d", pid), a)
+		return -eNOSYS
+	case about != nil:
+		is = about.lineage
+	case pid == launchdPID:
+		is = launchdLineage
+	default:
 		return -eSRCH
 	}
-	p.unimplemented(fmt.Sprintf("sandbox query %d of pid %d", kind, pid), a)
-	return -eNOSYS
+	switch {
+	case exact && version != uint64(is.version):
+		return -eSRCH
+	case about == nil && p.uid != 0: // launchd
+		return -ePERM
+	case about == nil:
+		p.unimplemented("sandbox query of launchd, by root", a)
+		return -eNOSYS
+	}
+	return -eNOTSUP
 }
 
 // fixed is a string in a field of n bytes, cut short if it has to be to end in a zero.
@@ -961,7 +979,14 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 		return -eNOSYS
 	}
 	pid := uint32(a[1])
+	if pid == 0 && p.mustBe != nil {
+		p.unimplemented("proc_info_extended_id of the kernel, pid 0", a)
+		return -eNOSYS
+	}
 	if pid == launchdPID {
+		if p.mustBe.another(launchdLineage) {
+			return -eSRCH
+		}
 		return p.launchdInfo(flavor, buf, size, a)
 	}
 	if pid == 0 && flavor == pidUniqueInfo && size >= 56 { // the kernel, of which this much is said: nothing
@@ -969,7 +994,7 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 		return 56
 	}
 	about := p.m.process(pid)
-	if about == nil {
+	if about == nil || p.mustBe.another(about.lineage) {
 		return -eSRCH
 	}
 	if (flavor == pidUniqueInfo || flavor == pidBSDInfoUnique) && about.uuid == [16]byte{} {

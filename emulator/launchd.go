@@ -122,7 +122,7 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 	}
 	// libxpc takes an answer only from launchd (root, pid 1, as the message's trailer says) and
 	// only if it names the process that asked and which of its executions.
-	reply.set("req_pid", uint64(p.pid)).set("rec_execcnt", uint64(guestExecution))
+	reply.set("req_pid", uint64(p.pid)).set("rec_execcnt", uint64(p.version))
 	p.note("  to launchd, routine %d: %v, answered %v", routine, request, reply)
 	body, rights := xpcEncode(reply)
 	if len(rights) > 0 {

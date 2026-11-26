@@ -461,8 +461,11 @@ func TestMacSyscall(t *testing.T) {
 		if got := mac(sandbox, 4, pid, 0, out, 8, 0, 1); got != -eNOTSUP || p.u64(out) != 0xaaaaaaaaaaaaaaaa {
 			t.Errorf("Sandbox 4, the container: %d", got)
 		}
-		if got := mac(sandbox, 4, pid, 1, out, 8, 1); got != -eSRCH {
-			t.Errorf("Sandbox 4, kind 1: %d", got)
+		if got := mac(sandbox, 4, pid, 99, out, 8, 1); got != -eSRCH {
+			t.Errorf("Sandbox 4, of a version that is not the process's: %d", got)
+		}
+		if got := mac(sandbox, 4, pid, 99, out, 8, 0); got != -eNOTSUP {
+			t.Errorf("Sandbox 4, with the version not looked at: %d", got)
 		}
 		for _, c := range []struct {
 			fd, flags uint64
@@ -497,7 +500,7 @@ func TestMacSyscall(t *testing.T) {
 		{"Quarantine", 88, nil, "__mac_syscall Quarantine 88"},
 		{"AMFI", 91, nil, "__mac_syscall AMFI 91"},
 		{"Sandbox", 2, []uint64{0, 1, 0, 3}, "filter type 0x3"},
-		{"Sandbox", 4, []uint64{1, 0}, "sandbox query 0 of pid 1"},
+		{"Sandbox", 4, []uint64{0, 0}, "sandbox query of pid 0"},
 	} {
 		p := newProcess(t)
 		onMain(func() {
