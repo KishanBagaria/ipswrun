@@ -1,0 +1,7 @@
+{
+  "build": "22A3354",
+  "cache_uuid": "4D95BD3E-6831-3A99-A66C-B4DDB316E2E0",
+  "exit_code": 0,
+  "output": "setattrlistat here: 0, modified 1000; in a directory: 0, modified 2000; by a whole path, the directory any: 0, modified 3000\nthrough a link: 0, the file 4000; of the link itself: 0, the file 4000, the link 5000\nof nothing: -1 (No such file or directory); in no directory: -1 (Bad file descriptor); in a file: -1 (Not a directory); with no name: -1 (No such file or directory)\nkept beneath the directory (0x1000), a name in it: 0, modified 6000; a name above it: -1, error 107; a whole path: -1, error 107\nmkfifo: 0; it is a pipe, mode 644, 1 links, 0 bytes; again: -1 (File exists); over a file: -1 (File exists); in no directory: -1 (No such file or directory); removed: 0\ngetgroups: some 1, the process's own among them 1 and first 1; asked how many: the same 1; with room for fewer than none: -1 (Invalid argument)\nchildren, before any: used 0, most memory 0\na child at work, asked of without waiting and of those continued too (0x13): 0; children used 0\nwaited for: the child 1, exited with 3, having used 20 ms or more 1\nchildren, after: used what it did 1, most memory its 1, faults its 1\nafter a second: used both 1, most memory the most of the two 1\nof neither (1): -1 (Invalid argument)\ntidied: 0\n",
+  "version": "18.0"
+}

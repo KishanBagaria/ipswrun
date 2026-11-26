@@ -21,11 +21,12 @@ import (
 // process of a running one's memory or put a program in its place, are not here.
 
 const (
-	eCHILD      = 10
-	eNOEXEC     = 8
-	eBADARCH    = 86
-	waitNoHang  = 0x1
-	waitStopped = 0x2 // WUNTRACED: of children that were stopped, which none here is
+	eCHILD        = 10
+	eNOEXEC       = 8
+	eBADARCH      = 86
+	waitNoHang    = 0x1
+	waitStopped   = 0x2  // WUNTRACED: of children that were stopped, which none here is
+	waitContinued = 0x10 // WCONTINUED: and of those that went on again
 
 	// What a child is to be started with, of its attributes' flags (POSIX_SPAWN_…).
 	spawnSetPgroup      = 0x2
@@ -228,6 +229,7 @@ func (p *Process) spawn(abs, cwd string, image []byte, argv, env []string, actio
 	}
 	child.parent, child.ppid, child.stdio = p, p.pid, p.stdio
 	child.uid, child.gid, child.cwd = p.uid, p.gid, cwd // the directory of the thread that started it
+	child.cmask, child.cmaskSet = p.cmask, p.cmaskSet
 	// What a new program keeps of its parent's signals: those it ignores, and those the thread
 	// that started it blocks, unless it is told otherwise.
 	for sig := 1; sig < numSignals; sig++ {
@@ -345,7 +347,7 @@ func sysWait4(p *Process, a []uint64) int64 {
 		p.unimplemented("wait4 for a process group", a)
 		return -eCHILD
 	}
-	if a[2]&^(waitNoHang|waitStopped) != 0 {
+	if a[2]&^(waitNoHang|waitStopped|waitContinued) != 0 {
 		p.unimplemented(fmt.Sprintf("wait4 with the options %#x", a[2]), a)
 		return -eINVAL
 	}
@@ -377,9 +379,12 @@ func (p *Process) reapChild(child *Process, w *waiting4) int64 {
 	if w.status != 0 {
 		p.write(w.status, le32(child.status()))
 	}
+	its := child.used()
 	if w.rusage != 0 {
-		p.write(w.rusage, child.usageBytes())
+		p.write(w.rusage, its.bytes())
 	}
+	p.childrenUsed.add(its)
+	p.childrenUsed.add(child.childrenUsed)
 	child.reaped = true
 	return int64(child.pid)
 }
@@ -437,6 +442,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 	m.procs = m.procs[:len(m.procs)-1] // where newProcess put it
 	next.pid, next.parent, next.ppid, next.stdio = p.pid, p.parent, p.ppid, p.stdio
 	next.uid, next.gid, next.cwd, next.usage, next.early, next.pgroup = p.uid, p.gid, p.cwd, p.usage, p.early, p.pgroup
+	next.cmask, next.cmaskSet, next.childrenUsed = p.cmask, p.cmaskSet, p.childrenUsed
 	for sig := 1; sig < numSignals; sig++ {
 		if p.sigactions[sig].handler == sigIgnore {
 			next.sigactions[sig].handler = sigIgnore

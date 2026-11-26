@@ -299,16 +299,17 @@ type Process struct {
 	tsdOffset   uint64
 	portOffset  uint64
 
-	log     []string
-	unknown map[unknownMIG]int // how often each was sent
-	missing []*missingCall     // in the order first made
-	oids    []string
-	sysctls map[string]any
-	dit     uint64
-	entropy int
-	stdout  strings.Builder
-	stderr  strings.Builder
-	usage   usage // what the process has used of the machine (see usage.go)
+	log          []string
+	unknown      map[unknownMIG]int // how often each was sent
+	missing      []*missingCall     // in the order first made
+	oids         []string
+	sysctls      map[string]any
+	dit          uint64
+	entropy      int
+	stdout       strings.Builder
+	stderr       strings.Builder
+	usage        usage // what the process has used of the machine (see usage.go)
+	childrenUsed used  // what the children it has waited for used, and theirs
 
 	// Of a process another started (see spawn.go): which, and whether that one has been told
 	// how it ended. ppid is 1, launchd, for a guest of the run's own. stdio is the process whose

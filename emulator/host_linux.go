@@ -94,3 +94,6 @@ func hostWhence(whence int) int {
 }
 
 func mtimeSeconds(st *syscall.Stat_t) int64 { return int64(st.Mtim.Sec) }
+
+// utimeOmit is UTIME_OMIT: a date utimensat leaves as it is.
+const utimeOmit = (1 << 30) - 2

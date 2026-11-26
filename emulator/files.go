@@ -551,6 +551,15 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 			if flags&0x100 != 0 && !missing && st.Mode&syscall.S_IFMT == syscall.S_IFLNK {
 				return -eLOOP // told not to follow, and it is a link
 			}
+			if len(p.m.fifos) != 0 && !missing {
+				is := st // what is opened: the file a link leads to, if there is one
+				if st.Mode&syscall.S_IFMT != syscall.S_IFLNK || statInRoot(t.root, t.rel, true, &is) == nil {
+					if p.m.fifos[hostFileOf(&is)] {
+						p.unimplemented("open of a named pipe", []uint64{flags, mode})
+						return -eNOSYS
+					}
+				}
+			}
 			h, err = openInRoot(t.root, t.rel, hostFlags, uint32(mode&0o777))
 			if err == nil && created {
 				if err = syscall.Fchmod(h, uint32(mode&0o777)&^p.umask()); err != nil {
@@ -649,14 +658,10 @@ func (p *Process) at(dirfd, path uint64) (string, int64) {
 	}
 	dir := p.workingDirectory()
 	if int32(dirfd) != atFDCWD {
-		f := p.fds[dirfd&0xFFFFFFFF]
-		if f == nil {
-			return "", -eBADF
+		var errno int64
+		if dir, errno = p.descriptorDirectory(dirfd & 0xFFFFFFFF); errno != 0 {
+			return "", errno
 		}
-		if f.path == "" {
-			return "", -eNOTDIR
-		}
-		dir = f.path
 	}
 	if !strings.HasSuffix(dir, "/") {
 		dir += "/"
@@ -1171,6 +1176,28 @@ func (p *Process) doMkdir(path string, mode uint64) int64 {
 	return hostCall(t.root.Chmod(t.rel, os.FileMode(uint32(mode&0o777)&^p.umask())))
 }
 
+// sysMkfifo is mkfifo(path, mode). The pipe is a name under the home or a mount that the machine
+// knows to be one, for the run: the host keeps an empty file for it, so that nothing of the host's
+// that opens the name waits on it. It can be seen and removed; opening it stops as unimplemented.
+func sysMkfifo(p *Process, a []uint64) int64 {
+	t, ok := p.writableTarget(p.cstr(a[0]))
+	if !ok {
+		return -eACCES
+	}
+	h, err := openInRoot(t.root, t.rel, syscall.O_CREAT|syscall.O_EXCL|syscall.O_WRONLY, 0o600)
+	if err != nil {
+		return hostErrno(err)
+	}
+	defer syscall.Close(h)
+	var st syscall.Stat_t
+	if err := syscall.Fstat(h, &st); err != nil {
+		return hostErrno(err)
+	}
+	p.m.fifos[hostFileOf(&st)] = true
+	p.created(t)
+	return hostCall(syscall.Fchmod(h, uint32(a[1]&0o777)&^p.umask()))
+}
+
 func sysMkdir(p *Process, a []uint64) int64 { return p.doMkdir(p.cstr(a[0]), a[1]) }
 func sysMkdirat(p *Process, a []uint64) int64 {
 	return p.atPath(a[0], a[1], func(path string) int64 { return p.doMkdir(path, a[2]) })
@@ -1324,6 +1351,9 @@ func sysGetdirentries64(p *Process, a []uint64) int64 {
 					var st syscall.Stat_t
 					if statInRoot(t.root, t.rel, false, &st) == nil {
 						kind = byte(st.Mode >> 12) // DT_* are the file type bits of a mode
+						if p.m.fifos[hostFileOf(&st)] {
+							kind = syscall.DT_FIFO
+						}
 					}
 				case t.kind == cacheFD || t.kind == dataFD:
 					kind = byte(syscall.DT_REG)

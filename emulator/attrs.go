@@ -40,7 +40,11 @@ func (p *Process) describe(kind fdKind, path string, size int64, hostStat func(*
 		case syscall.S_IFREG:
 			info.links = uint16(st.Nlink)
 		}
-		if owner, ok := p.m.owners[hostFileOf(&st)]; ok {
+		id := hostFileOf(&st)
+		if p.m.fifos[id] { // a named pipe, which the host keeps as a file (see sysMkfifo)
+			info.mode = syscall.S_IFIFO | info.mode&0o7777
+		}
+		if owner, ok := p.m.owners[id]; ok {
 			info.owner = &owner
 		}
 		if info.ino == 0 {
@@ -176,12 +180,14 @@ var (
 	commonAttrs = []attr{
 		{0x1, 0, func(c *attrContext) []byte { return str(pathpkg.Base(c.path)) }}, // name
 		{0x2, 4, attrDevID}, {0x4, 8, attrFSID},
-		{0x8, 4, func(c *attrContext) []byte { // object type: VREG, VDIR or VLNK
+		{0x8, 4, func(c *attrContext) []byte { // object type: VREG, VDIR, VLNK or VFIFO
 			switch c.mode & syscall.S_IFMT {
 			case syscall.S_IFDIR:
 				return le32(2)
 			case syscall.S_IFLNK:
 				return le32(5)
+			case syscall.S_IFIFO:
+				return le32(7)
 			}
 			return le32(1)
 		}},

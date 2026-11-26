@@ -141,15 +141,42 @@ What was missing, each measured natively and now there:
 - **`fchmod_extended`,** which `gzip` and `cp` call to give a copy its owner and mode (with an access control list it stops as unimplemented), and **Finder info**, which `gzip` copies: it is the file's attribute `com.apple.FinderInfo`, 32 bytes, and none if they are all zeros ([examples/copied.c](examples/copied.c)).
 - **A directory takes no blocks** to `stat`, as on a Mac's file system, so `ls -l` says the same total.
 
-What still differs, of the 12:
+What still differed then, of the 12: five for the closed system volume, three for who the user is, `tar`'s complaint on its standard error that it could not discover entitlements, one pipeline that ended with the shell's "Bad file descriptor", and two that were the survey's own.
 
-- **Five are the closed system volume** ([limit 8](#ranked-limits)): `perl` and the scripts in it (`shasum`) need `libperl` under `/System/Library/Perl`, `file` its magic, `openssl` its configuration, and `sysctl` asks for an oid's format, which is not answered. `--system` opens what is named.
-- **Three are who the user is**: `id -un` and `whoami` say `emu`, and there is less in the environment.
-- **`tar`** makes and lists its archive, and says twice on its standard error that it could not discover entitlements, which a Mac's does not say.
-- **One pipeline** (`PlistBuddy ... 2>&1 | head -2`) ends with the shell's "Bad file descriptor", for a reason not found; `2>&1` with a pipe is otherwise as on a Mac.
-- **Two are the survey's own**: the directory it lists has another mode, and the home it gave had no `tmp` for `man`.
+### A second, wider run
 
-It was run on one release, and on macOS only.
+Another 141 commands were then run the same way: more of the same tools, the shell's own language (loops, traps, `read`, here-documents, `wait`, `time`), `zsh` and `bash`, and tools that ask more of the machine (`ps`, `ditto`, `rsync`, `sqlite3`, `defaults`, `osascript`, `swift`). 84 of the first 125 printed the same. After what follows, 109 of the 141 do.
+
+What was missing, each measured natively and now there ([examples/everyday.c](examples/everyday.c) prints the same on a Mac, on every macOS release here and on iOS):
+
+- **A descriptor is an int.** The pipeline above was the emulator's fault, and so was every `2>&1` after a redirection in the same shell: the shell calls `dup2` with whatever was left in the upper half of the register, a Mac's kernel reads the lower half only, and the emulator read all of it and found no such descriptor. The arguments that are descriptors are now read as ints, for every call that has them.
+- **`setattrlistat`,** by which `cp -p` and `touch` set a file's dates: by a name in a directory, through a link or (FSOPT_NOFOLLOW) of the link itself, which sets the link's own dates and did not before. Told to keep beneath the directory (FSOPT_RESOLVE_BENEATH, as `cp -a` asks), a whole path or one that begins by going up is ENOTCAPABLE; one that goes up further in, or ends in a link to be followed, stops as unimplemented. A path from a descriptor that is of no directory is ENOTDIR, for every call that takes one.
+- **`mkfifo`.** The pipe is a name the machine knows to be one, for the run, as it knows a file's owner: the host keeps an empty file, so that nothing of the host's that opens the name waits on it. It can be seen (`ls -l` says `p`) and removed. Opening it stops as unimplemented, and `mkfifoat` is not there.
+- **`getgroups`,** which `ditto` asks: a process is in its own group and no other. A Mac's user is put in more at a login, by opendirectoryd, which does not run here ([below](#daemons-on-demand)).
+- **`wait4` asking also for children that went on again** (WCONTINUED), as `zsh` does: none is stopped here, so none goes on.
+- **What a process's children used** ([below](#what-a-process-has-used)), which `time` asks.
+- **What a sysctl is called and is** (`{0, 1, ...}` and `{0, 4, ...}`), which the `sysctl` tool asks before it prints one: its name, and its kind and format, both as a Mac's kernel answers them, piece by piece (too little room is ENOMEM with the pieces that fit). The kinds were measured on macOS 27.2.1 for the names answered here. An integer is now four bytes whatever the room, where it was eight in room for eight.
+- **The umask** is a started program's too (`posix_spawn`, `execve`); it was only a copy's (`fork`), so `umask 077; touch` made a file anyone could read.
+
+What still differs, of the 32:
+
+- **Six stop as unimplemented:** `zsh` starting any program (`kill` of a process group, which is the next thing to do), `ditto` (`clonefileat`), `ex` (`getsid`), `say` (`kqueue_workloop_ctl`), and the two scripts in `perl`, which stop for want of `libperl` (the closed system volume).
+- **Four are the missing data volume:** a here-document is a file in `/tmp`, which is not there without `--data` (with it they print the same).
+- **Six are the closed system volume** or what is not on it: `strings` (the developer directory), `units`, `apropos`, `whatis`, `swift`, `iconv` to UTF-16.
+- **Five need a daemon that does not run:** `defaults` (cfprefsd), `pgrep` (sysmond), `mdfind`, `osascript`, and `nohup`, which cannot leave its console (a message to launchd that is not answered).
+- **Two are `ps`,** which asks a sysctl for the processes (`kern.proc`), which is not answered.
+- **Four are who and where the user is:** `logname`, `rsync` ("unknown gid"), `host localhost` (`socket` is refused: there is no network), and `touch -t`, which reads the date in the host's time zone on a Mac and in UTC here.
+- **`time`** prints, with other numbers, as it must.
+- **Four are for later:** `compress` wants `/dev/stdout`, `pax` makes no `._` file, `plutil -lint` of a file that is not there says so in an error's number where a Mac has its words, and `xattr` on a Mac lists `com.apple.provenance`, which is not added here.
+
+Found on the way and left:
+
+- **What a started program keeps of its parent** is listed three times over (`fork`, `posix_spawn`, `execve`), and the lists differ: a copy keeps its parent's limits (`setrlimit`), priority and I/O policies, and a started or replaced program does not, as it did not keep the umask. What a Mac's kernel keeps across each has to be measured before the three become one.
+- **An int that is no descriptor** (the command of `fcntl`, the operation of `flock`) is still read with whatever is above it in the register, where it is not narrowed by hand.
+- **How wide an integer sysctl is** still follows the room it is asked into where its kind is not in the table, and the kinds in the table carry flags measured on one release.
+- The directories of the data volume are all mode 755, where a Mac's `/private/tmp` is 1777, for the image's directories are read without their modes.
+
+Both runs were of one release, and on macOS only.
 
 ## Daemons on demand
 
@@ -218,7 +245,7 @@ What is not there, or not as a Mac has it:
 
 ## What a process has used
 
-`getrusage` answers with the machine's own account of the process, as its clock is its own: the time its threads had the emulated CPU, as the user and in the kernel (a system call, a trap or a fault), by the machine's clock, which stands still while the host fetches; the most pages it has had, as its memory; the faults that brought pages in, a major one being one that read a file of the build; and how often a thread of its gave up the CPU to wait. Twenty-one of the release's programs asked, the shells among them. What a Mac's kernel was measured to keep at zero whatever a process does is zero (the sizes of text, data and stack, swaps, block input and output, messages), and so are signals, as none is delivered, and the times a thread was made to give up the CPU, as none is. Of its children, which a process here has none of, it is all zeros.
+`getrusage` answers with the machine's own account of the process, as its clock is its own: the time its threads had the emulated CPU, as the user and in the kernel (a system call, a trap or a fault), by the machine's clock, which stands still while the host fetches; the most pages it has had, as its memory; the faults that brought pages in, a major one being one that read a file of the build; and how often a thread of its gave up the CPU to wait. Twenty-one of the release's programs asked, the shells among them. What a Mac's kernel was measured to keep at zero whatever a process does is zero (the sizes of text, data and stack, swaps, block input and output, messages), and so are signals, as none is delivered, and the times a thread was made to give up the CPU, as none is. Of its children it is what those it has waited for used, and theirs, and nothing of one not yet waited for: the times and counts together, and of memory the most any one had, as a Mac's kernel was measured to add them ([examples/everyday.c](examples/everyday.c)).
 
 The numbers are not a Mac's, and cannot be: the emulated CPU is many times slower, and brings pages in sixteen at a time. [examples/usage.c](examples/usage.c) prints what holds of them on any machine (work adds to the time, waiting does not, nothing goes down) and prints the same natively as under ipswrun. `thread_selfusage`, `proc_pid_rusage` and the times in `task_info` and `thread_info` are still not answered.
 

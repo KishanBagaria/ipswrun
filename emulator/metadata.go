@@ -5,8 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // What a guest changes about a file other than its bytes: its mode, owner and dates, its
@@ -16,6 +19,7 @@ import (
 const (
 	eROFS        = 30
 	eNAMETOOLONG = 63
+	eNOTCAPABLE  = 107
 
 	lockShared    = 1 // LOCK_SH
 	lockExclusive = 2 // LOCK_EX
@@ -374,14 +378,60 @@ func (p *Process) setattrlist(path string, list, buf, size, options uint64, a []
 			return hostErrno(err)
 		}
 	}
-	if !mtime.IsZero() || !atime.IsZero() {
-		return hostCall(t.root.Chtimes(t.rel, atime, mtime))
+	switch {
+	case mtime.IsZero() && atime.IsZero():
+		return 0
+	case options&optNoFollow != 0:
+		return hostCall(linkTimes(t, atime, mtime))
 	}
-	return 0
+	return hostCall(t.root.Chtimes(t.rel, atime, mtime))
+}
+
+// linkTimes sets the dates of what a name is, a symbolic link's own if it is one; a zero time is
+// left as it is.
+func linkTimes(t target, atime, mtime time.Time) error {
+	dir, err := t.root.Open(filepath.Dir(t.rel))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	spec := func(at time.Time) unix.Timespec {
+		if at.IsZero() {
+			return unix.Timespec{Nsec: utimeOmit}
+		}
+		return unix.NsecToTimespec(at.UnixNano())
+	}
+	return unix.UtimesNanoAt(int(dir.Fd()), filepath.Base(t.rel), []unix.Timespec{spec(atime), spec(mtime)}, unix.AT_SYMLINK_NOFOLLOW)
 }
 
 func sysSetattrlist(p *Process, a []uint64) int64 {
 	return p.setattrlist(p.cstr(a[0]), a[1], a[2], a[3], a[4], a)
+}
+
+// sysSetattrlistat is setattrlistat(directory, path, &list, buffer, size, options). Told to keep
+// beneath the directory (FSOPT_RESOLVE_BENEATH, as cp asks), a whole path or one that begins by
+// going up is ENOTCAPABLE; one that goes up further in, or that ends in a link to be followed,
+// stops as unimplemented, for where it would lead has not been worked out.
+func sysSetattrlistat(p *Process, a []uint64) int64 {
+	const beneath = 0x1000
+	name := p.cstr(a[1])
+	return p.atPath(a[0], a[1], func(path string) int64 {
+		if a[5]&beneath != 0 {
+			switch clean := filepath.Clean(name); {
+			case strings.HasPrefix(clean, "/"), clean == "..", strings.HasPrefix(clean, "../"):
+				return -eNOTCAPABLE
+			case strings.Contains(name, ".."):
+				p.unimplemented("setattrlistat beneath a directory by a path that goes up", a)
+				return -eNOSYS
+			case a[5]&optNoFollow == 0:
+				if t, info, errno := p.describePath("setattrlistat", path, false); errno == 0 && (info.mode&syscall.S_IFMT == syscall.S_IFLNK || t.link != "") {
+					p.unimplemented("setattrlistat beneath a directory through a symbolic link", a)
+					return -eNOSYS
+				}
+			}
+		}
+		return p.setattrlist(path, a[2], a[3], a[4], a[5], a)
+	})
 }
 
 func sysFsetattrlist(p *Process, a []uint64) int64 {
@@ -557,6 +607,7 @@ func (p *Process) forgetFile(t target) {
 	if statInRoot(t.root, t.rel, false, &st) == nil && st.Nlink <= 1 {
 		delete(p.m.xattrs, hostFileOf(&st))
 		delete(p.m.owners, hostFileOf(&st))
+		delete(p.m.fifos, hostFileOf(&st))
 	}
 }
 

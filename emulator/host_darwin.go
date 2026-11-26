@@ -52,3 +52,6 @@ func guestErrno(errno syscall.Errno) int64 { return int64(errno) }
 func hostWhence(whence int) int { return whence }
 
 func mtimeSeconds(st *syscall.Stat_t) int64 { return st.Mtimespec.Sec }
+
+// utimeOmit is UTIME_OMIT: a date utimensat leaves as it is.
+const utimeOmit = -2

@@ -38,7 +38,7 @@ func init() {
 		"renameatx_np": {5, sysRenameatx}, "faccessat": {4, sysFaccessat}, "truncate": {2, sysTruncate}, "fcntl": {3, sysFcntl}, "dup": {1, sysDup}, "dup2": {2, sysDup2},
 		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir}, "chmod": {2, sysChmod}, "fchmod": {2, sysFchmod}, "fchmodat": {4, sysFchmodat}, "fchmod_extended": {5, sysFchmodExtended}, "symlink": {2, sysSymlink}, "symlinkat": {3, sysSymlinkat}, "link": {2, sysLink}, "linkat": {5, sysLinkat}, "stat64_extended": {4, sysStat64Extended}, "lstat64_extended": {4, sysLstat64Extended}, "fstat64_extended": {4, sysFstat64Extended}, "chown": {3, sysChown}, "fchownat": {5, sysFchownat},
 		"lchown": {3, sysLchown}, "fchown": {3, sysFchown}, "utimes": {2, sysUtimes}, "futimes": {2, sysFutimes},
-		"setattrlist": {5, sysSetattrlist}, "fsetattrlist": {5, sysFsetattrlist}, "flock": {2, sysFlock},
+		"setattrlist": {5, sysSetattrlist}, "setattrlistat": {6, sysSetattrlistat}, "mkfifo": {2, sysMkfifo}, "getgroups": {2, sysGetgroups}, "fsetattrlist": {5, sysFsetattrlist}, "flock": {2, sysFlock},
 		"getxattr": {6, sysGetxattr}, "fgetxattr": {6, sysFgetxattr}, "setxattr": {6, sysSetxattr}, "fsetxattr": {6, sysFsetxattr},
 		"listxattr": {4, sysListxattr}, "flistxattr": {4, sysFlistxattr}, "removexattr": {3, sysRemovexattr}, "fremovexattr": {3, sysFremovexattr},
 		"ioctl": {3, sysIoctl}, "pipe": {0, sysPipe}, "poll": {3, sysPoll}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
@@ -100,17 +100,38 @@ func (p *Process) call(h handler, args []uint64, onFault int64) (result int64) {
 	return h.fn(p, args)
 }
 
+// descriptorArgs are the arguments of each call that are descriptors, as bits (1 for the first).
+// A descriptor is an int, and the kernel reads an int's low half only: a program may leave
+// anything in the rest of the register, and the shell does.
+var descriptorArgs = func() map[string]uint8 {
+	m := map[string]uint8{"dup2": 1 | 2, "renameat": 1 | 4, "renameatx_np": 1 | 4, "linkat": 1 | 4, "symlinkat": 2, "mmap": 16}
+	for _, name := range strings.Fields(`fstat64 fstatat64 openat guarded_close_np guarded_write_np guarded_pwrite_np close read pread write writev readv
+		sendto recvfrom shutdown getsockopt setsockopt getsockname getpeername pwrite lseek ftruncate fsync readlinkat mkdirat unlinkat faccessat
+		fcntl dup fchdir __pthread_fchdir fchmod fchmodat fchmod_extended fstat64_extended fchownat fchown futimes setattrlistat fsetattrlist
+		flock fgetxattr fsetxattr flistxattr fremovexattr ioctl fstatfs64 getattrlistat fgetattrlist getattrlistbulk fpathconf getdirentries64
+		kevent kevent64 kevent_qos`) {
+		m[name] = 1
+	}
+	return m
+}()
+
 func (p *Process) bsd(n int64) {
 	name, ok := bsdNames[n]
 	if !ok {
 		name = strconv.FormatInt(n, 10)
 	}
 	args := p.args()
-	h, ok := bsdHandlers[strings.ReplaceAll(name, "_nocancel", "")]
+	base := strings.ReplaceAll(name, "_nocancel", "")
+	h, ok := bsdHandlers[base]
 	if !ok && p.unimplemented(fmt.Sprintf("syscall %d %s", n, name), args) {
 		p.setX(0, eNOSYS)
 		p.carry(true)
 		return
+	}
+	for i, ints := 0, descriptorArgs[base]; ints != 0; i, ints = i+1, ints>>1 {
+		if ints&1 != 0 {
+			args[i] = uint64(int64(int32(args[i])))
+		}
 	}
 	p.current.arg0, p.current.sleeping = args[0], name == "__semwait_signal"
 	r := p.call(h, args, -eFAULT)
@@ -264,6 +285,19 @@ func sysExit(p *Process, a []uint64) int64 {
 func sysGetpid(p *Process, a []uint64) int64 { return int64(p.pid) }
 func sysGetuid(p *Process, a []uint64) int64 { return int64(p.uid) }
 func sysGetgid(p *Process, a []uint64) int64 { return int64(p.gid) }
+
+// sysGetgroups is getgroups(room, &groups): the groups a process is in, its own first. A process
+// here is in its own and no other: none has been put in more, which is done at a login.
+func sysGetgroups(p *Process, a []uint64) int64 {
+	room := int32(a[0])
+	if room < 0 {
+		return -eINVAL
+	}
+	if room > 0 {
+		p.write(a[1], le32(p.gid))
+	}
+	return 1
+}
 
 // sysSetuid is setuid and seteuid, and sysSetgid the same of the group. A process has one user
 // and one group here, real, effective and saved alike, so becoming itself changes nothing, and
@@ -941,17 +975,133 @@ func sysSysctl(p *Process, a []uint64) int64 {
 		p.write(oldlenp, le64(8))
 		return 0
 	}
+	asked := mib
+	// What the rest names is called (1) or is (4), not its value: the sysctl tool asks both.
+	about := int32(-1)
+	if len(mib) >= 2 && mib[0] == 0 && (mib[1] == 1 || mib[1] == 4) {
+		about, mib = mib[1], mib[2:]
+	}
 	var s string
 	switch {
 	case len(mib) >= 2 && mib[0] == 0x7FFF && int(mib[1]) >= 0 && int(mib[1]) < len(p.oids):
 		s = p.oids[mib[1]]
-	case len(mib) >= 2 && sysctlMIBs[[2]int32{mib[0], mib[1]}] != "":
+	case about != 1 && len(mib) >= 2 && sysctlMIBs[[2]int32{mib[0], mib[1]}] != "":
+		// By its numbers a name is asked only of one that was given by name: the numbers in
+		// sysctlMIBs are the old ones, some of which a Mac now calls something else.
 		s = sysctlMIBs[[2]int32{mib[0], mib[1]}]
 	default:
-		p.note("  sysctl mib ENOENT %v", mib)
+		p.note("  sysctl mib ENOENT %v", asked)
 		return -eNOENT
 	}
+	switch about {
+	case 1:
+		var pieces [][]byte
+		for i, part := range strings.Split(s, ".") {
+			if i > 0 {
+				pieces = append(pieces, []byte("."))
+			}
+			pieces = append(pieces, []byte(part))
+		}
+		return p.sysctlPieces(oldp, oldlenp, append(pieces, []byte{0})...)
+	case 4:
+		f, known := sysctlFormats[s]
+		if _, ok := p.sysctlValue(s); !ok || !known {
+			p.note("  sysctl format ENOENT %s", s)
+			return -eNOENT
+		}
+		return p.sysctlPieces(oldp, oldlenp, le32(f.kind), str(f.format))
+	}
 	return p.sysctlOut(s, oldp, oldlenp)
+}
+
+// sysctlPieces writes an answer the kernel makes piece by piece: each piece whole or not at all,
+// and ENOMEM at the first that does not fit, with the length of those before it. With no buffer
+// it is the whole length.
+func (p *Process) sysctlPieces(oldp, oldlenp uint64, pieces ...[]byte) int64 {
+	if oldlenp == 0 {
+		return 0
+	}
+	room, n := p.u64(oldlenp), uint64(0)
+	for _, piece := range pieces {
+		if oldp != 0 {
+			if n+uint64(len(piece)) > room {
+				p.write(oldlenp, le64(n))
+				return -eNOMEM
+			}
+			p.write(oldp+n, piece)
+		}
+		n += uint64(len(piece))
+	}
+	p.write(oldlenp, le64(n))
+	return 0
+}
+
+// sysctlFormats is what a Mac's kernel says each of these is (sysctl {0, 4, its numbers}, which
+// the sysctl tool asks before it prints one): its kind, whose low bits are the type of its
+// value, and how to show it. Measured on macOS 27.2.1 for the names answered here; a name's
+// type is what programs are built against, and is taken to be every release's.
+var sysctlFormats = map[string]struct {
+	kind   uint32
+	format string
+}{
+	"hw.activecpu":                     {0x81e00002, "I"},
+	"hw.byteorder":                     {0x81e00002, "I"},
+	"hw.cachelinesize":                 {0x81e00004, "Q"},
+	"hw.cpu64bit_capable":              {0x81e00002, "I"},
+	"hw.cpufamily":                     {0x81e00002, "I"},
+	"hw.cpusubtype":                    {0x81e00002, "I"},
+	"hw.cputype":                       {0x81e00002, "I"},
+	"hw.l1dcachesize":                  {0x81e00004, "Q"},
+	"hw.l1icachesize":                  {0x81e00004, "Q"},
+	"hw.l2cachesize":                   {0x81e00004, "Q"},
+	"hw.logicalcpu":                    {0x81e00002, "I"},
+	"hw.logicalcpu_max":                {0x81e00002, "I"},
+	"hw.machine":                       {0x84e00003, "A"},
+	"hw.memsize":                       {0x81e00004, "Q"},
+	"hw.model":                         {0x84e00003, "A"},
+	"hw.ncpu":                          {0x81e00002, "I"},
+	"hw.nperflevels":                   {0x81e00002, "I"},
+	"hw.optional.arm.AdvSIMD":          {0x81e00002, "I"},
+	"hw.optional.arm.FEAT_CRC32":       {0x81e00002, "I"},
+	"hw.optional.arm.FEAT_LSE":         {0x81e00002, "I"},
+	"hw.optional.arm64":                {0x81e00002, "I"},
+	"hw.optional.armv8_1_atomics":      {0x81e00002, "I"},
+	"hw.optional.armv8_crc32":          {0x81e00002, "I"},
+	"hw.optional.floatingpoint":        {0x81e00002, "I"},
+	"hw.optional.neon":                 {0x81e00002, "I"},
+	"hw.packages":                      {0x81e00002, "I"},
+	"hw.pagesize":                      {0x81e00004, "Q"},
+	"hw.pagesize32":                    {0x81e00004, "Q"},
+	"hw.perflevel0.logicalcpu":         {0x81e00002, "I"},
+	"hw.perflevel0.logicalcpu_max":     {0x81e00002, "I"},
+	"hw.perflevel0.physicalcpu":        {0x81e00002, "I"},
+	"hw.physicalcpu":                   {0x81e00002, "I"},
+	"hw.physicalcpu_max":               {0x81e00002, "I"},
+	"hw.physmem":                       {0x84e00002, "IU"},
+	"hw.targettype":                    {0x81e00003, "A"},
+	"kern.argmax":                      {0x81e00002, "I"},
+	"kern.bootargs":                    {0x81e00003, "A"},
+	"kern.bootsessionuuid":             {0x80e00003, "A"},
+	"kern.boottime":                    {0x81e00005, "S,timeval"},
+	"kern.development":                 {0x84600002, "I"},
+	"kern.hostname":                    {0xc0e00003, "A"},
+	"kern.hv_vmm_present":              {0x11e00002, "I"},
+	"kern.memorystatus_level":          {0x80e00002, "I"},
+	"kern.ngroups":                     {0x81e00002, "I"},
+	"kern.osproductversion":            {0xc1e00003, "A"},
+	"kern.osrelease":                   {0x81e00003, "A"},
+	"kern.ostype":                      {0x81e00003, "A"},
+	"kern.osvariant_status":            {0xc4e00004, "Q"},
+	"kern.osversion":                   {0xc1e00003, "A"},
+	"kern.safeboot":                    {0x80e00002, "I"},
+	"kern.secure_kernel":               {0x80e00002, "I"},
+	"kern.usrstack64":                  {0x80e00004, "Q"},
+	"kern.version":                     {0x81e00003, "A"},
+	"kern.willshutdown":                {0xc1e00002, "I"},
+	"security.mac.lockdown_mode_state": {0x80e00002, "I"},
+	"sysctl.proc_translated":           {0x80e00002, "I"},
+	"vm.pagesize":                      {0x80e00002, "I"},
+	"vm.vm_page_free_target":           {0x80e00002, "I"},
 }
 
 func sysSysctlbyname(p *Process, a []uint64) int64 {
@@ -1116,7 +1266,8 @@ func (p *Process) sysctlOut(name string, oldp, oldlenp uint64) int64 {
 			want = p.u64(oldlenp)
 		}
 		data = le64(v)
-		if want == 4 || (want != 8 && v < 1<<31) {
+		// An integer is four bytes however much room there is, where what it is is known.
+		if want == 4 || (want != 8 && v < 1<<31) || sysctlFormats[name].kind&0xF == 2 {
 			data = data[:4]
 		}
 	}
