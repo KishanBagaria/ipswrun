@@ -956,7 +956,7 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 		info := le32(0x10, 2, 0, about.pid, about.parentPID(), about.uid, about.gid, about.uid, about.gid, about.uid, about.gid, 0)
 		info = append(append(info, fixed(about.name, 16)...), fixed(about.name, 32)...)
 		info = append(info, le32(uint32(len(about.fds)), about.group(), 0, 0, 0, 0)...)
-		p.write(buf, append(info, le64(fixedMtime, 0)...))
+		p.write(buf, append(info, le64(uint64(about.began.Unix()), uint64(about.began.Nanosecond()/1000))...))
 		return 136
 	case callnum == 2 && flavor == 11: // PROC_PIDPATHINFO
 		p.write(buf, str(about.path))
@@ -990,6 +990,13 @@ func sysSysctl(p *Process, a []uint64) int64 {
 	mib := make([]int32, namelen)
 	for i := range mib {
 		mib[i] = int32(le.Uint32(raw[i*4:]))
+	}
+	if len(mib) >= 2 && mib[0] == 1 && mib[1] == 14 { // CTL_KERN, KERN_PROC: the processes there are
+		return p.sysctlProcs(mib[2:], oldp, oldlenp, a)
+	}
+	if len(mib) >= 2 && mib[0] == 1 && (mib[1] == 38 || mib[1] == 49) { // KERN_PROCARGS and KERN_PROCARGS2: what a process was started with
+		p.unimplemented("sysctl kern.procargs, the arguments a process was started with", a)
+		return -eNOSYS
 	}
 	if len(mib) >= 2 && mib[0] == 0 && mib[1] == 3 { // name2oid
 		s := strings.TrimRight(string(p.read(newp, newlen)), "\x00")

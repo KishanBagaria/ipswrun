@@ -249,6 +249,10 @@ func sysKill(p *Process, a []uint64) int64 {
 	return 0
 }
 
+// there is whether a process is there to be listed and signalled: it runs, or has ended and is
+// still to be waited for.
+func (p *Process) there() bool { return !p.exited || p.unwaited() }
+
 // unwaited is whether a process has ended and its parent is still to wait for it. Once the parent
 // has ended too there is no one to: launchd waits for it then, and it is gone.
 func (p *Process) unwaited() bool {
@@ -293,7 +297,7 @@ func (p *Process) killGroup(group uint32, sig uint64) int64 {
 func (m *Machine) inGroup(group uint32) []*Process {
 	var in []*Process
 	for _, q := range m.procs {
-		if q.group() == group && (!q.exited || q.unwaited()) {
+		if q.group() == group && q.there() {
 			in = append(in, q)
 		}
 	}

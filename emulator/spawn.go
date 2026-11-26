@@ -444,7 +444,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 		stopf("execve of %s: %v", abs, err)
 	}
 	m.procs = m.procs[:len(m.procs)-1] // where newProcess put it
-	next.pid, next.parent, next.ppid = p.pid, p.parent, p.ppid
+	next.pid, next.parent, next.ppid, next.began = p.pid, p.parent, p.ppid, p.began
 	next.cwd, next.usage, next.early, next.pgroup, next.childrenUsed = p.cwd, p.usage, p.early, p.pgroup, p.childrenUsed
 	p.handOn(next, false)
 	p.keepIgnored(next, 0)
@@ -599,6 +599,9 @@ func sysGetsid(p *Process, a []uint64) int64 {
 func sysGetpgid(p *Process, a []uint64) int64 {
 	if a[0] == 0 {
 		return int64(p.group())
+	}
+	if uint32(a[0]) == launchdPID { // its own, as its record says
+		return launchdPID
 	}
 	if q := p.m.process(uint32(a[0])); q != nil {
 		return int64(q.group())

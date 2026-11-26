@@ -1,0 +1,8 @@
+a struct kinfo_proc is 648 bytes; asked how much room one process by its pid takes: 0, room for 6 and a remainder of 0
+this process by its pid: 0, 648 bytes; its pid 1, its parent 1, its group 1, its user 1 and real user 1, its group of users 1
+it is called "procs", is running (2), is a 64-bit process 1, at priority 0, started at some time 1, and has 1 groups, the first its own 1
+into too little room: -1 (Cannot allocate memory), 0 bytes; into none at all: -1 (Cannot allocate memory), 0 bytes
+a pid there is not: 0, 0 bytes; a kind there is not: -1 (No such file or directory); with no pid given: -1 (Invalid argument)
+the processes of this one's group: some 1, this one among them 1, and its child 1; of its user: this one 1, its child 1; of its real user: both 1; of all: both 1
+the child by its pid: 1, its parent this process 1, called "procs"
+ended and not waited for: 1, its state 5; waited for: 0

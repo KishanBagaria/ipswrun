@@ -29,6 +29,7 @@ import (
 	"github.com/KishanBagaria/ipswrun/dyldcache"
 	"github.com/blacktop/go-macho"
 	"github.com/blacktop/go-macho/types"
+	"time"
 )
 
 const (
@@ -319,9 +320,10 @@ type Process struct {
 	// how it ended. ppid is 1, launchd, for a guest of the run's own. stdio is the process whose
 	// standard output and error it writes to: itself, or the one it was started under.
 	parent  *Process
-	pgroup  uint32 // the group it is in, if not one of its own
-	session uint32 // the session it is in, if not one of its own
-	execed  bool   // it was started as, or has become, another program than its parent
+	pgroup  uint32    // the group it is in, if not one of its own
+	session uint32    // the session it is in, if not one of its own
+	execed  bool      // it was started as, or has become, another program than its parent
+	began   time.Time // when it was made, by the machine's clock
 	ppid    uint32
 	reaped  bool
 	stdio   *Process
@@ -441,7 +443,7 @@ func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Pro
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},
 		fds:      map[uint64]*fd{0: {kind: stdioFD, host: 0}, 1: {kind: stdioFD, host: 1}, 2: {kind: stdioFD, host: 2}},
 		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{path: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
-	p.ppid, p.stdio, p.cloexec = launchdPID, p, map[uint64]bool{}
+	p.ppid, p.stdio, p.cloexec, p.began = launchdPID, p, map[uint64]bool{}, m.clock.now()
 	for _, v := range volumes { // their roots, for fsgetpath
 		p.seen[fileID{v.dev, rootInode}] = v.mount
 	}
