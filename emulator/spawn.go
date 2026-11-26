@@ -227,7 +227,7 @@ func (p *Process) spawn(abs, cwd string, image []byte, argv, env []string, actio
 	if err != nil {
 		stopf("posix_spawn of %s: %v", abs, err)
 	}
-	child.parent, child.ppid = p, p.pid
+	child.parent, child.ppid, child.execed = p, p.pid, true
 	child.cwd = cwd // the directory of the thread that started it
 	p.handOn(child, false)
 	// What a new program keeps of its parent's signals: those it ignores, and those the thread
@@ -400,7 +400,15 @@ func (m *Machine) childExited(child *Process) {
 	}
 }
 
-func sysGetppid(p *Process, a []uint64) int64 { return int64(p.ppid) }
+// sysGetppid is the process's parent, which is launchd once the one it came of has ended.
+func sysGetppid(p *Process, a []uint64) int64 { return int64(p.parentPID()) }
+
+func (p *Process) parentPID() uint32 {
+	if p.parent != nil && p.parent.exited {
+		return launchdPID
+	}
+	return p.ppid
+}
 
 // sysExecve is execve(path, arguments, environment): the program takes the place of the one that
 // called, as the same process: with its pid, its parent and children, and the descriptors it is
@@ -440,7 +448,13 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 	next.cwd, next.usage, next.early, next.pgroup, next.childrenUsed = p.cwd, p.usage, p.early, p.pgroup, p.childrenUsed
 	p.handOn(next, false)
 	p.keepIgnored(next, 0)
-	next.current.sigmask, next.itimer = p.current.sigmask, p.itimer
+	next.current.sigmask, next.itimer, next.execed = p.current.sigmask, p.itimer, true
+	for _, s := range p.pending { // a signal that waits goes on waiting, for the one thread there now is
+		if s.forThread(p.current) {
+			s.to = nil
+			next.pending = append(next.pending, s)
+		}
+	}
 	if err := next.load(argv, env); err != nil {
 		m.replaced = append(m.replaced, next)
 		return -eNOEXEC
@@ -517,6 +531,52 @@ func (p *Process) sessionOf() uint32 {
 		return p.session
 	}
 	return p.pid
+}
+
+// sysSetsid is setsid(): the process leaves for a session of its own, and a group of its own in
+// it, unless there is a group of its pid already: its own, as one launchd started is in, or one
+// it was the first of and left with others in it.
+func sysSetsid(p *Process, a []uint64) int64 {
+	if len(p.m.inGroup(p.pid)) != 0 {
+		return -ePERM
+	}
+	p.session, p.pgroup = 0, 0
+	return int64(p.pid)
+}
+
+// sysSetpgid is setpgid(pid, group): the caller (0) or a copy of it that is still the program
+// it was goes into a group of its own (0, or its pid) or into another of its session. A child
+// that has become or was started as another program is EACCES, and any other process ESRCH. One
+// that leads its session stays in its group (EPERM), and a group there is not in the session is
+// EPERM too.
+func sysSetpgid(p *Process, a []uint64) int64 {
+	pid, group := uint32(a[0]), int32(a[1])
+	of := p
+	if pid != 0 && pid != p.pid {
+		if of = p.m.process(pid); of == nil || of.parent != p {
+			return -eSRCH
+		}
+		if of.execed {
+			return -eACCES
+		}
+	}
+	to := uint32(group)
+	if to == 0 {
+		to = of.pid
+	}
+	there := func(q *Process) bool { return q.group() == to && q.sessionOf() == of.sessionOf() }
+	switch {
+	case group < 0:
+		return -eINVAL
+	case of.sessionOf() == of.pid || of.sessionOf() != p.sessionOf():
+		return -ePERM
+	case to != of.pid && !slices.ContainsFunc(p.m.live(), there):
+		return -ePERM
+	}
+	if of.pgroup = to; to == of.pid {
+		of.pgroup = 0
+	}
+	return 0
 }
 
 // sysGetsid is the session of a process, by its pid, or with 0 of the caller. launchd's is its

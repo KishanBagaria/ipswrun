@@ -68,7 +68,7 @@ func init() {
 		"setrlimit": {2, sysSetrlimit}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
-		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getsid": {1, sysGetsid}, "clonefileat": {5, sysClonefileat}, "fclonefileat": {4, sysFclonefileat}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "__pthread_canceled": {1, sysPthreadCanceled}, "sigpending": {1, sysSigpending}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getsid": {1, sysGetsid}, "setsid": {0, sysSetsid}, "setpgid": {2, sysSetpgid}, "clonefileat": {5, sysClonefileat}, "fclonefileat": {4, sysFclonefileat}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "__pthread_canceled": {1, sysPthreadCanceled}, "sigpending": {1, sysSigpending}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
 	}
 	for name, v := range trivial {
 		bsdHandlers[name] = handler{4, constant(v)}
@@ -77,14 +77,12 @@ func init() {
 
 // trivial are more calls answered with a constant (negative: errno) and no side effects.
 // None answers success: a call that would have done something is implemented, or has no handler
-// and stops the run. setsid fails as it does for a process launchd started, which already leads
-// its session and its process group (getpgrp is its pid). objc_bp_assist_cfg_np fails as on a
+// and stops the run. objc_bp_assist_cfg_np fails as on a
 // core without the hardware that assists Objective-C breakpoints, which the emulated one is.
 var trivial = map[string]int64{
 	"work_interval_ctl": -eNOTSUP, "crossarch_trap": -eNOTSUP, "objc_bp_assist_cfg_np": -eNOTSUP,
 	"necp_open": -eNOSYS, "socket": -eACCES,
 	"getaudit_addr": -eNOSYS, "coalition_info": -eNOSYS, "persona": -eNOSYS,
-	"setsid": -ePERM,
 }
 
 // call runs a handler; touching unmapped guest memory yields onFault instead of ending the run.
@@ -922,9 +920,9 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 	case callnum == 2 && flavor == 3 && size >= 136: // PROC_PIDTBSDINFO
 		// struct proc_bsdinfo: flags (64-bit), status (running), exit status, pid, parent; the
 		// user and group three times over; the name twice; then nothing until when it started.
-		info := le32(0x10, 2, 0, about.pid, launchdPID, about.uid, about.gid, about.uid, about.gid, about.uid, about.gid, 0)
+		info := le32(0x10, 2, 0, about.pid, about.parentPID(), about.uid, about.gid, about.uid, about.gid, about.uid, about.gid, 0)
 		info = append(append(info, fixed(about.name, 16)...), fixed(about.name, 32)...)
-		info = append(info, le32(uint32(len(about.fds)), about.pid, 0, 0, 0, 0)...)
+		info = append(info, le32(uint32(len(about.fds)), about.group(), 0, 0, 0, 0)...)
 		p.write(buf, append(info, le64(fixedMtime, 0)...))
 		return 136
 	case callnum == 2 && flavor == 11: // PROC_PIDPATHINFO

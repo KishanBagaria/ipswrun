@@ -273,10 +273,7 @@ func (p *Process) signals(q *Process, sig uint64) bool {
 // there, and none can be sent a signal.
 func (p *Process) killGroup(group uint32, sig uint64) int64 {
 	found, sent := false, false
-	for _, q := range p.m.procs {
-		if q.group() != group || q.exited && !q.unwaited() {
-			continue
-		}
+	for _, q := range p.m.inGroup(group) {
 		found = true
 		if !q.exited && p.signals(q, sig) {
 			sent = true
@@ -289,6 +286,18 @@ func (p *Process) killGroup(group uint32, sig uint64) int64 {
 		return -ePERM
 	}
 	return -eSRCH
+}
+
+// inGroup are the processes of a group: those that run, and those that have ended and are still
+// to be waited for, which keep the group there.
+func (m *Machine) inGroup(group uint32) []*Process {
+	var in []*Process
+	for _, q := range m.procs {
+		if q.group() == group && (!q.exited || q.unwaited()) {
+			in = append(in, q)
+		}
+	}
+	return in
 }
 
 // sysPthreadKill is __pthread_kill(thread, signal): to a thread of the process itself.
@@ -314,7 +323,7 @@ func sysPthreadKill(p *Process, a []uint64) int64 {
 func sysSigpending(p *Process, a []uint64) int64 {
 	var set uint32
 	for _, s := range p.pending {
-		if s.to == nil || s.to == p.current {
+		if s.forThread(p.current) {
 			set |= 1 << (s.sig - 1)
 		}
 	}
@@ -322,9 +331,13 @@ func sysSigpending(p *Process, a []uint64) int64 {
 	return 0
 }
 
+// forThread says whether a signal that waits is one a thread could be given: the process's, or
+// the thread's own.
+func (s pendingSignal) forThread(t *thread) bool { return s.to == nil || s.to == t }
+
 // takes says whether a thread can take a signal now: it is for it, and it does not block it.
 func (s pendingSignal) takes(t *thread) bool {
-	return t.state != dead && (s.to == nil || s.to == t) && (s.sig == sigKill || t.sigmask>>(s.sig-1)&1 == 0)
+	return t.state != dead && s.forThread(t) && (s.sig == sigKill || t.sigmask>>(s.sig-1)&1 == 0)
 }
 
 // sendSignal sends the process a signal. It ends the process or does nothing at once, if that is

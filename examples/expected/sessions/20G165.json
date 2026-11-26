@@ -1,0 +1,7 @@
+{
+  "build": "20G165",
+  "cache_uuid": "5F50D953-A228-3416-A982-9FDE102DB036",
+  "exit_code": 0,
+  "output": "setsid, of the first of a group: -1 (Operation not permitted)\nof a copy of it: its own pid 1; its session is then its own 1, and its group 1; again: -1 (Operation not permitted)\nits parent's group, for one that leads a session: -1 (Operation not permitted)\nsetpgid, a copy into a group of its own: 0; its group is its own 1, its session still its parent's 1; back into its parent's: 0, its group its parent's 1\nby its parent, a copy into a group of its own: 0, its group its own 1; another into that group: 0, its group that 1; into a group there is not: -1 (Operation not permitted); into one below zero: -1 (Invalid argument)\nof a program it started: -1 (Permission denied); of launchd: -1 (No such process); of no process: -1 (No such process)\nthe first of a group, into another: 0; setsid, with one still in the group it left: -1 (Operation not permitted); when that one has ended and is not waited for: -1 (Operation not permitted); with none: its own pid 1\na child's child: its parent was the child 1; once the child has ended, its parent is 1\nthe program a process becomes with SIGUSR1 blocked and waiting: it still waits 1\n",
+  "version": "11.6"
+}

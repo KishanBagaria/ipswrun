@@ -317,6 +317,7 @@ type Process struct {
 	parent  *Process
 	pgroup  uint32 // the group it is in, if not one of its own
 	session uint32 // the session it is in, if not one of its own
+	execed  bool   // it was started as, or has become, another program than its parent
 	ppid    uint32
 	reaped  bool
 	stdio   *Process
