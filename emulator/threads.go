@@ -134,7 +134,7 @@ func (p *Process) newThread() *thread {
 	}
 	p.nextThread++
 	t := &thread{id: p.nextThread, ctx: p.uc.newContext()}
-	t.port = p.kernelSelf(&t.self, kindThread)
+	t.port = p.threadSelf(t)
 	p.threads = append(p.threads, t)
 	return t
 }

@@ -1,0 +1,11 @@
+keeping none: 0
+then asked what is kept: 0, 3 of them; none; none; none
+keeping the port launchd is found by, and one of its own: 0; its own is held as often as before 1
+asked what is kept: 0, 3 of them; the first given; the second given; none
+its own is then held once more 1
+keeping four: 4; keeping one it can only receive from: 0x1000000a
+after those: 0, 3 of them; the first given; the second given; none
+a copy of the process, asked what is kept: 0, 3 of them; the first is the port it finds launchd by 1; it has the second 0, which is no name the copy had 1; the third none 1
+keeping one alone: 0
+then: 0, 3 of them; the second given; none; none
+asked of the host: 4

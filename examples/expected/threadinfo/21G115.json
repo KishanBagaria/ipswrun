@@ -1,0 +1,7 @@
+{
+  "build": "21G115",
+  "cache_uuid": "049B583E-D4DC-3B2B-88DA-E52D6E18313D",
+  "exit_code": 0,
+  "output": "of itself, in short: 0, 10 words; its state 1, flags 0, suspended 0 times, asleep for 0; a share of the processor from 0 to 1000 1\nafter work: the time it has used as the user is more 1, and in the kernel no less 1\nat length: 0, 28 words; its name \"the first thread\"; its state 1, flags 0; its times in billionths, no less than the short ones in millionths 1; scheduled by sharing time 1, at priority 31, now 31, of at most 63\nof one that waits, in short: 0; its state 3, flags 0x1, suspended 0 times; at length: 0, its name \"one that waits\", its state 3\ninto room for one word less: in short 4, at length 4; a kind there is not: 4; asked of the task: 4\n",
+  "version": "12.6"
+}

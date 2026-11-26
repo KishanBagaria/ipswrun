@@ -794,6 +794,7 @@ func (p *Process) fork() *Process {
 		}
 	}
 	child.inherits()
+	child.inheritRegistered(p)
 	p.note("  forked, as pid %d", child.pid)
 	return child
 }

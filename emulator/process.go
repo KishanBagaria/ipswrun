@@ -337,11 +337,14 @@ type Process struct {
 	began   time.Time // when it was made, by the machine's clock
 	// The port its own task may be read by (task_read_for_pid of itself), while it has a right
 	// to it.
-	taskRead *port
-	dirtying dirtyTracking // what it told the kernel of having work in hand (see procctl.go)
-	fdRoom   int           // how many places its table of descriptors has (see procs.go)
-	lineage                // what tells it from every other process there has been (see lineage.go)
-	task     *port         // the task's own port, while the process has a right to it (see kernelports.go)
+	taskRead   *port
+	target     *thread       // of a request to a thread's port: the thread
+	asked      message       // the request to a port of the kernel's that is being answered
+	registered [3]carried    // the ports it keeps for whoever asks (see kernelports.go)
+	dirtying   dirtyTracking // what it told the kernel of having work in hand (see procctl.go)
+	fdRoom     int           // how many places its table of descriptors has (see procs.go)
+	lineage                  // what tells it from every other process there has been (see lineage.go)
+	task       *port         // the task's own port, while the process has a right to it (see kernelports.go)
 	// Where what it was started with begins, which is the top of its stack from the program's path
 	// up, and how many arguments, as the kernel keeps them for whoever asks (kern.procargs2).
 	started uint64
@@ -475,7 +478,7 @@ func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Pro
 		return nil, err
 	}
 	p.current = &thread{port: mainThreadPort, ctx: p.uc.newContext()}
-	p.nameKernel(&p.current.self, kindThread, mainThreadPort)
+	p.nameThread(p.current, mainThreadPort)
 	p.threads = []*thread{p.current}
 	created := p
 	defer func() {
@@ -506,6 +509,7 @@ func (p *Process) Close() {
 	if p.uc == nil {
 		return
 	}
+	p.forgetRegistered()
 	for _, t := range p.threads {
 		if t.ctx != 0 {
 			p.uc.freeContext(t.ctx)

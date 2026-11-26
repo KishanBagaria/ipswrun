@@ -1,0 +1,7 @@
+{
+  "build": "22H390",
+  "cache_uuid": "EF0E3993-EA01-3DB0-82D5-F671453A1235",
+  "exit_code": 0,
+  "output": "keeping none: 0\nthen asked what is kept: 0, 3 of them; none; none; none\nkeeping the port launchd is found by, and one of its own: 0; its own is held as often as before 1\nasked what is kept: 0, 3 of them; the first given; the second given; none\nits own is then held once more 1\nkeeping four: 4; keeping one it can only receive from: 0x1000000a\nafter those: 0, 3 of them; the first given; the second given; none\na copy of the process, asked what is kept: 0, 3 of them; the first is the port it finds launchd by 1; it has the second 0, which is no name the copy had 1; the third none 1\nkeeping one alone: 0\nthen: 0, 3 of them; the second given; none; none\nasked of the host: 4\n",
+  "version": "18.7.12"
+}

@@ -265,9 +265,13 @@ func (p *Process) send(m message) int64 {
 	if q != nil && q.object != nil {
 		// A port of the kernel's: it answers at once, and a request it does not know is one
 		// nothing implements.
+		p.asked = m
 		reply, ok := q.object.request(p, m.id, body)
 		p.note("  mach_msg id %d to the kernel's port %#x send %d rcv %d", m.id, m.remote, m.sendSize, m.rcvSize)
-		if !ok {
+		if reply.refused != 0 {
+			return reply.refused
+		}
+		if !ok || reply.none {
 			p.unknown[unknownMIG{m.id, m.remote, p.uc.reg(regLR)}]++
 			return sendInvalidDest
 		}
@@ -335,6 +339,8 @@ type migReply struct {
 	body    []byte
 	complex bool        // it starts with descriptors
 	memory  []outOfLine // what its memory descriptors hold, each by where in the message it is
+	none    bool        // the request is in a form that is not answered here: it stops, as one with no routine does
+	refused int64       // the message could not be sent at all, and why (a right it names is none it has)
 }
 
 var ndr = []byte{0, 0, 0, 0, 1, 0, 0, 0}
@@ -405,7 +411,10 @@ func init() {
 		219:  migHostStatistics64,
 		206:  func(p *Process, _ []byte) migReply { return migPort(p.kernelSelf(&p.m.clocks, kindClock)) }, // host_get_clock_service: the one clock there is, whichever is asked for
 		1000: migClockGetTime,
+		3403: migPortsRegister,
+		3404: migPortsLookup,
 		3405: migTaskInfo,
+		3612: migThreadInfo,
 		3205: migPortDestroy,
 		3207: migPortGetRefs,
 		3218: migPortSetAttributes,
