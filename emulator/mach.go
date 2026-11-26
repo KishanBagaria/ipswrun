@@ -126,9 +126,44 @@ func machVMProtect(p *Process, a []uint64) int64 {
 	return 0
 }
 
+// machPortType is mach_port_type(task, name, &type): what rights a name is, as a Mac's kernel
+// says them (examples/taskport.c). The task's own port, the host's, the caller's thread's and
+// the bootstrap port are rights to send; a name that was never given
+// out is no name; and one that is a right of a kind not kept here stops the run.
 func machPortType(p *Process, a []uint64) int64 {
-	p.write(a[2], le32(0x20000))
+	name := uint32(a[1])
+	is := uint32(portSend)
+	switch r := p.names[name]; {
+	case r != nil:
+		is = r.kind()
+	case name == taskPort, name == hostPort, name == bootstrapPort, name == p.current.port:
+	case name == 0 || name > p.nextPort:
+		return kernInvalidName
+	default:
+		p.unimplemented("mach_port_type of a name that is no port's here (a thread's, a semaphore's, or one the process had)", a)
+		return kernInvalidName
+	}
+	p.write(a[2], le32(is))
 	return 0
+}
+
+// The kinds of right a name is, as mach_port_type says them.
+const portSend, portReceive, portSendOnce, portSet, portDeadName = 0x10000, 0x20000, 0x40000, 0x80000, 0x100000
+
+func (r *right) kind() uint32 {
+	switch {
+	case r.port.dead:
+		return portDeadName
+	case r.port.set:
+		return portSet
+	case r.once:
+		return portSendOnce
+	case r.receive && r.sends > 0:
+		return portReceive | portSend
+	case r.receive:
+		return portReceive
+	}
+	return portSend
 }
 
 func machTimebaseInfo(p *Process, a []uint64) int64 {
@@ -143,7 +178,14 @@ func machGenerateActivityID(p *Process, a []uint64) int64 {
 
 func machThreadSelf(p *Process, a []uint64) int64 { return int64(p.current.port) }
 
+// machPidForTask is pid_for_task(task, &pid): of the process's own task, by its port or by the
+// one it may be read by. Of anything else it fails, and the pid is -1, as measured.
 func machPidForTask(p *Process, a []uint64) int64 {
+	name := uint32(a[0])
+	if r := p.names[name]; name != taskPort && (r == nil || p.taskRead == nil || r.port != p.taskRead) {
+		p.write(a[1], le32(0xFFFFFFFF))
+		return kernFailure
+	}
 	p.write(a[1], le32(p.pid))
 	return 0
 }

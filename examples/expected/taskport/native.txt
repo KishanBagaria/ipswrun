@@ -1,0 +1,14 @@
+task_read_for_pid of this process: 0; a name of its own 1; asked again: 0, the same name 1
+the task's own port: a right to send ; as a task: 0, its pid this process's
+the port it may be read by: a right to send ; as a task: 0, its pid this process's
+the host's: a right to send ; as a task: 5, its pid -1
+this thread's: a right to send ; as a task: 5, its pid -1
+the bootstrap port: a right to send ; as a task: 5, its pid -1
+a port it made: a right to receive ; as a task: 5, its pid -1
+with a right to send to it too: a right to send a right to receive ; as a task: 5, its pid -1
+a set of ports: a set of ports ; as a task: 5, its pid -1
+a name it has not: no name (15); as a task: 5, its pid -1
+no name at all: no name (15); as a task: 5, its pid -1
+the task asked who it is by the port it may be read by: 0, this process 1
+given up: 0, and still there: a right to send ; as a task: 0, its pid this process's
+given up again: 0; asked for anew: 0, another name than before 1

@@ -1,0 +1,7 @@
+{
+  "build": "19H117",
+  "cache_uuid": "375B6D72-3337-3608-BE0C-E434918EB3A3",
+  "exit_code": 0,
+  "output": "task_read_for_pid of this process: 0; a name of its own 1; asked again: 0, the same name 1\nthe task's own port: a right to send ; as a task: 0, its pid this process's\nthe port it may be read by: a right to send ; as a task: 0, its pid this process's\nthe host's: a right to send ; as a task: 5, its pid -1\nthis thread's: a right to send ; as a task: 5, its pid -1\nthe bootstrap port: a right to send ; as a task: 5, its pid -1\na port it made: a right to receive ; as a task: 5, its pid -1\nwith a right to send to it too: a right to send a right to receive ; as a task: 5, its pid -1\na set of ports: a set of ports ; as a task: 5, its pid -1\na name it has not: no name (15); as a task: 5, its pid -1\nno name at all: no name (15); as a task: 5, its pid -1\nthe task asked who it is by the port it may be read by: 0, this process 1\ngiven up: 0, and still there: a right to send ; as a task: 0, its pid this process's\ngiven up again: 0; asked for anew: 0, another name than before 1\n",
+  "version": "15.7.1"
+}

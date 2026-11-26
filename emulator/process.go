@@ -324,6 +324,9 @@ type Process struct {
 	session uint32    // the session it is in, if not one of its own
 	execed  bool      // it was started as, or has become, another program than its parent
 	began   time.Time // when it was made, by the machine's clock
+	// The port its own task may be read by (task_read_for_pid of itself), while it has a right
+	// to it.
+	taskRead *port
 	// What it was started with, as the kernel keeps it for whoever asks (kern.procargs2).
 	argv, env []string
 	ppid      uint32

@@ -195,8 +195,9 @@ func (p *Process) sysctlProcArgs(mib []int32, oldp, oldlenp uint64, a []uint64) 
 // process's task can be read. A user is given none but its own process's (EPERM, and a port of
 // 0, even for a child of its own, as measured on macOS 27.2.1 of a program with no entitlement
 // asking of one that does not allow its task to be had; what one with either is told is not known); a pid there is no process of is
-// ESRCH, and a task that is not the caller's EINVAL. Its own is a second name for its task,
-// which is not made here, and stops the run.
+// ESRCH, and a task that is not the caller's EINVAL. Its own is a second name for its task, a
+// right to send, the same name for as long as it has it (examples/taskport.c). What root is
+// given stops the run.
 func sysTaskReadForPID(p *Process, a []uint64) int64 {
 	pid := uint32(a[1])
 	p.write(a[2], le32(0)) // no port, whatever is answered
@@ -206,11 +207,31 @@ func sysTaskReadForPID(p *Process, a []uint64) int64 {
 	case pid != launchdPID && pid != 0 && p.m.process(pid) == nil:
 		return -eSRCH
 	case pid == p.pid:
-		p.unimplemented("task_read_for_pid of the process itself", a)
-		return -eNOSYS
+		// A name of its own for its task, the same while the process has it. What only the
+		// task's own port may do (changing its memory) is not refused by this one here.
+		if p.taskRead == nil {
+			p.taskRead = &port{m: p.m, object: taskReader{p}}
+		}
+		p.write(a[2], le32(p.sendRight(p.taskRead)))
+		return 0
 	case p.uid == 0:
 		p.unimplemented("task_read_for_pid by root", a)
 		return -eNOSYS
 	}
 	return -ePERM
 }
+
+// taskReader is what the port a process's task may be read by stands for: the task, asked as it
+// is by its own port. A Mac refuses this port what changes the task (KERN_INVALID_ARGUMENT for
+// memory), which is not told apart here.
+type taskReader struct{ of *Process }
+
+func (t taskReader) request(p *Process, id uint32, body []byte) (migReply, bool) {
+	routine := migRoutines[id]
+	if routine == nil || p != t.of {
+		return migReply{}, false
+	}
+	return routine(p, body), true
+}
+
+func (t taskReader) released() { t.of.taskRead = nil }
