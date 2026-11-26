@@ -550,6 +550,14 @@ func (p *Process) addRegion(r *region) *region {
 	return r
 }
 
+// regionFrom is the region an address is in, or the first above it.
+func (p *Process) regionFrom(addr uint64) *region {
+	if i := sort.Search(len(p.regions), func(i int) bool { return p.regions[i].end > addr }); i < len(p.regions) {
+		return p.regions[i]
+	}
+	return nil
+}
+
 func (p *Process) findRegion(addr uint64) *region {
 	i := sort.Search(len(p.regions), func(i int) bool { return p.regions[i].start > addr }) - 1
 	if i >= 0 && addr < p.regions[i].end {

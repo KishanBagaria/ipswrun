@@ -1,0 +1,21 @@
+a struct proc_bsdinfo is 136 bytes, and the short one 64
+this process: 136 bytes; a 64-bit process 1, has become a program 1, state 2, its pid 1, its parent this one's parent, user 1 and group 1 its caller's, called "procinfo" and "procinfo", in this process's group, on a terminal 0, at priority 0, started at some time 1
+   in short: 64 bytes; a 64-bit process 1, has become a program 1, state 2, its parent this one's parent, called "procinfo", user 501, in this process's group; its program: a whole path; its architecture: 8
+made nicer by 5: 136 bytes; a 64-bit process 1, has become a program 1, state 2, its pid 1, its parent this one's parent, user 1 and group 1 its caller's, called "procinfo" and "procinfo", in this process's group, on a terminal 0, at priority 5, started at some time 1
+   in short: 64 bytes; a 64-bit process 1, has become a program 1, state 2, its parent this one's parent, called "procinfo", user 501, in this process's group; its program: a whole path; its architecture: 8
+a copy of it: 136 bytes; a 64-bit process 1, has become a program 0, state 2, its pid 1, its parent this process, user 1 and group 1 its caller's, called "procinfo" and "procinfo", in this process's group, on a terminal 0, at priority 5, started at some time 1
+   in short: 64 bytes; a 64-bit process 1, has become a program 0, state 2, its parent this process, called "procinfo", user 501, in this process's group; its program: a whole path; its architecture: 8
+ended, and not waited for: 0 (No such process)
+   in short: 0 (No such process); its program: No such process; its architecture: 0 No such process
+waited for: 0 (No such process)
+   in short: 0 (No such process); its program: No such process; its architecture: 0 No such process
+launchd: 0 (Operation not permitted)
+   in short: 64 bytes; a 64-bit process 1, has become a program 1, state 2, its parent none, called "launchd", user 0, in its own group; its program: /sbin/launchd; its architecture: 0 Operation not permitted
+no process: 0 (No such process)
+   in short: 0 (No such process); its program: No such process; its architecture: 0 No such process
+the full record and the unique one at once: 192 bytes, the one after the other 1; with too little room: 0 (Cannot allocate memory); of launchd: 0 (Operation not permitted)
+the memory this program's code is in: 1040 bytes; the region begins below, is whole pages 1, and is of a file with a whole path 1
+with more room than it takes: 1040 bytes; the region begins below, is whole pages 1, and is of a file with a whole path 1
+with too little: 0 (Cannot allocate memory)
+the stack, which is of no file: 0 (Invalid argument)
+a library of the shared cache: 0 (Invalid argument)

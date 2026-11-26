@@ -27,7 +27,7 @@ func TestProcRecords(t *testing.T) {
 	if want := []uint32{14, 12, 11, 10, launchdPID}; !slices.Equal(pids, want) {
 		t.Fatalf("the processes listed: %v, want %v", pids, want)
 	}
-	if records[1].state != procZombie || records[2].state != procRunning || records[2].flags != procLP64 || records[0].flags != procLP64|procExeced || records[3].flags != procLP64|procExeced {
+	if records[1].state != procZombie || records[2].state != procRunning || records[2].execed || !records[0].execed || !records[3].execed || le.Uint32(records[3].bytes()[32:]) != procLP64|procExeced {
 		t.Errorf("states and flags: %+v", records)
 	}
 	b := records[3].bytes()

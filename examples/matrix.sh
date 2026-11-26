@@ -121,6 +121,8 @@ for guest in ${guests//,/ }; do
 	[ "$platform" != ios ] || [ "$guest" != volumes ] || continue
 	# profiles asks for a profile a Mac's kernel has by name, which is no iPhone's.
 	[ "$platform" != ios ] || [ "$guest" != profiles ] || continue
+	# procinfo is built against a header the iOS SDK does not have.
+	[ "$platform" != ios ] || [ "$guest" != procinfo ] || continue
 	if [ "$(uname)" = Darwin ]; then
 		make -s -C examples PLATFORM=$platform "${bin#examples/}/$guest" || exit
 	elif [ ! -x "$bin/$guest" ]; then
@@ -165,7 +167,7 @@ wait
 
 failed=0
 for guest in ${guests//,/ }; do
-	if [ "$platform" = ios ] && { [ "$guest" = adi ] || [ "$guest" = shell ] || [ "$guest" = datavolume ] || [ "$guest" = oslog ] || [ "$guest" = volumes ] || [ "$guest" = profiles ]; }; then
+	if [ "$platform" = ios ] && { [ "$guest" = adi ] || [ "$guest" = shell ] || [ "$guest" = datavolume ] || [ "$guest" = oslog ] || [ "$guest" = volumes ] || [ "$guest" = profiles ] || [ "$guest" = procinfo ]; }; then
 		echo "== $guest: not run on iOS"
 		continue
 	fi

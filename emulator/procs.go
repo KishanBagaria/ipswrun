@@ -34,21 +34,26 @@ type procRecord struct {
 	name               string
 	began              time.Time
 	state              byte
-	flags              uint32
+	execed             bool // it was started as, or has become, a program
 	nice               int8
 	leads              bool // its session
+	files              int  // the descriptors it has open
 }
 
 func (r procRecord) bytes() []byte {
 	b := make([]byte, kinfoProcSize)
 	le.PutUint64(b[0:], uint64(r.began.Unix())) // p_starttime
 	le.PutUint32(b[8:], uint32(r.began.Nanosecond()/1000))
-	le.PutUint32(b[32:], r.flags) // p_flag
-	b[36] = r.state               // p_stat
-	le.PutUint32(b[40:], r.pid)   // p_pid
-	b[242] = byte(r.nice)         // p_nice
-	copy(b[243:243+16], r.name)   // p_comm, 16 bytes and a zero
-	le.PutUint32(b[392:], r.uid)  // e_pcred: the real and saved user and group
+	flags := uint32(procLP64)
+	if r.execed {
+		flags |= procExeced
+	}
+	le.PutUint32(b[32:], flags)  // p_flag
+	b[36] = r.state              // p_stat
+	le.PutUint32(b[40:], r.pid)  // p_pid
+	b[242] = byte(r.nice)        // p_nice
+	copy(b[243:243+16], r.name)  // p_comm, 16 bytes and a zero
+	le.PutUint32(b[392:], r.uid) // e_pcred: the real and saved user and group
 	le.PutUint32(b[396:], r.uid)
 	le.PutUint32(b[400:], r.gid)
 	le.PutUint32(b[404:], r.gid)
@@ -57,31 +62,37 @@ func (r procRecord) bytes() []byte {
 	le.PutUint32(b[428:], r.gid)
 	le.PutUint32(b[560:], r.parent)   // e_ppid
 	le.PutUint32(b[564:], r.group)    // e_pgid
-	le.PutUint32(b[572:], 0xFFFFFFFF) // e_tdev: no terminal
+	le.PutUint32(b[572:], noTerminal) // e_tdev
 	if r.leads {
 		le.PutUint32(b[612:], 2) // e_flag: EPROC_SLEADER
 	}
 	return b
 }
 
+// record is what the kernel says of a process that is there.
+func (p *Process) record() procRecord {
+	r := procRecord{pid: p.pid, parent: p.parentPID(), group: p.group(), uid: p.uid, gid: p.gid, name: p.name, began: p.began, state: procRunning,
+		execed: p.execed || p.parent == nil, nice: int8(p.nice), leads: p.sessionOf() == p.pid, files: len(p.fds)}
+	if p.exited {
+		r.state = procZombie
+	}
+	return r
+}
+
+// launchdRecord is what it says of launchd, which is no process of the machine's and is there.
+func (m *Machine) launchdRecord() procRecord {
+	return procRecord{pid: launchdPID, group: launchdPID, name: "launchd", began: m.clock.boot, state: procRunning, execed: true, leads: true}
+}
+
 // procRecords are the processes there are, the newest first, and launchd last.
 func (m *Machine) procRecords() []procRecord {
 	var out []procRecord
 	for i := len(m.procs) - 1; i >= 0; i-- {
-		p := m.procs[i]
-		if !p.there() {
-			continue
+		if p := m.procs[i]; p.there() {
+			out = append(out, p.record())
 		}
-		r := procRecord{pid: p.pid, parent: p.parentPID(), group: p.group(), uid: p.uid, gid: p.gid, name: p.name, began: p.began, state: procRunning, flags: procLP64, nice: int8(p.nice), leads: p.sessionOf() == p.pid}
-		if p.exited {
-			r.state = procZombie
-		}
-		if p.execed || p.parent == nil {
-			r.flags |= procExeced
-		}
-		out = append(out, r)
 	}
-	return append(out, procRecord{pid: launchdPID, group: launchdPID, name: "launchd", began: m.clock.boot, state: procRunning, flags: procLP64 | procExeced, leads: true})
+	return append(out, m.launchdRecord())
 }
 
 // sysctlProcs answers kern.proc: mib is what follows {CTL_KERN, KERN_PROC}.

@@ -944,32 +944,161 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 	if callnum == 15 { // PROC_INFO_CALL_SET_DYLD_IMAGES
 		return 0
 	}
-	// Everything else is asked about a process, which may be another: a daemon asks about its client.
-	about := p.m.process(uint32(a[1]))
+	// Everything else is asked about a process, which may be another: a daemon asks about its
+	// client. One that has ended is not there to ask of, waited for or not. launchd is, and being
+	// root's says less of itself to a user: what it says in short, and where its program is.
+	// Only that is answered (call 2, PROC_INFO_CALL_PIDINFO): any other call stops and names itself,
+	// whatever its second argument is, which is not always a pid.
+	if callnum != 2 {
+		p.unimplemented(fmt.Sprintf("proc_info call %d, flavor %d", callnum, flavor), a)
+		return -eNOSYS
+	}
+	pid := uint32(a[1])
+	if pid == launchdPID {
+		return p.launchdInfo(flavor, buf, size, a)
+	}
+	about := p.m.process(pid)
 	if about == nil {
 		return -eSRCH
 	}
-	switch {
-	case callnum == 2 && flavor == 3 && size >= 136: // PROC_PIDTBSDINFO
-		// struct proc_bsdinfo: flags (64-bit), status (running), exit status, pid, parent; the
-		// user and group three times over; the name twice; then nothing until when it started.
-		info := le32(0x10, 2, 0, about.pid, about.parentPID(), about.uid, about.gid, about.uid, about.gid, about.uid, about.gid, 0)
-		info = append(append(info, fixed(about.name, 16)...), fixed(about.name, 32)...)
-		info = append(info, le32(uint32(len(about.fds)), about.group(), 0, 0, 0, 0)...)
-		p.write(buf, append(info, le64(uint64(about.began.Unix()), uint64(about.began.Nanosecond()/1000))...))
-		return 136
-	case callnum == 2 && flavor == 11: // PROC_PIDPATHINFO
-		p.write(buf, str(about.path))
-		return 0
-	case callnum == 2 && flavor == 17 && size >= 56: // PROC_PIDUNIQIDENTIFIERINFO
-		p.write(buf, append(make([]byte, 16), le64(uint64(about.pid), 1, 0, 0, 0)...))
-		return 56
-	case callnum == 2 && flavor == 19: // PROC_PIDARCHINFO
-		info := le32(cpuARM64, cpuSubtypeARM64E, 0)
-		p.write(buf, info[:min(size, 12)])
-		return int64(min(size, 12))
+	{ // a flavour with too little room for it falls to the stop below, but for those measured
+		switch r := about.record(); {
+		case flavor == pidBSDInfo && size >= 136:
+			p.write(buf, r.bsdInfo())
+			return 136
+		case flavor == pidShortBSDInfo && size >= 64:
+			p.write(buf, r.shortInfo(r.infoFlags()))
+			return 64
+		case flavor == pidPathInfo:
+			return p.pathInfo(about.path, buf, size)
+		case flavor == pidUniqueInfo && size >= 56:
+			p.write(buf, r.uniqueInfo())
+			return 56
+		case flavor == pidBSDInfoUnique && size < 192:
+			return -eNOMEM
+		case flavor == pidBSDInfoUnique:
+			p.write(buf, append(r.bsdInfo(), r.uniqueInfo()...))
+			return 192
+		case flavor == pidArchInfo && size >= 8: // the CPU's type and its kind
+			p.write(buf, le32(cpuARM64, cpuSubtypeARM64E))
+			return 8
+		case flavor == pidRegionPath:
+			return p.regionPath(about, a[3], buf, size)
+		}
 	}
-	return -eSRCH
+	// The process is there, and what was asked of it is not answered here.
+	p.unimplemented(fmt.Sprintf("proc_pidinfo flavor %d, of a buffer of %d bytes", flavor, size), a)
+	return -eNOSYS
+}
+
+// The flavours of proc_pidinfo that are answered.
+const (
+	pidBSDInfo       = 3  // PROC_PIDTBSDINFO: struct proc_bsdinfo
+	pidPathInfo      = 11 // PROC_PIDPATHINFO: where its program is
+	pidShortBSDInfo  = 13 // PROC_PIDT_SHORTBSDINFO: struct proc_bsdshortinfo
+	pidUniqueInfo    = 17 // PROC_PIDUNIQIDENTIFIERINFO
+	pidBSDInfoUnique = 18 // PROC_PIDBSDINFOWITHUNIQID: the full record, then the unique one
+	pidArchInfo      = 19 // PROC_PIDARCHINFO
+	pidRegionPath    = 31 // PROC_PIDREGIONPATH: {address, length, path}
+
+	procInfoLP64 = 0x10       // PROC_FLAG_LP64
+	procInfoExec = 0x4000     // PROC_FLAG_EXEC: it was started as, or has become, a program
+	noTerminal   = 0xFFFFFFFF // of a process's terminal: none
+	eOVERFLOW    = 84
+)
+
+// bsdInfo is a struct proc_bsdinfo: flags, state, exit status, pid, parent; the user and group
+// three times over; the name twice; how many files, the group, no terminal, how nice; and when
+// it started.
+func (r procRecord) bsdInfo() []byte {
+	info := le32(r.infoFlags(), uint32(r.state), 0, r.pid, r.parent, r.uid, r.gid, r.uid, r.gid, r.uid, r.gid, 0)
+	info = append(append(info, fixed(r.name, 16)...), fixed(r.name, 32)...)
+	info = append(info, le32(uint32(r.files), r.group, 0, noTerminal, 0, uint32(int32(r.nice)))...)
+	return append(info, le64(uint64(r.began.Unix()), uint64(r.began.Nanosecond()/1000))...)
+}
+
+// infoFlags are a process's flags as proc_pidinfo has them.
+func (r procRecord) infoFlags() uint32 {
+	if r.execed {
+		return procInfoLP64 | procInfoExec
+	}
+	return procInfoLP64
+}
+
+// shortInfo is a struct proc_bsdshortinfo: pid, parent, group, state, the name, flags, and the
+// user and group three times over.
+func (r procRecord) shortInfo(flags uint32) []byte {
+	info := append(le32(r.pid, r.parent, r.group, uint32(r.state)), fixed(r.name, 16)...)
+	return append(info, le32(flags, r.uid, r.gid, r.uid, r.gid, r.uid, r.gid, 0)...)
+}
+
+// uniqueInfo is a struct proc_uniqidentifierinfo: the program's UUID (not known), then the
+// process's unique ids, of which only its own is.
+func (r procRecord) uniqueInfo() []byte {
+	return append(make([]byte, 16), le64(uint64(r.pid), 1, 0, 0, 0)...)
+}
+
+// launchdInfo is proc_pidinfo of launchd, as a Mac's answers a user (examples/procinfo.c): the
+// short record and the path of its program; the full record, with or without the unique one,
+// and its architecture are EPERM. What it answers root, and the other flavours, were not measured.
+func (p *Process) launchdInfo(flavor, buf, size uint64, a []uint64) int64 {
+	switch {
+	case flavor == pidShortBSDInfo && size >= 64:
+		p.write(buf, p.m.launchdRecord().shortInfo(p.m.launchdRecord().infoFlags())) // a Mac's has more flags set, which are not known
+		return 64
+	case flavor == pidPathInfo:
+		return p.pathInfo("/sbin/launchd", buf, size)
+	case (flavor == pidBSDInfo || flavor == pidBSDInfoUnique || flavor == pidArchInfo) && p.uid != 0:
+		return -ePERM
+	}
+	p.unimplemented(fmt.Sprintf("proc_pidinfo of launchd, flavor %d", flavor), a)
+	return -eNOSYS
+}
+
+// pathInfo is PROC_PIDPATHINFO: where a process's program is, into room for it and its closing
+// zero (ENOMEM) and for no more than 4096 bytes (EOVERFLOW), as a Mac's kernel was measured to
+// say; 0, whatever the path's length.
+func (p *Process) pathInfo(path string, buf, size uint64) int64 {
+	switch {
+	case size > 4096:
+		return -eOVERFLOW
+	case size < uint64(len(path))+1:
+		return -eNOMEM
+	}
+	p.write(buf, str(path))
+	return 0
+}
+
+// regionPath is proc_pidinfo's PROC_PIDREGIONPATH, which an older dyld asks of where it is itself:
+// the region of a process's memory at an address, or the first above it, where it begins, how
+// long it is, and the file it is of. One that is of no file (the stack, memory of its own, the
+// shared cache) is EINVAL, and too little room ENOMEM, as measured on macOS 27.2.1.
+func (p *Process) regionPath(about *Process, addr, buf, size uint64) int64 {
+	const length = 1040
+	if size < length {
+		return -eNOMEM
+	}
+	at := about.regionFrom(addr)
+	if at == nil {
+		return -eINVAL
+	}
+	image, rest, _ := strings.Cut(at.name, ":") // what it was mapped as says whose it is
+	var path string
+	switch {
+	case at.kind == cacheRegion, at.name == "stack", at.name == "mmap": // of no file, as measured: the shared cache, the stack, memory of its own
+		return -eINVAL
+	case at.kind == fileRegion && image == "dyld":
+		path = guestDyld
+	case at.kind == fileRegion && image == "guest": // the process's own program
+		path = about.path
+	case at.kind == fileRegion && image == "mmap" && strings.HasPrefix(rest, "/"):
+		path = rest
+	default:
+		p.unimplemented("proc_pidinfo of the file a region of memory is of, for "+at.name, nil)
+		return -eNOSYS
+	}
+	p.write(buf, append(le64(at.start, at.end-at.start), fixed(path, 1024)...))
+	return length
 }
 
 // ---- sysctl ----
