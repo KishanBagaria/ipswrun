@@ -375,9 +375,10 @@ func findSpan(spans []span, pos, limit int64) (span, int64) {
 // HEAD fails due to a network outage.
 func metaPath(cacheDir, url string) string { return urlCachePath(cacheDir, "head-", url, "") }
 
-// urlCachePath names a small per-URL file in cacheDir: prefix, a hash of url, then suffix.
-func urlCachePath(cacheDir, prefix, url, suffix string) string {
-	sum := sha256.Sum256([]byte(url))
+// urlCachePath names a small file in cacheDir for a key, which is a URL for most: prefix, a hash
+// of the key, then suffix.
+func urlCachePath(cacheDir, prefix, key, suffix string) string {
+	sum := sha256.Sum256([]byte(key))
 	return filepath.Join(cacheDir, prefix+hex.EncodeToString(sum[:8])+suffix)
 }
 
@@ -406,8 +407,8 @@ func writeCachedSize(cacheDir, url string, size int64) {
 	_ = writeFileAtomic(cacheDir, "head-*.tmp", metaPath(cacheDir, url), []byte(fmt.Sprintf("%d\n", size)))
 }
 
-// PruneCache removes every cached restore image under cacheDir, along with remembered sizes and
-// cached AEA keys, leaving anything else there alone. An image another process has open is skipped.
+// PruneCache removes every cached restore image under cacheDir, along with remembered sizes,
+// cached AEA keys and kept readings of kernelcaches, leaving anything else there alone. An image another process has open is skipped.
 // It reports how many images it removed, how many it skipped, and the disk bytes it freed.
 func PruneCache(cacheDir string) (removed, inUse int, freed int64, err error) {
 	entries, err := os.ReadDir(cacheDir)
@@ -432,7 +433,7 @@ func PruneCache(cacheDir string) (removed, inUse int, freed int64, err error) {
 			}
 			removed++
 			freed += bytes
-		case !entry.IsDir() && (strings.HasPrefix(name, "head-") || strings.HasPrefix(name, "fcs-")):
+		case !entry.IsDir() && (strings.HasPrefix(name, "head-") || strings.HasPrefix(name, "fcs-") || strings.HasPrefix(name, "kept-")):
 			_ = os.Remove(path)
 		}
 	}

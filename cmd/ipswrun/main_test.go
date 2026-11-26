@@ -468,6 +468,10 @@ func TestPruneCacheFlag(t *testing.T) {
 	if err := os.WriteFile(headFile, []byte("12345\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	keptFile := filepath.Join(cacheDir, "kept-0123456789abcdef")
+	if err := os.WriteFile(keptFile, []byte("a reading"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	keep := filepath.Join(cacheDir, "keep.txt")
 	if err := os.WriteFile(keep, []byte("stay"), 0o644); err != nil {
 		t.Fatal(err)
@@ -482,6 +486,9 @@ func TestPruneCacheFlag(t *testing.T) {
 	}
 	if _, err := os.Stat(headFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("head file still exists: %v", err)
+	}
+	if _, err := os.Stat(keptFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("kept reading still exists: %v", err)
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Fatalf("unrelated file was deleted: %v", err)

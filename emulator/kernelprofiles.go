@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // The sandbox profiles a kernel has by name are in its kernelcache: the sandbox extension holds
@@ -34,6 +35,10 @@ const (
 	fewestProfiles     = 2
 	recordHead         = 8 // of a record: its name's place and what else is not a node
 )
+
+// profilesReading names what kernelProfiles makes of a kernelcache, for keeping it between
+// runs: a change to how the names are read is a change to the number here.
+const profilesReading = "sandbox profile names, 1"
 
 var errNoProfiles = errors.New("no collection of sandbox profiles was found in the kernelcache")
 
@@ -169,7 +174,7 @@ var profileDirectories = []string{"/System/Library/Sandbox/Profiles", "/usr/shar
 // no such profile and compile the file, which here comes to the same: a profile confines nothing.
 func (p *Process) kernelHasProfile(name string, a []uint64) bool {
 	m := p.m
-	if m.cfg.KernelCache == nil {
+	if m.cfg.KernelReading == nil {
 		return false
 	}
 	for _, dir := range profileDirectories {
@@ -179,11 +184,15 @@ func (p *Process) kernelHasProfile(name string, a []uint64) bool {
 	}
 	if m.profiles == nil && m.profilesErr == nil {
 		m.profiles, m.profilesErr = away(m.clock, func() ([]string, error) { // the host's work, not the guest's time
-			kc, err := m.cfg.KernelCache()
+			// The names, each with a zero after it, as they are kept between runs.
+			names, err := m.cfg.KernelReading(profilesReading, func(kc []byte) ([]byte, error) {
+				names, err := kernelProfiles(kc)
+				return []byte(strings.Join(names, "\x00") + "\x00"), err
+			})
 			if err != nil {
 				return nil, err
 			}
-			return kernelProfiles(kc)
+			return strings.Split(strings.TrimSuffix(string(names), "\x00"), "\x00"), nil
 		})
 		p.note("  the kernel's sandbox profiles: %v %v", m.profiles, m.profilesErr)
 	}

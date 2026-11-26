@@ -3,6 +3,7 @@ package rangefs
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -159,8 +160,60 @@ func (m *Image) KernelCache() ([]byte, error) {
 
 const maxKernelCacheSize = 256 << 20
 
+// KernelReading is what read makes of the kernelcache, under a name for what that is. Unpacking
+// a kernelcache takes a second or so, so where there is a cache directory the reading is kept
+// there, for this kernelcache (the release's build, and its file in the restore image by name, size and checksum) and
+// this name, and a later run is given it without the kernelcache being read at all. A name
+// says how the reading is made as well as what it is of: one made another way has another name.
+func (m *Image) KernelReading(name string, read func(kernelcache []byte) ([]byte, error)) ([]byte, error) {
+	member, err := m.firmwareMember("KernelCache", "kernelcache")
+	if err != nil {
+		return nil, err
+	}
+	kept := ""
+	if m.cacheDir != "" {
+		kept = urlCachePath(m.cacheDir, "kept-", fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%08x", name, m.Build(), member.Name, member.UncompressedSize64, member.CRC32), "")
+		// A reading is kept with its checksum before it: a file that is cut short or is not
+		// what was written is no reading, and the kernelcache is read again.
+		if file, err := os.ReadFile(kept); err == nil && len(file) >= sha256.Size {
+			if reading := file[sha256.Size:]; sha256.Sum256(reading) == [sha256.Size]byte(file[:sha256.Size]) {
+				return reading, nil
+			}
+		}
+	}
+	kernelcache, err := m.KernelCache()
+	if err != nil {
+		return nil, err
+	}
+	reading, err := read(kernelcache)
+	if err == nil && kept != "" {
+		if err := os.MkdirAll(m.cacheDir, 0o755); err == nil {
+			sum := sha256.Sum256(reading)
+			_ = writeFileAtomic(m.cacheDir, "kept-*.tmp", kept, append(sum[:], reading...)) // kept if it can be: the reading is good either way
+		}
+	}
+	return reading, err
+}
+
 // firmware is the payload of the file the restore image's manifest has for Device under a key.
 func (m *Image) firmware(key, what string, max int) ([]byte, error) {
+	f, err := m.firmwareMember(key, what)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := readMember(f, max)
+	if err != nil {
+		return nil, err
+	}
+	data, err := im4pPayloadData(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", f.Name, err)
+	}
+	return data, nil
+}
+
+// firmwareMember is the file of the restore image that its manifest has for Device under a key.
+func (m *Image) firmwareMember(key, what string) (*zip.File, error) {
 	identities, err := m.deviceIdentities()
 	if err != nil {
 		return nil, err
@@ -180,18 +233,9 @@ func (m *Image) firmware(key, what string, max int) ([]byte, error) {
 		return nil, fmt.Errorf("the restore image names no %s for %s", what, m.device)
 	}
 	for _, f := range m.archive.File {
-		if f.Name != name {
-			continue
+		if f.Name == name {
+			return f, nil
 		}
-		raw, err := readMember(f, max)
-		if err != nil {
-			return nil, err
-		}
-		data, err := im4pPayloadData(raw)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-		return data, nil
 	}
 	return nil, fmt.Errorf("no ZIP member %s", name)
 }
