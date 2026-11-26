@@ -65,6 +65,14 @@ func (p *Process) describe(kind fdKind, path string, size int64, hostStat func(*
 // describePath describes what a guest path names, following a final symbolic link or not. op is
 // the system call, for the note when the path names nothing.
 func (p *Process) describePath(op, path string, follow bool) (target, fileInfo, int64) {
+	if n, ok := p.descriptorAt(path); ok { // what the descriptor is, followed or not
+		f := p.fds[n]
+		if f == nil {
+			return target{}, fileInfo{}, -eBADF
+		}
+		info, errno := p.describeFD(f)
+		return target{kind: f.kind, path: f.path}, info, errno
+	}
 	if link := p.rootLink(path); link != "" && !follow {
 		t := target{kind: dirFD, path: pathpkg.Clean(path), link: link}
 		info, errno := p.describe(t.kind, t.path, 0, nil)

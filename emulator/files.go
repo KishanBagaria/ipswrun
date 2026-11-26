@@ -378,7 +378,7 @@ func (p *Process) lookup(path string) (target, bool) {
 		return target{kind: dirFD}, true
 	}
 	switch path {
-	case "/", "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/private/etc", "/var", "/var/root", "/private/var/root", "/tmp", "/private/tmp", "/emu":
+	case "/", devFDs, "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/private/etc", "/var", "/var/root", "/private/var/root", "/tmp", "/private/tmp", "/emu":
 		return target{kind: dirFD}, true
 	}
 	if p.system != nil {
@@ -438,6 +438,9 @@ func (p *Process) putStat(buf uint64, info fileInfo, errno int64) int64 {
 }
 
 func (p *Process) doStat(path string, buf uint64, follow bool) int64 {
+	if n, ok := p.descriptorAt(path); ok { // what the descriptor is, followed or not
+		return sysFstat64(p, []uint64{n, buf})
+	}
 	_, info, errno := p.describePath("stat", path, follow)
 	return p.putStat(buf, info, errno)
 }
@@ -518,6 +521,13 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 func (p *Process) openPath(path string, flags, mode uint64) int64 {
 	if p.full() {
 		return -eMFILE
+	}
+	if n, ok := p.descriptorAt(path); ok {
+		return p.openDescriptor(n, flags)
+	}
+	if p.absolute(path) == devFDs {
+		p.unimplemented("open of /dev/fd, to list a process's descriptors", []uint64{flags, mode})
+		return -eNOSYS
 	}
 	t, ok := p.resolve(path)
 	if !ok {
@@ -944,6 +954,12 @@ func sysFtruncate(p *Process, a []uint64) int64 {
 }
 
 func (p *Process) doAccess(path string) int64 {
+	if n, ok := p.descriptorAt(path); ok {
+		if p.fds[n] == nil {
+			return -eBADF
+		}
+		return 0
+	}
 	t, ok := p.resolve(path)
 	if ok && t.kind == hostFD {
 		if t.root != nil {
@@ -1405,7 +1421,7 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 	case f.kind == stdioFD:
 		dup = &fd{kind: stdioFD, host: f.host, path: f.path}
 	case f.shared != nil:
-		dup = &fd{kind: f.kind, shared: f.shared.retain(), path: f.path, pos: f.pos}
+		dup = &fd{kind: f.kind, shared: f.shared.retain(), path: f.path, pos: f.pos, flags: f.flags}
 	default:
 		dup = f // shares the offset, like a real duplicate
 		dup.refs++
@@ -1439,7 +1455,7 @@ func sysFcntl(p *Process, a []uint64) int64 {
 	}
 	switch cmd, arg := a[1], a[2]; cmd {
 	case 50: // F_GETPATH
-		path := "/dev/fd"
+		path := devFDs
 		if f.path != "" {
 			path = f.path
 		}
@@ -1459,8 +1475,8 @@ func sysFcntl(p *Process, a []uint64) int64 {
 			delete(p.cloexec, a[0])
 		}
 		return 0
-	case 3: // F_GETFL
-		return 2
+	case 3: // F_GETFL: what it was opened to do; the other flags of a file are not kept
+		return int64(f.accessMode())
 	case 97: // F_ADDFILESIGS_RETURN: the signature covers the file up to the blob
 		p.write(arg, p.read(arg+8, 8))
 	case 105: // F_GETSIGSINFO: files of the build are platform binaries, the guest's own are not
