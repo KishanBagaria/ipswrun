@@ -27,7 +27,7 @@ This list was made by reading the code, and then checked by one [survey](#survey
 These three would unlock the most code for the least work, and each keeps to the rules above.
 
 1. **opendirectoryd under `--on-demand`.** notifyd and logd run, the second on a data volume ([below](#the-data-volume)). opendirectoryd is what nearly every program looks up next, and it calls `reboot`; until it runs, `--on-demand '*'` does not get far, and is not the default. The profiles the kernel has by name are read from each release's kernelcache now ([below](#daemons-on-demand)); what it needs next is not a call to add but three things to decide or be given: the system volume open to a daemon, the data volume's directories with their own owners and modes, and `identitysvc` measured as root.
-2. **The system volume, open by default** (limit 8). Of the everyday tools that still differ ([below](#everyday-tools)), most do for want of a file the release has and a guest may not read. Whether to open it is a default, and a matter of how much of the image a run may fetch.
+2. **The system volume, open by default** (limit 8). Of the 26 everyday commands that still differ or stop ([below](#everyday-tools)), three print the same once it is open (`--system /`: `iconv` to UTF-16, `shasum`, `units`), and four more with a data volume as well (`--data`: the three that use a here-document, whose shell wants `/tmp`, and `crc32`): 122 of the 141 with both, where 115 match as a run is started by default. So it is fewer than was thought, and the data volume matters as much. Whether to open it is a default, and a matter of how much of the image a run may fetch.
 3. **Taking a thread off the CPU** (limit 7). Signals, their handlers, faults and timers are there, but a thread that spins takes no signal, and nothing else runs meanwhile.
 
 ## Stubs that answer success
@@ -147,6 +147,14 @@ What still differed then, of the 12: five for the closed system volume, three fo
 ### A second, wider run
 
 Another 141 commands were then run the same way: more of the same tools, the shell's own language (loops, traps, `read`, here-documents, `wait`, `time`), `zsh` and `bash`, and tools that ask more of the machine (`ps`, `ditto`, `rsync`, `sqlite3`, `defaults`, `osascript`, `swift`). 84 of the first 125 printed the same. After what follows, 109 of the 141 did; run again once `fcntl` and `proc_pidinfo` no longer answered what they had no answer for, 115 do, 23 differ and 3 stop (`crc32` and `shasum`, which are Perl's and want its library, and `say`, which asks `kqueue_workloop_ctl`).
+
+What the 26 want, each run again with its error shown and with the system volume open, and some with a data volume too (macOS 27.2.1):
+
+- **A file of the system volume** (3): `iconv` (the tables under `/usr/share/i18n`), `shasum` (Perl's library) and `units` (`/usr/share/misc/units.lib`). `/usr/share` has 2 entries by default and 42 on a Mac.
+- **A data volume as well** (4): a here-document (`cat <<X`, `ed <<<`, `bc <<<`), for which the shell makes a file in `/tmp`, and `crc32`, whose Perl module is under `/Library`.
+- **A daemon or a service** (8): `pgrep` (sysmond), `rsync` (a group's name, from opendirectoryd), `defaults` of a file by its path, `host`, `mdfind`, `osascript`, `swift`, and `nohup`, which asks launchd to detach it from the console and is told there is no such thing.
+- **The Mac it was measured on, and not a Mac's kernel** (8): `touch -t` and the time zone that Mac is set to; `logname`, which is root there for how the measuring shell was started; `xattr`'s `com.apple.provenance` and `pax`'s `._` file for it, an attribute that Mac puts on the files the measuring programs write (why it does for these was not looked into; the guests' own attribute calls print the same there); `strings`, which is Xcode's and wants it installed; `whatis` and `apropos`, whose database a Mac builds for itself after it is installed; and `time`, which measures how fast the machine is. None of these is known to be a limit to fix, and the two that were on the list to do (the provenance attribute and pax's `._` files) are set aside until a Mac is found to add the attribute for every program.
+- **Not yet looked into** (3): `ps` with no terminal lists nothing here and ten processes there, which is likely the measuring shell's own terminal; `plutil -lint` of a file that is not there gives an error's number where a Mac has its words, with the system volume open too; and `say`, which stops for `kqueue_workloop_ctl`.
 
 What was missing, each measured natively and now there ([examples/everyday.c](examples/everyday.c) prints the same on a Mac, on every macOS release here and on iOS):
 
