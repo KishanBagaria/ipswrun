@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -147,4 +148,69 @@ func (p *Process) sysctlProcs(mib []int32, oldp, oldlenp uint64, a []uint64) int
 	}
 	p.write(oldlenp, le64(fits))
 	return 0
+}
+
+// sysctlProcArgs answers kern.procargs2, {CTL_KERN, KERN_PROCARGS2, pid}: what a process of the
+// caller's user was started with, as ps shows it. It is how many arguments, the program's path
+// and zeros after it to a multiple of 8, the arguments, each with its closing zero, and the
+// environment, and a zero. A Mac's goes on with what else the kernel put on the new process's
+// stack, which is its own and is left out; and a Mac's is the stack as it is now, where this is
+// what the process was started with, so one that has written over its arguments is not seen to. Of another user's process, of one that has ended, of
+// none and into four bytes or fewer it is EINVAL, as measured; into room for less than all of it
+// a Mac answers with a part, which is not done here.
+func (p *Process) sysctlProcArgs(mib []int32, oldp, oldlenp uint64, a []uint64) int64 {
+	if len(mib) != 1 || oldlenp == 0 {
+		return -eINVAL
+	}
+	about := p.m.process(uint32(mib[0]))
+	if about == nil && uint32(mib[0]) == launchdPID && p.uid == 0 {
+		p.unimplemented("sysctl kern.procargs2 of launchd, by root", a)
+		return -eNOSYS
+	}
+	if about == nil || p.uid != 0 && about.uid != p.uid {
+		return -eINVAL
+	}
+	block := append(le32(uint32(len(about.argv))), about.path...)
+	block = append(block, make([]byte, 8-len(about.path)%8)...)
+	for _, s := range slices.Concat(about.argv, about.env) {
+		block = append(append(block, s...), 0)
+	}
+	block = append(block, 0)
+	if oldp != 0 {
+		room := p.u64(oldlenp)
+		if room <= 4 {
+			return -eINVAL
+		}
+		if room < uint64(len(block)) {
+			p.unimplemented("sysctl kern.procargs2 into room for less than a process's arguments", a)
+			return -eNOSYS
+		}
+		p.write(oldp, block)
+	}
+	p.write(oldlenp, le64(uint64(len(block))))
+	return 0
+}
+
+// sysTaskReadForPID is task_read_for_pid(the caller's task, pid, &port): a port by which a
+// process's task can be read. A user is given none but its own process's (EPERM, and a port of
+// 0, even for a child of its own, as measured on macOS 27.2.1 of a program with no entitlement
+// asking of one that does not allow its task to be had; what one with either is told is not known); a pid there is no process of is
+// ESRCH, and a task that is not the caller's EINVAL. Its own is a second name for its task,
+// which is not made here, and stops the run.
+func sysTaskReadForPID(p *Process, a []uint64) int64 {
+	pid := uint32(a[1])
+	p.write(a[2], le32(0)) // no port, whatever is answered
+	switch {
+	case uint32(a[0]) != taskPort:
+		return -eINVAL
+	case pid != launchdPID && pid != 0 && p.m.process(pid) == nil:
+		return -eSRCH
+	case pid == p.pid:
+		p.unimplemented("task_read_for_pid of the process itself", a)
+		return -eNOSYS
+	case p.uid == 0:
+		p.unimplemented("task_read_for_pid by root", a)
+		return -eNOSYS
+	}
+	return -ePERM
 }

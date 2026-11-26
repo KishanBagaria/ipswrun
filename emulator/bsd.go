@@ -68,7 +68,7 @@ func init() {
 		"setrlimit": {2, sysSetrlimit}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
-		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getsid": {1, sysGetsid}, "reboot": {2, sysReboot}, "setsid": {0, sysSetsid}, "setpgid": {2, sysSetpgid}, "clonefileat": {5, sysClonefileat}, "fclonefileat": {4, sysFclonefileat}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "__pthread_canceled": {1, sysPthreadCanceled}, "sigpending": {1, sysSigpending}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getsid": {1, sysGetsid}, "task_read_for_pid": {3, sysTaskReadForPID}, "reboot": {2, sysReboot}, "setsid": {0, sysSetsid}, "setpgid": {2, sysSetpgid}, "clonefileat": {5, sysClonefileat}, "fclonefileat": {4, sysFclonefileat}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "__pthread_canceled": {1, sysPthreadCanceled}, "sigpending": {1, sysSigpending}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
 	}
 	for name, v := range trivial {
 		bsdHandlers[name] = handler{4, constant(v)}
@@ -1123,7 +1123,10 @@ func sysSysctl(p *Process, a []uint64) int64 {
 	if len(mib) >= 2 && mib[0] == 1 && mib[1] == 14 { // CTL_KERN, KERN_PROC: the processes there are
 		return p.sysctlProcs(mib[2:], oldp, oldlenp, a)
 	}
-	if len(mib) >= 2 && mib[0] == 1 && (mib[1] == 38 || mib[1] == 49) { // KERN_PROCARGS and KERN_PROCARGS2: what a process was started with
+	if len(mib) >= 2 && mib[0] == 1 && mib[1] == 49 { // KERN_PROCARGS2: what a process was started with
+		return p.sysctlProcArgs(mib[2:], oldp, oldlenp, a)
+	}
+	if len(mib) >= 2 && mib[0] == 1 && mib[1] == 38 { // KERN_PROCARGS, the same without the count
 		p.unimplemented("sysctl kern.procargs, the arguments a process was started with", a)
 		return -eNOSYS
 	}

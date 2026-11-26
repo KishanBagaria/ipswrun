@@ -324,10 +324,12 @@ type Process struct {
 	session uint32    // the session it is in, if not one of its own
 	execed  bool      // it was started as, or has become, another program than its parent
 	began   time.Time // when it was made, by the machine's clock
-	ppid    uint32
-	reaped  bool
-	stdio   *Process
-	cloexec map[uint64]bool // the descriptors a program it starts is not to have
+	// What it was started with, as the kernel keeps it for whoever asks (kern.procargs2).
+	argv, env []string
+	ppid      uint32
+	reaped    bool
+	stdio     *Process
+	cloexec   map[uint64]bool // the descriptors a program it starts is not to have
 
 	cacheDir   string
 	cachePaths map[string]dyldcache.File
@@ -1097,6 +1099,7 @@ func (p *Process) loadMachO(data []byte, name string, base uint64) (f *macho.Fil
 // kernel leaves a new process: at dyld's entry point, with its arguments and environment on the
 // stack.
 func (p *Process) load(argv, env []string) error {
+	p.argv, p.env = argv, env
 	// A guest built for this is arm64. What Apple ships has only arm64e, which runs the same
 	// here: the keys are off, as dyld is told below.
 	exe, err := thin(p.exe, 0, cpuSubtypeARM64E)

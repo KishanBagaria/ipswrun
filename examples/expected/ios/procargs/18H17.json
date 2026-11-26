@@ -1,0 +1,7 @@
+{
+  "build": "18H17",
+  "cache_uuid": "3C01FCEA-4C63-3553-8C06-31731FDB76A7",
+  "exit_code": 0,
+  "output": "a child started with three arguments: 4 arguments; the program's path is a whole one 1, with zeros after it to a multiple of 8 1; [the program] [wait] [two words] []; then the environment, the two it was given among it 1, and a zero 1\nasked how much room it takes: 0, room for it 1\ninto four bytes: -1 (Invalid argument)\nlaunchd, which is root's: -1 (Invalid argument)\nno process: -1 (Invalid argument)\nthe port to read the child's task by: -1 (Operation not permitted), the port 0\nlaunchd's: -1 (Operation not permitted), the port 0\nno process's: -1 (No such process), the port 0\nasked with a task that is not the caller's: -1 (Invalid argument), the port 0\nthe child, ended and not waited for: -1 (Invalid argument)\n",
+  "version": "14.8"
+}
