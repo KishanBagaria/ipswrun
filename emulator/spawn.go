@@ -8,7 +8,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/blacktop/go-macho"
@@ -263,12 +262,10 @@ func (p *Process) inherit(parent *Process, actions []byte, closeAll bool) int64 
 		case f.kq != nil:
 			continue // a kqueue is its process's alone
 		case f.kind == hostFD:
-			h, err := syscall.Dup(f.host)
-			if err != nil {
+			var err error
+			if f, err = f.hostDup(); err != nil {
 				return hostErrno(err)
 			}
-			syscall.CloseOnExec(h)
-			f = &fd{kind: hostFD, host: h, path: f.path}
 		case f.streams():
 			f.refs++
 		case f.shared != nil:
@@ -780,12 +777,10 @@ func (p *Process) fork() *Process {
 		case f.kq != nil:
 			continue
 		case f.kind == hostFD:
-			h, err := syscall.Dup(f.host)
-			if err != nil {
+			var err error
+			if f, err = f.hostDup(); err != nil {
 				stopf("fork: %v", err)
 			}
-			syscall.CloseOnExec(h)
-			f = &fd{kind: hostFD, host: h, path: f.path}
 		case f.streams():
 			f.refs++
 		case f.shared != nil:

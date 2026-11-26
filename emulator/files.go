@@ -74,6 +74,7 @@ type fd struct {
 	flags     uint32
 	noSigpipe bool
 	kq        *userKqueue // of a kqueue: what it watches (see kqueue.go)
+	state     *status     // of what is no pipe and no socket: what fcntl reads and sets of it (see fileflags.go)
 	refs      int         // the descriptors it is, in every process: a duplicate and a child's are the same end
 }
 
@@ -600,6 +601,9 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 		}
 		opened = &fd{kind: hostFD, host: h, path: t.path}
 	}
+	if !opened.streams() {
+		opened.opened(flags)
+	}
 	n := p.newFD(opened)
 	p.note("  open %s -> %d", path, n)
 	return int64(n)
@@ -847,6 +851,9 @@ func sysWrite(p *Process, a []uint64) int64 {
 	if err != nil {
 		return hostErrno(err)
 	}
+	if n > 0 {
+		f.wrote()
+	}
 	return int64(n)
 }
 
@@ -926,6 +933,9 @@ func sysPwrite(p *Process, a []uint64) int64 {
 	if err != nil {
 		return hostErrno(err)
 	}
+	if n > 0 {
+		f.wrote()
+	}
 	return int64(n)
 }
 
@@ -964,7 +974,11 @@ func sysFtruncate(p *Process, a []uint64) int64 {
 	if f == nil || f.kind != hostFD {
 		return -eBADF
 	}
-	return hostCall(syscall.Ftruncate(f.host, int64(a[1])))
+	r := hostCall(syscall.Ftruncate(f.host, int64(a[1])))
+	if r == 0 {
+		f.wrote()
+	}
+	return r
 }
 
 func (p *Process) doAccess(path string) int64 {
@@ -1434,16 +1448,14 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 	var dup *fd
 	switch {
 	case f.kind == hostFD:
-		h, err := syscall.Dup(f.host)
-		if err != nil {
+		var err error
+		if dup, err = f.hostDup(); err != nil {
 			return hostErrno(err)
 		}
-		syscall.CloseOnExec(h)
-		dup = &fd{kind: hostFD, host: h, path: f.path}
 	case f.kind == stdioFD:
-		dup = &fd{kind: stdioFD, host: f.host, path: f.path}
+		dup = &fd{kind: stdioFD, host: f.host, path: f.path, state: f.status()}
 	case f.shared != nil:
-		dup = &fd{kind: f.kind, shared: f.shared.retain(), path: f.path, pos: f.pos, flags: f.flags}
+		dup = &fd{kind: f.kind, shared: f.shared.retain(), path: f.path, pos: f.pos, flags: f.flags, state: f.status()}
 	default:
 		dup = f // shares the offset, like a real duplicate
 		dup.refs++
@@ -1497,8 +1509,10 @@ func sysFcntl(p *Process, a []uint64) int64 {
 			delete(p.cloexec, a[0])
 		}
 		return 0
-	case 3: // F_GETFL: what it was opened to do; the other flags of a file are not kept
-		return int64(f.accessMode())
+	case 3: // F_GETFL
+		return f.fileFlags()
+	case 4: // F_SETFL
+		return p.setFileFlags(f, arg)
 	case 97: // F_ADDFILESIGS_RETURN: the signature covers the file up to the blob
 		p.write(arg, p.read(arg+8, 8))
 	case 105: // F_GETSIGSINFO: files of the build are platform binaries, the guest's own are not
