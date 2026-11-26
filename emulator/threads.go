@@ -47,12 +47,14 @@ var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", 
 
 // thread is one guest thread. Its registers are in ctx whenever it is not the one running.
 type thread struct {
-	id    int
-	port  uint32 // what mach_thread_self names it
-	ctx   uintptr
-	pc    uint64
-	tsd   uint64
-	state threadState
+	id int
+	// What it has had of the CPU, as the user and in the kernel: its part of the process's usage.
+	user, system time.Duration
+	port         uint32 // what mach_thread_self names it
+	ctx          uintptr
+	pc           uint64
+	tsd          uint64
+	state        threadState
 
 	kind     waitKind
 	key      uint64    // the address or port waited on
@@ -202,9 +204,19 @@ func (p *Process) deliver() {
 // has ended, or it offered its turn.
 func (p *Process) reschedule() bool { return p.current.state != runnable || p.yield }
 
+// charge counts what the process has used since it was last counted as the running thread's:
+// one thread has the CPU at a time, so what the process used in between is that thread's.
+func (p *Process) charge() {
+	u := p.usage
+	u.enter(p.m.clock, true)
+	p.current.user, p.current.system = p.current.user+u.user-p.charged[0], p.current.system+u.system-p.charged[1]
+	p.charged = [2]time.Duration{u.user, u.system}
+}
+
 // switchTo gives a thread of the process the engine: the registers of the one that had it are
 // put away, unless they are still its own, and the answer the thread was waiting for is delivered.
 func (p *Process) switchTo(t *thread) {
+	p.charge()
 	if cur := p.current; t != cur || t.relaunched {
 		if t != cur && cur.state != dead && !cur.relaunched {
 			p.uc.save(cur.ctx)

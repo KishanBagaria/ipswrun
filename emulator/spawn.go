@@ -446,6 +446,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 	m.procs = m.procs[:len(m.procs)-1] // where newProcess put it
 	next.pid, next.parent, next.ppid, next.began = p.pid, p.parent, p.ppid, p.began
 	next.cwd, next.usage, next.early, next.pgroup, next.childrenUsed = p.cwd, p.usage, p.early, p.pgroup, p.childrenUsed
+	next.charged = [2]time.Duration{p.usage.user, p.usage.system} // all of it by threads that are gone
 	p.handOn(next, false)
 	p.keepIgnored(next, 0)
 	next.current.sigmask, next.itimer, next.execed = p.current.sigmask, p.itimer, true

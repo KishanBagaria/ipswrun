@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"time"
 )
 
 var machNames = map[int64]string{
@@ -641,6 +642,52 @@ func migTaskInfo(p *Process, body []byte) migReply {
 		return counted(append(le64(p.imageInfo[:]...), le32(1)...))
 	case 15: // TASK_AUDIT_TOKEN
 		return counted(auditToken(p.uid, p.gid, p.pid))
+	case 10: // TASK_SCHED_TIMESHARE_INFO, of which a Mac's kernel gives one word: the task's priority, 31 less how nice it is (measured at 0 and at 5)
+		if le.Uint32(body[36:]) < 1 {
+			return migCode(kernInvalidArg)
+		}
+		return counted(le32(uint32(31 - p.nice)))
+	case 3, 18, 20: // TASK_THREAD_TIMES_INFO and TASK_BASIC_INFO_64_2, as ps asks, and MACH_TASK_BASIC_INFO
+		// The memory it has mapped, and of it what it has touched, now and at the most; the time
+		// its threads have used, as the user and in the kernel: those that have ended in the
+		// basic records, and those that still run in the other, as a Mac's kernel was measured
+		// to part them; a timesharing task, not suspended.
+		const timeshare = 1 // POLICY_TIMESHARE
+		var mapped uint64
+		for _, r := range p.regions {
+			mapped += r.end - r.start
+		}
+		p.charge()
+		var running [2]time.Duration
+		for _, t := range p.threads {
+			if t.state != dead {
+				running[0], running[1] = running[0]+t.user, running[1]+t.system
+			}
+		}
+		ended := [2]time.Duration{p.charged[0] - running[0], p.charged[1] - running[1]} // the rest of what was used
+		times := func(of [2]time.Duration) []byte { return append(timeValue(of[0]), timeValue(of[1])...) }
+		resident := uint64(len(p.mapped)) * pageSize
+		room := le.Uint32(body[36:]) // how many words the caller has room for
+		switch {
+		case flavor == 3 && room >= 4:
+			return counted(times(running))
+		case flavor == 18 && room >= 10:
+			return counted(slices.Concat(le32(0), le64(mapped, resident), times(ended), le32(timeshare)))
+		case flavor == 20 && room >= 12:
+			return counted(slices.Concat(le64(mapped, resident, p.used().most), times(ended), le32(timeshare, 0)))
+		}
+		return migCode(kernInvalidArg)
+	case 0, 8, 9, 14, 24: // no flavours of a Mac's, as measured, and nor is any from 36 on
+		return migCode(kernInvalidArg)
 	}
+	if flavor >= 36 {
+		return migCode(kernInvalidArg)
+	}
+	p.unimplemented(fmt.Sprintf("task_info flavor %d", flavor), nil)
 	return migCode(kernInvalidArg)
+}
+
+// timeValue is a time_value_t: seconds and microseconds.
+func timeValue(d time.Duration) []byte {
+	return le32(uint32(d/time.Second), uint32(d%time.Second/time.Microsecond))
 }

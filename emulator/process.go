@@ -313,8 +313,9 @@ type Process struct {
 	entropy      int
 	stdout       strings.Builder
 	stderr       strings.Builder
-	usage        usage // what the process has used of the machine (see usage.go)
-	childrenUsed used  // what the children it has waited for used, and theirs
+	usage        usage            // what the process has used of the machine (see usage.go)
+	charged      [2]time.Duration // how much of that, as the user and in the kernel, has been counted as a thread's (see charge)
+	childrenUsed used             // what the children it has waited for used, and theirs
 
 	// Of a process another started (see spawn.go): which, and whether that one has been told
 	// how it ended. ppid is 1, launchd, for a guest of the run's own. stdio is the process whose

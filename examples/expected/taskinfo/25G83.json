@@ -1,0 +1,7 @@
+{
+  "build": "25G83",
+  "cache_uuid": "F2E86C53-6052-388B-BA71-5A0C9B569413",
+  "exit_code": 0,
+  "output": "the basic record: 0, 12 words; memory mapped more than touched 1, touched some 1 in whole pages 1, at the most no less 1 and what getrusage says 1; a timesharing task 1, suspended 0\nthe time of threads that have ended, with none ended: 0; of those that run: what getrusage said just before or more 1\nafter work on this thread: of those that run 30 ms more or so 1, of those ended still 0\nafter a second thread worked and ended: of those ended 30 ms or more 1; of those that run less than all the process used 1\nafter touching 32 MB: that much more touched 1, and no less mapped 1\nthe older record, as ps asks: 0, 10 words, the same memory mapped 1\nits priority: 0, 1 word, 31; made nicer by 5: 26\nwith room for a word less than the basic record: 4; a flavour there is not: 4\n",
+  "version": "26.6.2"
+}
