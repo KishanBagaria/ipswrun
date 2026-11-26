@@ -34,15 +34,13 @@ const (
 	sendTooSmall       = 0x10000008
 	rcvTimedOut        = 0x10004003
 	bootstrapPort      = 0x707
-	hostPort           = 0x303
-	taskPort           = 0x203
 )
 
 var machHandlers map[string]handler
 
 func init() {
 	machHandlers = map[string]handler{
-		"task_self": {0, constant(taskPort)}, "thread_self": {0, machThreadSelf}, "host_self": {0, constant(hostPort)},
+		"task_self": {0, machTaskSelf}, "thread_self": {0, machThreadSelf}, "host_self": {0, machHostSelf},
 		"reply_port": {0, machNewReceive}, "thread_get_special_reply_port": {0, machSpecialReplyPort},
 		"vm_allocate": {4, machVMAllocate}, "vm_map": {6, machVMMap}, "vm_deallocate": {3, machVMDeallocate},
 		"vm_protect": {5, machVMProtect}, "vm_purgable_control": {4, constant(0)},
@@ -128,20 +126,16 @@ func machVMProtect(p *Process, a []uint64) int64 {
 }
 
 // machPortType is mach_port_type(task, name, &type): what rights a name is, as a Mac's kernel
-// says them (examples/taskport.c). The task's own port, the host's, the caller's thread's and
-// the bootstrap port are rights to send; a name that was never given
-// out is no name; and one that is a right of a kind not kept here stops the run.
+// says them (examples/taskport.c). The bootstrap port is a right to send; a name that is
+// nothing is no name; and a semaphore's, which is no port here, stops the run.
 func machPortType(p *Process, a []uint64) int64 {
 	name := uint32(a[1])
 	is := uint32(portSend)
-	switch r := p.names[name]; {
+	switch r := p.held(name, "mach_port_type"); {
 	case r != nil:
 		is = r.kind()
-	case name == taskPort, name == hostPort, name == bootstrapPort, name == p.current.port:
-	case name == 0 || name > p.nextPort:
-		return kernInvalidName
+	case name == bootstrapPort:
 	default:
-		p.unimplemented("mach_port_type of a name that is no port's here (a thread's, a semaphore's, or one the process had)", a)
 		return kernInvalidName
 	}
 	p.write(a[2], le32(is))
@@ -177,13 +171,11 @@ func machGenerateActivityID(p *Process, a []uint64) int64 {
 	return 0
 }
 
-func machThreadSelf(p *Process, a []uint64) int64 { return int64(p.current.port) }
-
 // machPidForTask is pid_for_task(task, &pid): of the process's own task, by its port or by the
 // one it may be read by. Of anything else it fails, and the pid is -1, as measured.
 func machPidForTask(p *Process, a []uint64) int64 {
 	name := uint32(a[0])
-	if r := p.names[name]; name != taskPort && (r == nil || p.taskRead == nil || r.port != p.taskRead) {
+	if r := p.names[name]; !p.isTask(name) && (r == nil || p.taskRead == nil || r.port != p.taskRead) {
 		p.write(a[1], le32(0xFFFFFFFF))
 		return kernFailure
 	}
@@ -269,7 +261,7 @@ func (p *Process) send(m message) int64 {
 	if !m.inline {
 		m.bits, m.remote, m.local, m.id = le.Uint32(body), le.Uint32(body[8:]), le.Uint32(body[12:]), le.Uint32(body[20:])
 	}
-	q := p.destination(m.remote)
+	q := p.destination(m.remote, m.bits&0x1F)
 	if q != nil && q.object != nil {
 		// A port of the kernel's: it answers at once, and a request it does not know is one
 		// nothing implements.
@@ -324,24 +316,17 @@ func (p *Process) send(m message) int64 {
 	if m.remote == bootstrapPort && p.m.launchd(p, m, body) {
 		return 0
 	}
-	if m.remote == 0 {
-		// To no port at all, as a program sends when what it looked up was not there: a Mac's
-		// kernel refuses it the same way, whatever the message is.
-		p.note("  mach_msg id %d to no port", m.id)
+	if m.remote != bootstrapPort && !p.isSemaphore(m.remote) {
+		// To a name that is no right to send: none at all, as a program sends when what it
+		// looked up was not there, one never given, or one whose port is gone. A Mac's kernel
+		// refuses each the same way, whatever the message is.
+		p.note("  mach_msg id %d to %#x, which is no port", m.id, m.remote)
 		return sendInvalidDest
 	}
-	routine := migRoutines[m.id]
-	unhandled := ""
-	if routine == nil {
-		unhandled = " (unhandled)"
-	}
-	p.note("  mach_msg id %d to port %#x send %d rcv %d%s", m.id, m.remote, m.sendSize, m.rcvSize, unhandled)
-	if routine == nil {
-		p.unknown[unknownMIG{m.id, m.remote, p.uc.reg(regLR)}]++ // symbolized only if the run fails
-		return sendInvalidDest
-	}
-	p.answer(m, m.id+100, routine(p, body), 0)
-	return 0
+	// To launchd, which had no answer, or to a semaphore, which is no port here.
+	p.note("  mach_msg id %d to port %#x send %d rcv %d (unhandled)", m.id, m.remote, m.sendSize, m.rcvSize)
+	p.unknown[unknownMIG{m.id, m.remote, p.uc.reg(regLR)}]++ // symbolized only if the run fails
+	return sendInvalidDest
 }
 
 // ---- MIG routines ----
@@ -362,13 +347,13 @@ func migCode(code uint32) migReply {
 // migData is a successful reply with out-parameters.
 func migData(out []byte) migReply { return migReply{body: append(migCode(0).body, out...)} }
 
-// migPort is a reply moving one port right.
-// machVoucher (host_create_mach_voucher) gives out a name for a voucher, which is nothing more.
+// machVoucher (host_create_mach_voucher) gives out a right to a voucher, which answers nothing.
 func machVoucher(p *Process, a []uint64) int64 {
-	p.write(a[3], le32(p.newPort()))
+	p.write(a[3], le32(p.kernelRight(kernelPort{kind: kindVoucher})))
 	return 0
 }
 
+// migPort is a reply moving one port right.
 func migPort(name uint32) migReply {
 	return migReply{body: append(le32(1), portDescriptor(name, moveSend)...), complex: true}
 }
@@ -411,7 +396,6 @@ var migRoutines map[uint32]func(p *Process, body []byte) migReply
 
 func init() {
 	ok := func(*Process, []byte) migReply { return migCode(0) }
-	freshPort := func(p *Process, _ []byte) migReply { return migPort(p.newPort()) }
 	migRoutines = map[uint32]func(*Process, []byte) migReply{
 		200:  migHostInfo,
 		202:  func(*Process, []byte) migReply { return migData(le64(pageSize)) }, // host_page_size
@@ -419,10 +403,11 @@ func init() {
 		216:  migHostStatistics,
 		217:  ok, // host_request_notification: of the calendar changing, which it does not
 		219:  migHostStatistics64,
-		206:  freshPort, // host_get_clock_service
-		412:  migHostGetSpecialPort,
+		206:  func(p *Process, _ []byte) migReply { return migPort(p.kernelSelf(&p.m.clocks, kindClock)) }, // host_get_clock_service: the one clock there is, whichever is asked for
 		1000: migClockGetTime,
 		3405: migTaskInfo,
+		3205: migPortDestroy,
+		3207: migPortGetRefs,
 		3218: migPortSetAttributes,
 		3228: migPortGetContext,
 		3240: func(*Process, []byte) migReply { return migData(le64(0)) }, // mach_port_is_connection_for_service: it is, under no sandbox filter
@@ -447,17 +432,6 @@ func migTaskGetSpecialPort(p *Process, body []byte) migReply {
 		return migPort(bootstrapPort)
 	}
 	return migPort(0)
-}
-
-// migHostGetSpecialPort gives the host port itself, which libdispatch asks for by this route
-// before it watches Mach ports. The privileged ones are not for a user process.
-func migHostGetSpecialPort(p *Process, body []byte) migReply {
-	which := int32(le.Uint32(body[36:]))
-	p.note("  host_get_special_port %d", which)
-	if which == 1 { // HOST_PORT
-		return migPort(hostPort)
-	}
-	return migCode(kernInvalidArg)
 }
 
 // How mach_make_memory_entry is asked for memory that is not the caller's own as it stands.

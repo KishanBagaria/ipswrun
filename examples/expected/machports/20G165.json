@@ -1,0 +1,7 @@
+{
+  "build": "20G165",
+  "cache_uuid": "5F50D953-A228-3416-A982-9FDE102DB036",
+  "exit_code": 0,
+  "output": "the task's port: a right of kind 0x10000; asked for twice more it is the same name 1, held 2 more times; given up twice, 0 more\ncounted as a right to receive: 0; to send once: 0; as a dead name: 0\nheld more by mach_port_mod_refs: 0, 3 more times; less by as many: 0, 0 more\nthe host's port: a right of kind 0x10000, not the task's 1; asked for again it is the same name 1, held 1 more times; given up once, 0 more\nasked for as the host's special port: 4, the same name 0, held 0 more times\nwhat the host is asked of the host: 0; of the task: 4\nwhat the task holds asked of the task: 0; of the host: 4\na clock from the host: 0, a right of kind 0x10000; again: 0, the same name 1, held 1 more times\nthe time asked of the clock: 0; of the task: 4; of the host: 4; what the host is asked of the clock: 4\na clock asked of the task: 4\nthe thread's port: a right of kind 0x10000; asked for again it is the same name 1, held 1 more times; what the host is asked of it: 4\nwhat the host is asked of a name never given: 0x10000003; of none: 0x10000003; of a dead one: 0x10000003; of a port that is gone: 0x10000003; of one the process can only receive from: 0x10000003\nhow often a name never given is held: -15; one that is gone: -15; a port the process can only receive from, to send: 0, to receive: 1\nwith a right to send made for it: to send 1, to receive 1, of kind 0x30000\n",
+  "version": "11.6"
+}

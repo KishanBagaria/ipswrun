@@ -51,6 +51,7 @@ type thread struct {
 	// What it has had of the CPU, as the user and in the kernel: its part of the process's usage.
 	user, system time.Duration
 	port         uint32 // what mach_thread_self names it
+	self         *port  // what that names: the thread, as the kernel answers for it
 	ctx          uintptr
 	pc           uint64
 	tsd          uint64
@@ -131,7 +132,8 @@ func (p *Process) newThread() *thread {
 		return nil
 	}
 	p.nextThread++
-	t := &thread{id: p.nextThread, port: p.newPort(), ctx: p.uc.newContext()}
+	t := &thread{id: p.nextThread, ctx: p.uc.newContext()}
+	t.port = p.kernelSelf(&t.self, kindThread)
 	p.threads = append(p.threads, t)
 	return t
 }
@@ -329,6 +331,7 @@ func (p *Process) adopt(t *thread, pthread uint64) {
 func (p *Process) end(t *thread) {
 	p.note("  thread %d ended", t.id)
 	t.state = dead
+	destroy(t.self) // the names there are for it are dead names now
 	p.uc.freeContext(t.ctx)
 	t.ctx = 0
 	if q := t.serving; q != nil && q.servicer == t {
@@ -670,6 +673,22 @@ func migSemaphoreCreate(p *Process, body []byte) migReply {
 	name := p.newPort()
 	p.semaphores[name] = int(count)
 	return migPort(name)
+}
+
+// isSemaphore is whether a name is a semaphore's, which is a name and a count and no port here.
+func (p *Process) isSemaphore(name uint32) bool {
+	count, ok := p.semaphores[name]
+	return ok && count != semaphoreGone
+}
+
+// held is the right a name is, for a call that asks of a name what it is. A semaphore's, which
+// is a right on a Mac and none here, stops the run.
+func (p *Process) held(name uint32, call string) *right {
+	r := p.names[name]
+	if r == nil && p.isSemaphore(name) {
+		p.unimplemented(call+" of a semaphore", nil)
+	}
+	return r
 }
 
 // semaphoreGone is the count of a semaphore that was destroyed: its name is no semaphore's.

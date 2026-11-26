@@ -202,17 +202,14 @@ func sysTaskReadForPID(p *Process, a []uint64) int64 {
 	pid := uint32(a[1])
 	p.write(a[2], le32(0)) // no port, whatever is answered
 	switch {
-	case uint32(a[0]) != taskPort:
+	case !p.isTask(uint32(a[0])):
 		return -eINVAL
 	case pid != launchdPID && pid != 0 && p.m.process(pid) == nil:
 		return -eSRCH
 	case pid == p.pid:
 		// A name of its own for its task, the same while the process has it. What only the
 		// task's own port may do (changing its memory) is not refused by this one here.
-		if p.taskRead == nil {
-			p.taskRead = &port{m: p.m, object: taskReader{p}}
-		}
-		p.write(a[2], le32(p.sendRight(p.taskRead)))
+		p.write(a[2], le32(p.kernelSelf(&p.taskRead, kindTask)))
 		return 0
 	case p.uid == 0:
 		p.unimplemented("task_read_for_pid by root", a)
@@ -220,18 +217,3 @@ func sysTaskReadForPID(p *Process, a []uint64) int64 {
 	}
 	return -ePERM
 }
-
-// taskReader is what the port a process's task may be read by stands for: the task, asked as it
-// is by its own port. A Mac refuses this port what changes the task (KERN_INVALID_ARGUMENT for
-// memory), which is not told apart here.
-type taskReader struct{ of *Process }
-
-func (t taskReader) request(p *Process, id uint32, body []byte) (migReply, bool) {
-	routine := migRoutines[id]
-	if routine == nil || p != t.of {
-		return migReply{}, false
-	}
-	return routine(p, body), true
-}
-
-func (t taskReader) released() { t.of.taskRead = nil }

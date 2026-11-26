@@ -752,7 +752,7 @@ func (p *Process) fork() *Process {
 		p.uc.regBytes(regV0+i, vector)
 		child.uc.setRegBytes(regV0+i, vector)
 	}
-	to.pc, to.tsd, to.pthread, to.port = from.pc, from.tsd, from.pthread, from.port
+	to.pc, to.tsd, to.pthread = from.pc, from.tsd, from.pthread // its port is its own: its parent's name for the thread is nothing to it
 	to.sigmask, to.altstack, to.onstack, to.cwd = from.sigmask, from.altstack, from.onstack, from.cwd
 	child.uc.setReg(regPC, to.pc)
 	child.setX(0, uint64(p.pid))

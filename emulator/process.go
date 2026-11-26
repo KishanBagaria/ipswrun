@@ -328,6 +328,7 @@ type Process struct {
 	// The port its own task may be read by (task_read_for_pid of itself), while it has a right
 	// to it.
 	taskRead *port
+	task     *port // the task's own port, while the process has a right to it (see kernelports.go)
 	// What it was started with, as the kernel keeps it for whoever asks (kern.procargs2).
 	argv, env []string
 	ppid      uint32
@@ -463,6 +464,7 @@ func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Pro
 		return nil, err
 	}
 	p.current = &thread{port: mainThreadPort, ctx: p.uc.newContext()}
+	p.nameKernel(&p.current.self, kindThread, mainThreadPort)
 	p.threads = []*thread{p.current}
 	created := p
 	defer func() {

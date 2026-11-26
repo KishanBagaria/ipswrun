@@ -77,7 +77,7 @@ func TestIOKit(t *testing.T) {
 			d = xpcPadded(append(d, class...))
 			return append(append(bytes.Clone(ndr), le32(uint32(len(d)))...), d...)
 		}
-		main := le.Uint32(ask(hostPort, 205, 0, nil)[4:])
+		main := le.Uint32(ask(uint32(machHostSelf(p, nil)), 205, 0, nil)[4:])
 		if version := ask(main, 2877, 0, nil); le.Uint64(version[12:]) != ioServerVersion {
 			t.Errorf("io_server_version: % x", version)
 		}

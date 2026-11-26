@@ -73,7 +73,7 @@ func TestRegistry(t *testing.T) {
 		text := ioText
 		with := func(parts ...[]byte) []byte { return bytes.Join(append([][]byte{ndr}, parts...), nil) }
 		port := func(answer []byte) uint32 { return le.Uint32(answer[4:]) }
-		main := port(ask(hostPort, 205, nil))
+		main := port(ask(uint32(machHostSelf(p, nil)), 205, nil))
 		entry := func(path string) uint32 { return port(ask(main, 2809, with(text(path)))) }
 		name := func(of uint32) string {
 			answer := ask(of, 2810, nil)

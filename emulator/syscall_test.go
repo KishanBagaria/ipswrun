@@ -135,8 +135,7 @@ func TestConstantHandlers(t *testing.T) {
 			t.Errorf("%s() = %d, want %d", name, got, want)
 		}
 	}
-	for name, want := range map[string]int64{"task_self": 0x203, "host_self": 0x303,
-		"task_dyld_process_info_notify_get": kernFailure} {
+	for name, want := range map[string]int64{"task_dyld_process_info_notify_get": kernFailure} {
 		if got := machHandlers[name].fn(nil, nil); got != want {
 			t.Errorf("mach %s() = %#x, want %#x", name, got, want)
 		}
@@ -253,7 +252,7 @@ func TestDispatch(t *testing.T) {
 		}
 
 		// Mach traps are the negative numbers, and return a kern_return_t or a value: no carry.
-		if x0, carry, stopped := p.trap(-28); x0 != 0x203 || carry || stopped != "" {
+		if x0, carry, stopped := p.trap(-28); !p.isTask(uint32(x0)) || carry || stopped != "" {
 			t.Errorf("task_self: x0 %#x carry %v stopped %q", x0, carry, stopped)
 		}
 		first, _, _ := p.trap(-26)

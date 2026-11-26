@@ -61,7 +61,7 @@ func TestPorts(t *testing.T) {
 		if r := receive(a, machRcvTimeout); r != rcvTimedOut {
 			t.Errorf("receive from an empty port, not waiting: %#x", r)
 		}
-		if r := send(a, b, copySend|makeSendOnce<<8, 7, "hello123"); r != 0 {
+		if r := send(a, b, makeSend|makeSendOnce<<8, 7, "hello123"); r != 0 {
 			t.Errorf("send: %#x", r)
 		}
 		if r := receive(a, machRcvTimeout); r != 0 {
@@ -100,7 +100,7 @@ func TestPorts(t *testing.T) {
 		}
 
 		// A message too large for the room given stays, and says how large it is.
-		send(a, 0, copySend, 9, "0123456789ab")
+		send(a, 0, makeSend, 9, "0123456789ab")
 		p.write(in, make([]byte, 256))
 		if x0, _, _ := p.trap(-31, in, machRcvMsg|machRcvLarge|machRcvTimeout, 0, 30, uint64(a), 0); x0 != rcvTooLarge || p.u32(in+4) != 36 {
 			t.Errorf("receive into too little room: %#x, size %d", x0, p.u32(in+4))

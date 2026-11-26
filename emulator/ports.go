@@ -134,6 +134,7 @@ const (
 	rightReceive  = 1
 	rightSendOnce = 2
 	rightPortSet  = 3
+	rightDeadName = 4
 
 	notifyPortDestroyed = 69
 	notifyNoSenders     = 70
@@ -189,10 +190,10 @@ func (p *Process) readable(q *port) *port {
 
 // destination is the port a message to name goes to, if the process has a right to send there.
 // A right to send once is used up.
-func (p *Process) destination(name uint32) *port {
+func (p *Process) destination(name, how uint32) *port {
 	r := p.names[name]
 	switch {
-	case r == nil:
+	case r == nil, r.sends == 0 && (how == copySend || how == moveSend): // or no right to send by, as measured of a port it can only receive from
 		return nil
 	case r.once:
 		delete(p.names, name)
@@ -420,8 +421,9 @@ func machPortAllocate(p *Process, a []uint64) int64 {
 	case rightPortSet:
 		q := p.newReceive()
 		q.set, name = true, q.name
-	default: // a dead name: only a number
+	default: // a dead name: a right to a port that is gone, held once
 		name = p.newPort()
+		p.names[name] = &right{port: &port{m: p.m, dead: true}, sends: 1}
 	}
 	p.write(a[2], le32(name))
 	return 0
@@ -489,16 +491,9 @@ func machPortUnguard(p *Process, a []uint64) int64 {
 func machPortGetAttributes(p *Process, a []uint64) int64 {
 	const limits, status, statusCount = 1, 2, 10
 	name := uint32(a[1])
-	r := p.names[name]
+	r := p.held(name, "mach_port_get_attributes")
 	switch {
-	case r == nil && (name == taskPort || name == hostPort):
-		return kernInvalidRight
-	case r == nil && name > p.nextPort:
-		return kernInvalidName
 	case r == nil:
-		// A name the process had, which is nothing now, or a right of another kind that the
-		// kernel keeps (a thread, a semaphore): which of them is not kept here.
-		p.unimplemented("mach_port_get_attributes of a name that is no port's", a)
 		return kernInvalidName
 	case !r.receive || r.port.set:
 		return kernInvalidRight
@@ -583,6 +578,27 @@ func machPortDestruct(p *Process, a []uint64) int64 {
 	}
 	destroy(q)
 	return 0
+}
+
+// migPortDestroy is mach_port_destroy(task, name): every right the process has under a name is
+// given up, and the name is nothing after (examples/machports.c). Of a name that is nothing
+// already, and of a port that is guarded, which a Mac's kernel ends the process for, it stops.
+func migPortDestroy(p *Process, body []byte) migReply {
+	name := le.Uint32(body[32:])
+	r := p.names[name]
+	if r == nil || r.port.guarded {
+		p.unimplemented("mach_port_destroy of a name that is nothing, or of a guarded port", nil)
+		return migCode(kernInvalidName)
+	}
+	if !p.dropOnce(name) {
+		for r.sends > 0 {
+			p.releaseSend(name)
+		}
+		if r.receive {
+			destroy(r.port)
+		}
+	}
+	return migCode(0)
 }
 
 // machPortInsertRight is how the holder of a receive right makes itself a send right.
