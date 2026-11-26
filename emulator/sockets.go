@@ -47,6 +47,17 @@ type socket struct {
 	// more than is there already, since the other said so or has gone.
 	cantSend, cantReceive bool
 	second                bool // of the two, the one made second
+	// least is the room there has to be before part of what is sent is taken and before the
+	// socket is said to be one that can be written (SO_SNDLOWAT), where it was set.
+	least int
+}
+
+// sendLeast is that room: what was set, or what a socket has at first.
+func (s *socket) sendLeast() int {
+	if s.least != 0 {
+		return s.least
+	}
+	return socketLeast
 }
 
 // space is how much can be sent from a socket before the other has received any.
@@ -178,7 +189,7 @@ func (p *Process) trySend(op *pipeOp) (int64, bool) {
 	}
 	for len(op.data) > 0 {
 		space := s.space()
-		if space < len(op.data) && space < socketLeast {
+		if space < len(op.data) && space < s.sendLeast() {
 			return 0, false
 		}
 		n := min(space, len(op.data))
@@ -196,7 +207,7 @@ func (p *Process) trySend(op *pipeOp) (int64, bool) {
 // it: also when it never will be again, which a receive or a send says at once.
 func (s *socket) ready(sending bool) bool {
 	if sending {
-		return s.cantSend || s.space() >= socketLeast
+		return s.cantSend || s.space() >= s.sendLeast()
 	}
 	return len(s.data) > 0 || s.cantReceive
 }
@@ -338,7 +349,7 @@ func sysGetsockopt(p *Process, a []uint64) int64 {
 	case a[2] == optionSendSize, a[2] == optionReceiveSize:
 		value = socketSize
 	case a[2] == optionSendLeast:
-		value = socketLeast
+		value = uint32(f.sock.sendLeast())
 	case a[2] == optionReceiveLeast:
 		value = 1
 	case a[2] == optionError: // nothing here goes wrong with a pair
@@ -369,6 +380,16 @@ func sysSetsockopt(p *Process, a []uint64) int64 {
 		return errno
 	case f.sock.cantSend && f.sock.cantReceive:
 		return -eINVAL
+	case a[1] == levelSocket && a[2] == optionSendLeast:
+		// The least room it wants before it is written to, which rsync sets: as measured, no
+		// more than a socket holds, and at least one byte (EINVAL, as for a number of another
+		// size). A thread that waits to send is looked at again, as it may now have room enough.
+		if a[4] != 4 || int32(p.u32(a[3])) < 1 {
+			return -eINVAL
+		}
+		f.sock.least = min(int(p.u32(a[3])), socketSize)
+		p.socketChanged(f.sock)
+		return 0
 	case a[1] != levelSocket || a[2] != optionNoSignal || a[4] != 4:
 		p.unimplemented("setsockopt of an option that was not measured", a)
 		return -eNOSYS

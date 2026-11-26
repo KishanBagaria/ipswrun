@@ -557,7 +557,7 @@ func (f *fd) filtered(filter int16, asked kevent) (data int64, ended bool, least
 	case f.kind == socketFD && filter == filterRead:
 		return int64(len(f.sock.data)), f.sock.cantReceive, least, true
 	case f.kind == socketFD:
-		return int64(f.sock.space()), f.sock.cantSend, socketLeast, true
+		return int64(f.sock.space()), f.sock.cantSend, int64(f.sock.sendLeast()), true
 	case filter == filterRead && !f.writing():
 		return int64(len(f.pipe.data)), f.pipe.writers == 0, least, true
 	case filter == filterWrite && f.writing():
@@ -645,6 +645,12 @@ func sysPoll(p *Process, a []uint64) int64 {
 	}
 	count, known := p.pollAll(w, true)
 	timeout := int32(a[2])
+	if count == 0 && timeout == 0 {
+		// Nothing is ready and it will not wait: a program that asks again and again until
+		// something is (rsync, of what its other half sends) has to let the others run, as no
+		// thread is taken off the CPU here and a Mac's would have been by then.
+		p.yield = p.yield || p.contended()
+	}
 	if count > 0 || timeout == 0 {
 		return count
 	}

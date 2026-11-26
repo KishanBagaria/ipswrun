@@ -1,0 +1,7 @@
+{
+  "build": "19A346",
+  "cache_uuid": "6F028D68-85D6-300F-929A-AA58CA8327AA",
+  "exit_code": 0,
+  "output": "at first: 2048\nset to 32768: 0, and it is then 8192; to 1: 0, then 1; to 5000: 0, then 5000; the other's meanwhile 2048\nto none: -1 (Invalid argument); to less than none: -1 (Invalid argument); with half the room for the number: -1 (Invalid argument), then 5000; of a pipe: -1 (Socket operation on non-socket)\n100 bytes sent: 100; the sender's set to 32768: 0, then 8192; the receiver's set to 32768: 0, then 8192\nwanting all its room, with 100 bytes waiting: it can be written 0; 10 bytes more sent: 10; 9000 more: -1 (Resource temporarily unavailable)\nall received: 110; it can be written 1\nwanting 4000: 4000 bytes sent: 4000, it can be written 1; 500 more: 500, it can be written 0; 4000 more: -1 (Resource temporarily unavailable)\nwanting 1: it can be written 1; 4000 more: 3692\n",
+  "version": "15.0"
+}

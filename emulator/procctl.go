@@ -206,3 +206,16 @@ func sysMemorystatusControl(p *Process, a []uint64) int64 {
 	}
 	return -ePERM
 }
+
+// sysIdentitysvc is identitysvc(opcode, message), by which opendirectoryd makes itself the one
+// the kernel asks who a user or a group is, and takes the kernel's questions. The kernel looks
+// first for the entitlement for it: a program without is refused whatever it asks (EPERM), as
+// the source has it and as measured of a user on macOS 27.2.1, opcode by opcode. What a root's
+// program that has the entitlement is told was not measured, and stops the run.
+func sysIdentitysvc(p *Process, a []uint64) int64 {
+	if !strings.Contains(p.entitlements, "com.apple.private.identitysvc") {
+		return -ePERM
+	}
+	p.unimplemented("identitysvc of a program entitled to it", a)
+	return -eNOSYS
+}
