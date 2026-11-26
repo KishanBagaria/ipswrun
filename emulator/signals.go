@@ -218,9 +218,14 @@ func sysKill(p *Process, a []uint64) int64 {
 	if sig >= numSignals {
 		return -eINVAL
 	}
-	if pid <= 0 {
-		p.unimplemented("kill of a process group, or of every process", a)
+	switch {
+	case pid == -1:
+		p.unimplemented("kill of every process", a)
 		return -eSRCH
+	case pid == 0:
+		return p.killGroup(p.group(), sig)
+	case pid < 0:
+		return p.killGroup(uint32(-pid), sig)
 	}
 	target := p.m.process(uint32(pid))
 	switch {
@@ -233,18 +238,54 @@ func sysKill(p *Process, a []uint64) int64 {
 	default:
 		// One that has ended and that its parent has not waited for is still there to be sent
 		// a signal, which does nothing to it.
-		if ended := p.m.ended(uint32(pid)); ended != nil && ended.parent != nil && !ended.reaped {
+		if ended := p.m.ended(uint32(pid)); ended != nil && ended.unwaited() {
 			return 0
 		}
 		return -eSRCH
 	}
-	if p.uid != 0 && target.uid != p.uid {
+	if !p.signals(target, sig) {
 		return -ePERM
 	}
-	if sig != 0 {
-		target.sendSignal(pendingSignal{sig: sig, status: int32(sig), pid: p.pid, uid: p.uid})
-	}
 	return 0
+}
+
+// unwaited is whether a process has ended and its parent is still to wait for it.
+func (p *Process) unwaited() bool { return p.exited && p.parent != nil && !p.reaped }
+
+// signals sends a process a signal, or with signal 0 none, and says whether it may: its own
+// user's process, or any if it is root's.
+func (p *Process) signals(q *Process, sig uint64) bool {
+	if p.uid != 0 && q.uid != p.uid {
+		return false
+	}
+	if sig != 0 {
+		q.sendSignal(pendingSignal{sig: sig, status: int32(sig), pid: p.pid, uid: p.uid})
+	}
+	return true
+}
+
+// killGroup sends a signal to each process of a group, the sender too if it is in it, or with
+// signal 0 only asks whether it could. A group no process is in is ESRCH. One whose processes
+// are all another user's, or have ended and are only still to be waited for, is EPERM: they are
+// there, and none can be sent a signal.
+func (p *Process) killGroup(group uint32, sig uint64) int64 {
+	found, sent := false, false
+	for _, q := range p.m.procs {
+		if q.group() != group || q.exited && !q.unwaited() {
+			continue
+		}
+		found = true
+		if !q.exited && p.signals(q, sig) {
+			sent = true
+		}
+	}
+	switch {
+	case sent:
+		return 0
+	case found:
+		return -ePERM
+	}
+	return -eSRCH
 }
 
 // sysPthreadKill is __pthread_kill(thread, signal): to a thread of the process itself.

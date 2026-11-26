@@ -1,0 +1,7 @@
+{
+  "build": "24A335",
+  "cache_uuid": "D997B0E9-E31B-35FE-B129-3171B279B087",
+  "exit_code": 0,
+  "output": "started as the first of a group: 1\nits own group, by number: 0; as no pid: 0; a group there is not: -1 (No such process); a signal there is not: -1 (Invalid argument)\na child in its parent's group: its group is the parent's 1; as a group of its own: -1 (No such process)\na child in a group of its own: its group is its own 1; as a group: 0\nSIGTERM to the child's group: 0; the child ended by signal 15; its group then: -1 (No such process)\na child that has ended and is not yet waited for, as a group: -1 (Operation not permitted); it ended by signal 9\nSIGUSR1 to its own group: 0; the process is told when it lets the signal in: 0 before, 1 after; the copy of it exited with 7; the child started in the group ended by signal 30\n",
+  "version": "15.0"
+}

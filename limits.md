@@ -160,7 +160,7 @@ What was missing, each measured natively and now there ([examples/everyday.c](ex
 
 What still differs, of the 32:
 
-- **Six stop as unimplemented:** `zsh` starting any program (`kill` of a process group, which is the next thing to do), `ditto` (`clonefileat`), `ex` (`getsid`), `say` (`kqueue_workloop_ctl`), and the two scripts in `perl`, which stop for want of `libperl` (the closed system volume).
+- **Six stopped as unimplemented:** `zsh` starting any program (`kill` of a process group, [there now](#signals): six `zsh` command lines that start programs, wait for them and end them then printed the same), `ditto` (`clonefileat`), `ex` (`getsid`), `say` (`kqueue_workloop_ctl`), and the two scripts in `perl`, which stop for want of `libperl` (the closed system volume).
 - **Four are the missing data volume:** a here-document is a file in `/tmp`, which is not there without `--data` (with it they print the same).
 - **Six are the closed system volume** or what is not on it: `strings` (the developer directory), `units`, `apropos`, `whatis`, `swift`, `iconv` to UTF-16.
 - **Five need a daemon that does not run:** `defaults` (cfprefsd), `pgrep` (sysmond), `mdfind`, `osascript`, and `nohup`, which cannot leave its console (a message to launchd that is not answered).
@@ -293,7 +293,8 @@ What is not as a Mac has it:
 - **`setitimer` and `alarm`** send SIGALRM when their time is up, by the machine's clock, once or at every interval, and `getitimer` reads what is left. The timers of a process's own time on the CPU are read as not running, and starting one stops as unimplemented.
 - **A page that may no longer be read is not read.** After `mprotect` took reading away from a page that had been read, it went on being read, as the engine remembered that it could be.
 - **What the context says of the machine beyond its registers** is what was measured on one Mac at a system call: the exception the thread last took is that call, and the state is said to hold no signed pointers, as dyld is told too. One bit a Mac15,9 has set in the saved flags (0x1000) is left out, as it is the chip's.
-- **What stops the run as unimplemented:** the signals that stop a process, `kill` of a process group or of every process, a signal to launchd from root, and a `sigreturn` with a context the kernel did not make. `sigwait` waits for good. No thread is ever cancelled.
+- **A signal to a group** (`kill` with no pid, for the sender's own, or with a group's number below zero) is one to each process in it, the sender too, and with signal 0 only asks whether there is anyone to send one to, as `zsh` asks of every program it starts. A group no process is in is ESRCH; one whose only processes have ended and are still to be waited for, or are another user's, is EPERM, as a Mac's kernel was measured to say of the first. A process is in its parent's group unless `posix_spawn` starts it into its own; `setpgid` is not there. [examples/groups.c](examples/groups.c) prints the same natively. Not measured, and so left as it was: a process that has ended and whose parent has ended too is still there to `kill`, here, where on a Mac launchd would have waited for it.
+- **What stops the run as unimplemented:** the signals that stop a process, `kill` of every process (-1), a signal to launchd from root, and a `sigreturn` with a context the kernel did not make. `sigwait` waits for good. No thread is ever cancelled.
 
 ## A kqueue of the guest's own
 
