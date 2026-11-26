@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io/fs"
 	"os"
 	pathpkg "path"
 	"path/filepath"
@@ -64,6 +65,7 @@ type fd struct {
 	cache   dyldcache.File
 	readDir func() ([]string, error) // of a system-volume directory
 	path    string                   // canonical; stdio descriptors have none
+	inode   *Inode                   // of a file or directory of the system volume: its owner and permissions there
 	pos     int64
 	names   []string // of a directory being listed, read on the first getdirentries
 	// shared, of a descriptor from shm_open, is the memory it names; data is then what it holds.
@@ -130,11 +132,16 @@ type target struct {
 	cache   dyldcache.File
 	readDir func() ([]string, error)
 	link    string // of a symbolic link on the system volume to the directory it is (see SystemFile.Link)
+	// Of what the system volume has: its owner and permissions there, and those of the link.
+	inode, linkInode *Inode
+	// leads, of a symbolic link under the home or a mount to a path that is not in the same host
+	// directory, is the guest path it leads to (see leadsOut).
+	leads string
 }
 
 // fd is the descriptor for a target that is not a host file.
 func (t target) fd() *fd {
-	return &fd{kind: t.kind, data: t.data, cache: t.cache, readDir: t.readDir, path: t.path}
+	return &fd{kind: t.kind, data: t.data, cache: t.cache, readDir: t.readDir, path: t.path, inode: t.inode}
 }
 
 // hostErrno is the negated errno of a failed host call.
@@ -159,6 +166,9 @@ type mounted struct {
 	template  func(rel string) (TemplateEntry, error)
 	populated map[string]bool
 	record    *os.File
+	// kept is who the template says owns what earlier runs filled in, by path, with the host's
+	// number for the file it was said of.
+	kept map[string]kept
 }
 
 func openMounts(mounts []Mount) ([]mounted, error) {
@@ -204,6 +214,46 @@ func closeMounts(mounts []mounted) {
 			m.record.Close()
 		}
 	}
+}
+
+// leadsOut finds, on the way to a path of a mount, the symbolic link that leads out of the
+// mount's host directory, if there is one: a link to a path from the root, as a new Mac's
+// /var/db/timezone/zoneinfo is to /usr/share/zoneinfo.default, or one that climbs out. The host
+// follows no such link, as the path is the guest's and not its own. It says the guest path the
+// whole leads to, and whether the link is the path's last part. A link that stays inside is the
+// host's to follow, and is written out here too only when another after it leads out.
+func (m mounted) leadsOut(rel string) (to string, last, ok bool) {
+	if _, err := m.root.Stat(rel); err == nil || errors.Is(err, fs.ErrNotExist) {
+		return "", false, false
+	}
+	parts := strings.Split(rel, "/")
+	for i := range parts {
+		at := pathpkg.Join(parts[:i+1]...)
+		fi, err := m.root.Lstat(at)
+		if err != nil {
+			return "", false, false
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		text, err := m.root.Readlink(at)
+		if err != nil {
+			return "", false, false
+		}
+		if !strings.HasPrefix(text, "/") {
+			text = pathpkg.Join(m.guest, pathpkg.Dir(at), text)
+		}
+		return pathpkg.Join(append([]string{text}, parts[i+1:]...)...), i == len(parts)-1, true
+	}
+	return "", false, false
+}
+
+// followed is what a path resolves to with a last link that leads out of its mount followed.
+func (p *Process) followed(t target, ok bool) (target, bool) {
+	for links := 0; ok && t.leads != "" && links < 16; links++ {
+		t, ok = p.resolve(t.leads)
+	}
+	return t, ok
 }
 
 func (m mounted) rel(path string) string {
@@ -348,10 +398,15 @@ func (p *Process) rootLink(path string) string {
 	if path == "" {
 		return ""
 	}
+	return rootLinks[p.absoluteLink(path)]
+}
+
+// absoluteLink is a guest path from the root, with no link in it followed.
+func (p *Process) absoluteLink(path string) string {
 	if !strings.HasPrefix(path, "/") {
 		path = p.workingDirectory() + "/" + path
 	}
-	return rootLinks[pathpkg.Clean(path)]
+	return pathpkg.Clean(path)
 }
 
 // absolute is the canonical form of a guest path, relative to the working directory or not.
@@ -362,12 +417,15 @@ func (p *Process) absolute(path string) string {
 	return canonical(path)
 }
 
-func (p *Process) lookup(path string) (target, bool) {
+func (p *Process) lookup(path string) (target, bool) { return p.lookupThrough(path, 0) }
+
+// lookupThrough is lookup, having followed so many links of the system volume that lead off it.
+func (p *Process) lookupThrough(path string, links int) (target, bool) {
 	switch {
 	case path == GuestExe && p.path == GuestExe: // a file of the host's
 		return target{kind: hostFD, host: p.exePath}, true
 	case path == p.path: // one of the build's
-		return target{kind: dataFD, data: p.exe}, true
+		return target{kind: dataFD, data: p.exe, inode: p.systemInode(path)}, true
 	case path == guestDyld:
 		return target{kind: dataFD, data: p.dyld}, true
 	case path == passwdFile:
@@ -381,32 +439,41 @@ func (p *Process) lookup(path string) (target, bool) {
 	for i, m := range p.mounts {
 		switch {
 		case under(path, m.guest):
-			p.m.populate(&p.mounts[i], m.rel(path))
-			return target{kind: hostFD, root: m.root, rel: m.rel(path), dataOn: m.dataOn}, true
+			rel := m.rel(path)
+			p.m.populate(&p.mounts[i], rel)
+			t := target{kind: hostFD, root: m.root, rel: rel, dataOn: m.dataOn}
+			if to, last, ok := m.leadsOut(rel); ok && links < 16 {
+				if !last {
+					return p.lookupThrough(canonical(to), links+1)
+				}
+				t.leads = to // the link itself is what is named: where it leads is for whoever follows it
+			}
+			return t, true
 		case under(m.guest, path): // on the way to it
-			return target{kind: dirFD}, true
+			return target{kind: dirFD, inode: p.systemInode(path)}, true
 		}
 	}
 	switch {
 	case path == "/dev/null" || path == "/dev/urandom" || path == "/dev/random":
 		return target{kind: hostFD, host: path}, true
 	case under(p.cacheDir, path):
-		return target{kind: dirFD}, true
+		return target{kind: dirFD, inode: p.systemInode(path)}, true
 	}
 	switch path {
 	case "/", devFDs, "/System/Volumes", dataMount, "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/private/etc", "/var", "/var/root", "/private/var/root", "/tmp", "/private/tmp", "/emu":
-		return target{kind: dirFD}, true
+		return target{kind: dirFD, inode: p.systemInode(path)}, true
 	}
-	if p.system != nil {
-		f, err := away(p.m.clock, func() (SystemFile, error) { return p.system(path) })
-		if err != nil {
-			stopf("%v", err)
-		}
-		if f.Dir {
-			return target{kind: dirFD, path: f.Real, readDir: f.ReadDir, link: f.Link}, true
-		}
-		if f.File != nil {
-			return target{kind: cacheFD, cache: f.File, link: f.Link}, true
+	switch f := p.systemFile(path); {
+	case f.Dir:
+		return target{kind: dirFD, path: f.Real, readDir: f.ReadDir, link: f.Link, inode: f.Inode, linkInode: f.LinkInode}, true
+	case f.File != nil:
+		return target{kind: cacheFD, cache: f.File, link: f.Link, inode: f.Inode, linkInode: f.LinkInode}, true
+	case f.Leads != "" && links < 16:
+		// A link of the system volume to what is not on it (/usr/share/zoneinfo is one into the
+		// data volume): what is there, by the guest's own paths.
+		if t, ok := p.lookupThrough(canonical(f.Leads), links+1); ok {
+			t.link, t.linkInode = f.Link, f.LinkInode
+			return t, true
 		}
 	}
 	if under(pathpkg.Dir(p.path), path) { // on the way to its own executable
@@ -414,6 +481,23 @@ func (p *Process) lookup(path string) (target, bool) {
 	}
 	return target{}, false
 }
+
+// systemFile is what the release's system volume has at a path, if a guest may read it there.
+func (p *Process) systemFile(path string) SystemFile {
+	if p.system == nil {
+		return SystemFile{}
+	}
+	f, err := away(p.m.clock, func() (SystemFile, error) { return p.system(path) })
+	if err != nil {
+		stopf("%v", err)
+	}
+	return f
+}
+
+// systemInode is the owner and permissions the system volume has for a path that is answered
+// here without it (the root, the directories every release has, a guest's own program), if it
+// has the path.
+func (p *Process) systemInode(path string) *Inode { return p.systemFile(path).Inode }
 
 // statBuf is a struct stat64 of a file the user owns.
 func statBuf(i fileInfo, owner user) []byte {
@@ -435,6 +519,7 @@ func statBuf(i fileInfo, owner user) []byte {
 		le.PutUint64(b[104:], align(uint64(i.size), volumeBlockSize)/512)
 	}
 	le.PutUint32(b[112:], volumeBlockSize)
+	le.PutUint32(b[116:], i.flags)
 	return b
 }
 
@@ -545,7 +630,11 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 		p.unimplemented("open of /dev/fd, to list a process's descriptors", []uint64{flags, mode})
 		return -eNOSYS
 	}
+	const noFollow, symlink = 0x100, 0x200000 // O_NOFOLLOW, O_SYMLINK
 	t, ok := p.resolve(path)
+	if flags&(noFollow|symlink) == 0 {
+		t, ok = p.followed(t, ok)
+	}
 	if !ok {
 		p.note("  ENOENT open %s", path)
 		return -eNOENT
@@ -1321,7 +1410,7 @@ func (p *Process) doReadlink(path string, buf, size uint64) int64 {
 		t, link = target{}, root
 	}
 	switch {
-	case t.root != nil:
+	case t.root != nil && link == "": // one a guest made, or the data volume's
 		var err error
 		if link, err = t.root.Readlink(t.rel); err != nil {
 			return hostErrno(err)

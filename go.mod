@@ -30,3 +30,5 @@ require (
 	github.com/vbauerster/mpb/v7 v7.5.3 // indirect
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
 )
+
+replace github.com/blacktop/go-apfs => ../go-apfs

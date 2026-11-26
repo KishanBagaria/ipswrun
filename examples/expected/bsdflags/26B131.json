@@ -1,0 +1,7 @@
+{
+  "build": "26B131",
+  "cache_uuid": "C208F2EB-29B0-3D9E-BA56-45FD90E37B16",
+  "exit_code": 0,
+  "output": "a new file's: 0, a new directory's: 0, a link's: 0\nhidden: 0, and it is then 0x8000, listed 0x8000; not to be dumped too: 0, then 0x8001; none: 0, then 0\nby its descriptor, opaque: 0, then 0x8; a directory hidden: 0, then 0x8000; a link itself: 0, then the link 0x8000 and its file 0x8\nthrough the link: 0, then the link 0x8000 and its file 0x1\nthe system's, archived: -1 (Operation not permitted); a user's that there is not (0x100): 0, then 0x100; of a file that is not there: -1 (No such file or directory); of a descriptor that is not open: -1 (Bad file descriptor)\nset as an attribute, hidden: 0, then 0x8000; the system's: -1 (Operation not permitted), then 0x8000; none: 0, then 0\nwith the Finder's own, of a directory: 0, then 0x8000\ntidied: 0 0 0\n",
+  "version": "27.2.1"
+}

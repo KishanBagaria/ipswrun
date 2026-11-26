@@ -412,6 +412,7 @@ type runOptions struct {
 	Mounts                 []emulator.Mount // the host side may contain {build} and {version}
 	Stream, Trace, Missing bool
 	OnDemand               []string
+	NoData                 bool
 	Timeout                float64
 }
 
@@ -460,6 +461,13 @@ func (o *options) runOne(r release, label string) (out outcome) {
 		defer os.RemoveAll(home)
 	}
 	data := perRelease.Replace(o.Data)
+	if data == "" && !o.NoData && r.OS != iOS {
+		// A Mac has a data volume: a new one for the run, as the release has it for a new Mac.
+		if data, err = tempDir("data-"); err != nil {
+			return failed(err)
+		}
+		defer os.RemoveAll(data)
+	}
 	mounts := slices.Clone(o.Mounts)
 	for i := range mounts {
 		mounts[i].Host = perRelease.Replace(mounts[i].Host)
@@ -865,7 +873,8 @@ several of these separated by commas. With an iPhone or iPad --device (iPhone11,
 releases of iOS for it.`)
 		flag.PrintDefaults()
 	}
-	data := flag.String("data", "", "host directory to be the machine's data volume, where a device keeps what changes (/Library, /private/var, /Users and the rest a macOS release names): what the release has for a new one, and then what the guests make of it, kept for the next run; {build} and {version} in it become the release's (default: none)")
+	data := flag.String("data", "", "host directory to be the machine's data volume, where a device keeps what changes (/Library, /private/var, /Users and the rest a macOS release names): what the release has for a new one, and then what the guests make of it, kept for the next run; {build} and {version} in it become the release's (default: a temporary one, new for each run of a macOS release; iOS has none yet)")
+	noData := flag.Bool("no-data", false, "give the machine no data volume: only the home and the mounts can be written, and what the release's template has for a new Mac is not there")
 	home := flag.String("home", "", "host directory the guest sees as its home, "+emulator.GuestHome+" ("+emulator.GuestHomeIOS+" on iOS); {build} and {version} in it become the release's (default: a temporary one)")
 	var env, system, mountValues, services, daemonValues, agentValues, onDemand list
 	flag.Var(&agentValues, "agent", "<service>[,<service>...]=<executable> [arguments]: another guest, started beside the first as the same user, that provides these Mach services to it; its executable may be a source file, as the first's may (repeatable)")
@@ -874,7 +883,8 @@ releases of iOS for it.`)
 	flag.Var(&services, "service", "name of a Mach service the guest provides, as a daemon does: it can check that name in, and look it up (repeatable)")
 	flag.Var(&mountValues, "mount", "<guest dir>=<host dir>: a host directory the guest sees, and may change, at that guest path (repeatable); {build} and {version} in the host directory become the release's")
 	flag.Var(&env, "env", "KEY=VALUE added to the environment of every guest, or KEY alone taken out of it (repeatable)")
-	flag.Var(&system, "system", "system-volume file, or directory ending in /, the guest may read (repeatable; default: feature flags, SystemVersion.plist, /usr/share/icu/ and libobjc-trampolines.dylib; giving any replaces the default)")
+	flag.Var(&system, "system", "system-volume file, or directory ending in /, the guest may read (repeatable; default: all of it; giving any closes the rest)")
+	closedSystem := flag.Bool("closed-system", false, "close the system volume but for what a program needs to start: feature flags, SystemVersion.plist, /usr/share/icu/, libobjc-trampolines.dylib, the sandbox profiles and the programs; --system adds to it")
 	device := flag.String("device", "Macmini9,1", "BuildManifest product used to pick disk images and the releases looked up; an iPhone or iPad (iPhone11,2) runs iOS")
 	cache := flag.String("cache", "", "directory that keeps what was downloaded between runs (default: the user cache directory)")
 	pruneCache := flag.Bool("prune-cache", false, "remove cached restore image downloads from --cache (skipping any a running ipswrun has open), then exit")
@@ -889,6 +899,13 @@ releases of iOS for it.`)
 	setup := flag.Bool("setup", false, "only fetch and verify libunicorn")
 	listReleases := flag.Bool("releases", false, "print the releases all stands for (version, build, URL): the first and last of each major version, and the one Apple currently offers")
 	flag.Parse()
+	if *noData && *data != "" {
+		fmt.Fprintln(os.Stderr, "ipswrun: --no-data and --data are one or the other")
+		os.Exit(2)
+	}
+	if *closedSystem {
+		system = append(slices.Clone(emulator.ClosedSystem), system...)
+	}
 	defaultCache := *cache == ""
 	if defaultCache {
 		*cache = defaultCacheDir()
@@ -1007,7 +1024,7 @@ releases of iOS for it.`)
 			return 0, err
 		}
 	}
-	o := &options{runOptions: runOptions{Unicorn: unicorn, Cache: *cache, Device: *device, Home: *home, Data: *data, Report: *reportPath, Guest: guest, Args: flag.Args()[2:],
+	o := &options{runOptions: runOptions{Unicorn: unicorn, Cache: *cache, Device: *device, Home: *home, Data: *data, NoData: *noData, Report: *reportPath, Guest: guest, Args: flag.Args()[2:],
 		Env: env, System: system, Mounts: mounts, Services: services, Daemons: daemons, Stream: *stream, Trace: *trace, Missing: *missing, OnDemand: onDemand, Timeout: *timeout},
 		bisect: *bisect, jobs: *jobs, showStatus: showStatus}
 	return o.runAll(releases)

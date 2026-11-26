@@ -1,6 +1,7 @@
 package emulator
 
 import (
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -40,7 +41,8 @@ const (
 	attrCmnOwnerID  = 0x8000
 	attrCmnGroupID  = 0x10000
 	attrCmnAccMask  = 0x20000
-	attrSetSupports = attrCmnModTime | attrCmnAccTime | attrCmnFndrInfo | attrCmnOwnerID | attrCmnGroupID | attrCmnAccMask
+	attrCmnFlags    = 0x40000
+	attrSetSupports = attrCmnModTime | attrCmnAccTime | attrCmnFndrInfo | attrCmnOwnerID | attrCmnGroupID | attrCmnAccMask | attrCmnFlags
 )
 
 // hostFile is a host file as the host knows it, whatever the guest calls it.
@@ -55,6 +57,9 @@ func hostFileOf(st *syscall.Stat_t) hostFile { return hostFile{uint64(st.Dev), s
 // are not the guest's (its own executable, the devices).
 func (p *Process) changeable(path string, follow bool) (target, hostFile, int64) {
 	t, ok := p.resolve(path)
+	if follow {
+		t, ok = p.followed(t, ok)
+	}
 	switch {
 	case !ok:
 		return t, hostFile{}, -eNOENT
@@ -68,6 +73,50 @@ func (p *Process) changeable(path string, follow bool) (target, hostFile, int64)
 		return t, hostFile{}, hostErrno(err)
 	}
 	return t, hostFileOf(&st), 0
+}
+
+// chflags gives a file under the home or a mount the flags it carries beside its mode, all of
+// them at once, as chflags and setattrlist do. A user's flags (the low 16 bits) are kept and
+// said back by stat and getattrlist, as measured on macOS 27.2.1: hidden, not to be dumped,
+// opaque, and bits that name nothing. The system's are refused a user (EPERM), as measured.
+// From the kernel's source and not measured: a user is refused of a file that is not its own.
+// Nothing here acts on a flag, so those the kernel acts on stop the run: a file that may not be
+// changed or only added to, one that is compressed, tracked or in a vault, and any of the
+// system's set by root.
+func (p *Process) chflags(id hostFile, flags uint32, a []uint64) int64 {
+	const user, acted = 0xffff, 0x2 | 0x4 | 0x20 | 0x40 | 0x80 // UF_SETTABLE; UF_IMMUTABLE, UF_APPEND, UF_COMPRESSED, UF_TRACKED, UF_DATAVAULT
+	switch {
+	case p.uid != 0 && p.m.owned(id).UID != p.uid:
+		return -ePERM
+	case flags&^user != 0 && p.uid != 0:
+		return -ePERM
+	case flags&^user != 0 || flags&acted != 0:
+		p.unimplemented(fmt.Sprintf("chflags to %#x, flags the kernel acts on", flags), a)
+		return -eNOSYS
+	}
+	if flags == 0 {
+		delete(p.m.flags, id)
+	} else {
+		p.m.flags[id] = flags
+	}
+	return 0
+}
+
+// sysChflags is chflags(path, flags), and sysFchflags the same of an open file.
+func sysChflags(p *Process, a []uint64) int64 {
+	_, id, errno := p.changeable(p.cstr(a[0]), true)
+	if errno != 0 {
+		return errno
+	}
+	return p.chflags(id, uint32(a[1]), a)
+}
+
+func sysFchflags(p *Process, a []uint64) int64 {
+	_, id, errno := p.changeableFD(a[0])
+	if errno != 0 {
+		return errno
+	}
+	return p.chflags(id, uint32(a[1]), a)
 }
 
 // systemVolume is why a file of the system volume cannot be changed: its files are root's, so a
@@ -119,7 +168,32 @@ func sysChmod(p *Process, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
-	return hostCall(t.root.Chmod(t.rel, fileMode(a[1])))
+	return p.chmodAt(t, fileMode(a[1]))
+}
+
+// chmodAt changes the permissions of a file under the home or a mount, which are from then on
+// what the host's file has, whatever a template said of it before.
+func (p *Process) chmodAt(t target, mode os.FileMode) int64 {
+	if err := t.root.Chmod(t.rel, mode); err != nil {
+		return hostErrno(err)
+	}
+	var st syscall.Stat_t
+	if statInRoot(t.root, t.rel, true, &st) == nil {
+		delete(p.m.said, hostFileOf(&st))
+	}
+	return 0
+}
+
+// chmodFD is chmodAt of an open file.
+func (p *Process) chmodFD(host int, mode uint32) int64 {
+	if err := syscall.Fchmod(host, mode); err != nil {
+		return hostErrno(err)
+	}
+	var st syscall.Stat_t
+	if syscall.Fstat(host, &st) == nil {
+		delete(p.m.said, hostFileOf(&st))
+	}
+	return 0
 }
 
 // sysFchmodat is fchmodat(directory, path, mode, flags): chmod of a path from a directory, of
@@ -138,7 +212,7 @@ func sysFchmodat(p *Process, a []uint64) int64 {
 		if errno != 0 {
 			return errno
 		}
-		return hostCall(t.root.Chmod(t.rel, fileMode(a[2])))
+		return p.chmodAt(t, fileMode(a[2]))
 	})
 }
 
@@ -169,7 +243,7 @@ func sysFchmodExtended(p *Process, a []uint64) int64 {
 		}
 	}
 	if mode != ^uint32(0) {
-		return hostCall(syscall.Fchmod(f.host, mode&0o7777))
+		return p.chmodFD(f.host, mode&0o7777)
 	}
 	return 0
 }
@@ -179,7 +253,7 @@ func sysFchmod(p *Process, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
-	return hostCall(syscall.Fchmod(f.host, uint32(a[1]&0o7777)))
+	return p.chmodFD(f.host, uint32(a[1]&0o7777))
 }
 
 // ownerOf is who a file belongs to: the guests' user, which is all that can be said of the host
@@ -374,8 +448,13 @@ func (p *Process) setattrlist(path string, list, buf, size, options uint64, a []
 		return errno
 	}
 	if common&attrCmnAccMask != 0 {
-		if err := t.root.Chmod(t.rel, fileMode(uint64(le.Uint32(value(4))))); err != nil {
-			return hostErrno(err)
+		if errno := p.chmodAt(t, fileMode(uint64(le.Uint32(value(4))))); errno != 0 {
+			return errno
+		}
+	}
+	if common&attrCmnFlags != 0 {
+		if errno := p.chflags(id, le.Uint32(value(4)), a); errno != 0 {
+			return errno
 		}
 	}
 	switch {
@@ -608,6 +687,8 @@ func (p *Process) forgetFile(t target) {
 		delete(p.m.xattrs, hostFileOf(&st))
 		delete(p.m.owners, hostFileOf(&st))
 		delete(p.m.fifos, hostFileOf(&st))
+		delete(p.m.said, hostFileOf(&st))
+		delete(p.m.flags, hostFileOf(&st))
 	}
 }
 

@@ -15,12 +15,13 @@ type fileInfo struct {
 	mtime int64
 	links uint16 // the names it has, if more than the one
 	owner *Owner // if it is not the guests' user's (see Machine.owners)
+	flags uint32 // those it carries beside its mode (see chflags)
 }
 
 // describe looks at a resolved path or an open descriptor. Paths with a pinned inode number
 // report it; hostStat is consulted for a hostFD only. The inode number is remembered, so that
 // fsgetpath can turn it back into the path.
-func (p *Process) describe(kind fdKind, path string, size int64, hostStat func(*syscall.Stat_t) error) (fileInfo, int64) {
+func (p *Process) describe(kind fdKind, path string, size int64, inode *Inode, hostStat func(*syscall.Stat_t) error) (fileInfo, int64) {
 	v := volumeOf(path)
 	info := fileInfo{dev: v.dev, mode: modeFile, size: size, ino: p.inodes[path], mtime: fixedMtime}
 	if path == v.mount {
@@ -47,11 +48,19 @@ func (p *Process) describe(kind fdKind, path string, size int64, hostStat func(*
 		if owner, ok := p.m.owners[id]; ok {
 			info.owner = &owner
 		}
+		info.flags = p.m.flags[id]
+		if mode, ok := p.m.said[id]; ok {
+			info.mode = info.mode&syscall.S_IFMT | mode
+		}
 		if info.ino == 0 {
 			info.ino = st.Ino & 0xFFFFFFFF
 		}
 	case dirFD:
 		info.mode, info.size = modeDir, 0
+	}
+	if inode != nil && kind != hostFD && kind != stdioFD { // as the release's volume has it
+		info.mode = info.mode&syscall.S_IFMT | inode.Mode&0o7777
+		info.owner = &Owner{inode.UID, inode.GID}
 	}
 	if info.ino == 0 {
 		info.ino = crcInode(path)
@@ -75,22 +84,29 @@ func (p *Process) describePath(op, path string, follow bool) (target, fileInfo, 
 	}
 	if link := p.rootLink(path); link != "" && !follow {
 		t := target{kind: dirFD, path: pathpkg.Clean(path), link: link}
-		info, errno := p.describe(t.kind, t.path, 0, nil)
-		info.mode, info.size = modeLink, int64(len(link))
+		t.inode = p.systemFile(p.absoluteLink(path)).LinkInode
+		info, errno := p.describe(t.kind, t.path, 0, t.inode, nil)
+		info.mode, info.size = linkMode(t.inode), int64(len(link))
 		return t, info, errno
 	}
 	t, ok := p.resolve(path)
+	if follow {
+		t, ok = p.followed(t, ok)
+	}
 	if !ok {
 		p.note("  ENOENT %s %s", op, path)
 		return t, fileInfo{}, -eNOENT
 	}
 	if t.link != "" && !follow { // the link itself, not the directory it leads to
-		t = target{kind: t.kind, path: p.absolute(path), link: t.link}
-		info, errno := p.describe(t.kind, t.path, 0, nil)
-		info.mode, info.size = modeLink, int64(len(t.link))
+		t = target{kind: t.kind, path: p.absolute(path), link: t.link, inode: t.linkInode}
+		if t.kind == hostFD { // it leads off the volume to a host file, and is none itself
+			t.kind = dirFD
+		}
+		info, errno := p.describe(t.kind, t.path, 0, t.inode, nil)
+		info.mode, info.size = linkMode(t.inode), int64(len(t.link))
 		return t, info, errno
 	}
-	info, errno := p.describe(t.kind, t.path, t.fd().size(), func(st *syscall.Stat_t) error {
+	info, errno := p.describe(t.kind, t.path, t.fd().size(), t.inode, func(st *syscall.Stat_t) error {
 		if t.root != nil {
 			return statInRoot(t.root, t.rel, follow, st)
 		}
@@ -102,8 +118,16 @@ func (p *Process) describePath(op, path string, follow bool) (target, fileInfo, 
 	return t, info, errno
 }
 
+// linkMode is the mode of a symbolic link: the volume's own for it, if it is one of a volume's.
+func linkMode(inode *Inode) uint16 {
+	if inode == nil {
+		return modeLink
+	}
+	return syscall.S_IFLNK | inode.Mode&0o7777
+}
+
 func (p *Process) describeFD(f *fd) (fileInfo, int64) {
-	return p.describe(f.kind, f.path, f.size(), func(st *syscall.Stat_t) error { return syscall.Fstat(f.host, st) })
+	return p.describe(f.kind, f.path, f.size(), f.inode, func(st *syscall.Stat_t) error { return syscall.Fstat(f.host, st) })
 }
 
 // fileID identifies a file the way fsgetpath is asked for it.
@@ -210,7 +234,8 @@ var (
 		{0x8000, 4, func(c *attrContext) []byte { return le32(c.p.m.ownerOf(c.fileInfo).UID) }},
 		{0x10000, 4, func(c *attrContext) []byte { return le32(c.p.m.ownerOf(c.fileInfo).GID) }},
 		{0x20000, 4, func(c *attrContext) []byte { return le32(uint32(c.mode)) }},
-		{0x40000, 4, nil}, {0x80000, 4, nil}, {0x100000, 4, nil}, // flags, generation, document id
+		{0x40000, 4, func(c *attrContext) []byte { return le32(c.flags) }}, // flags
+		{0x80000, 4, nil}, {0x100000, 4, nil}, // generation, document id
 		{0x200000, 4, func(c *attrContext) []byte { // user access: what the owner bits allow
 			return le32(uint32(c.mode) >> 6 & 7)
 		}},

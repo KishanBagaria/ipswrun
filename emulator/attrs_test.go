@@ -317,7 +317,7 @@ func TestDataVolume(t *testing.T) {
 		".":                   {Dir: true, Names: []string{"Preferences", "zone"}},
 		"Preferences":         {Dir: true, Names: []string{"Logging", "a.plist"}},
 		"Preferences/Logging": {Dir: true},
-		"Preferences/a.plist": {Size: 5, Mode: 0o640, Read: func() ([]byte, error) { return []byte("plist"), nil }},
+		"Preferences/a.plist": {Size: 5, Inode: &Inode{Mode: 0o640}, Read: func() ([]byte, error) { return []byte("plist"), nil }},
 		"zone":                {Link: "Preferences/Logging"},
 	}
 	asked := 0

@@ -203,6 +203,20 @@ type SystemFile struct {
 	// Link, of a directory the path's last part only links to, is that symbolic link's text: what
 	// lstat and readlink see.
 	Link string
+	// Inode is what the volume's own record of it says of who owns it and what they may do, if
+	// the volume backs it; LinkInode is the same of the symbolic link, where Link is set.
+	Inode, LinkInode *Inode
+	// Leads, of a symbolic link to what is not on the volume or may not be read there, is the
+	// guest path it leads to; Link and LinkInode are then set, and neither Dir nor File.
+	Leads string
+}
+
+// Inode is the owner and the permission bits (with the sticky and set-id bits) a volume of the
+// release has for a file or directory. They are said to whoever asks, and nobody is yet refused
+// by them: what a guest may do is the host's to say.
+type Inode struct {
+	Mode     uint16
+	UID, GID uint32
 }
 
 // Config describes the machine the guests run on.

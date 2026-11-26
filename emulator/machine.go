@@ -37,6 +37,8 @@ type Machine struct {
 	profilesErr  error
 	fifos        map[hostFile]bool        // the named pipes guests have made under the home and mounts (see sysMkfifo)
 	owners       map[hostFile]Owner       // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
+	said         map[hostFile]uint16      // the permissions the data volume's template has for a file, where the host's file has others (see data.go)
+	flags        map[hostFile]uint32      // the flags a file carries beside its mode, where it has any (see chflags)
 	polls        []carried                // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
 	pipes        uint64                   // how many pipes were ever made: the next one's number
 	host, clocks *port                    // the host's port and its clock's, while any process has a right to them (see kernelports.go)
@@ -86,7 +88,11 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, fifos: map[hostFile]bool{}, clock: newClock()}, nil
+	m := &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, said: map[hostFile]uint16{}, flags: map[hostFile]uint32{}, fifos: map[hostFile]bool{}, clock: newClock()}
+	for i := range m.mounts {
+		m.claim(&m.mounts[i])
+	}
+	return m, nil
 }
 
 // Spawn makes a process of a guest, ready to run from dyld's entry point. Two guests may not

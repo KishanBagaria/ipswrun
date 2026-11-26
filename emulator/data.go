@@ -2,10 +2,13 @@ package emulator
 
 import (
 	"bufio"
+	"cmp"
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 )
 
 // A device keeps what changes on a volume of its own, beside the sealed one the system is on:
@@ -22,10 +25,11 @@ type TemplateEntry struct {
 	Dir   bool
 	Names []string // of a directory: what is in it
 	Link  string   // of a symbolic link: its text
-	// Of a file: its size, what it holds, and its permission bits.
+	// Of a file: its size and what it holds.
 	Size int64
 	Read func() ([]byte, error)
-	Mode uint32
+	// Inode is who owns it and what they may do, as the template has it.
+	Inode *Inode
 }
 
 // maxTemplateFiles is how much the files of one directory of a template may come to. They are
@@ -66,6 +70,9 @@ func (m *Machine) fill(mt *mounted, dir string) {
 	if err != nil {
 		failed("reading the template of", err)
 	}
+	if dir == "." {
+		m.inherit(mt, dir, entry.Inode) // the path of the volume itself, which was made for the mount
+	}
 	var files int64
 	for _, name := range entry.Names {
 		child := pathpkg.Join(dir, name)
@@ -76,19 +83,23 @@ func (m *Machine) fill(mt *mounted, dir string) {
 		switch {
 		case err != nil:
 		case e.Dir:
-			err = mt.root.Mkdir(child, 0o755)
+			if err = mt.root.Mkdir(child, 0o755); err == nil {
+				m.inherit(mt, child, e.Inode)
+			}
 		case e.Link != "":
-			err = mt.root.Symlink(e.Link, child)
+			if err = mt.root.Symlink(e.Link, child); err == nil {
+				m.inherit(mt, child, e.Inode)
+			}
 		case e.Read != nil:
 			if files += e.Size; files > maxTemplateFiles {
 				stopf("the data volume: the files the release's template has in %s come to more than %d MB, and a directory's are copied when it is first entered", pathpkg.Join(mt.guest, dir), maxTemplateFiles>>20)
 			}
 			var data []byte
 			if data, err = away(m.clock, e.Read); err == nil {
-				err = mt.root.WriteFile(child, data, os.FileMode(e.Mode&0o777))
+				err = mt.root.WriteFile(child, data, 0o600)
 			}
-			if err == nil { // whatever the host's own mask made of it
-				err = mt.root.Chmod(child, os.FileMode(e.Mode&0o777))
+			if err == nil {
+				m.inherit(mt, child, e.Inode)
 			}
 		}
 		if err != nil {
@@ -103,8 +114,88 @@ func (m *Machine) fill(mt *mounted, dir string) {
 	}
 }
 
-// openRecord reads which directories of a mount were filled in earlier runs, from the file that
-// is kept of that, and opens it to add to.
+// kept is what the template says of a file of the data volume that the host's file cannot say
+// for it: whom it belongs to and, where they differ from the host file's, its permissions (mode
+// is then set), with the host's number for the file it was said of, as a file a guest has since
+// put in its place is its own.
+type kept struct {
+	Owner
+	mode uint16
+	said bool
+	ino  uint64
+}
+
+// ownerLine starts a line of a mount's record that says what kept does of a path; the others
+// name a directory that was filled.
+const ownerLine = "owner"
+
+// inherit gives what was just made from the template the owner and permissions the template
+// has for it. They are said to whoever asks and refuse nobody: the host's file is left for the
+// host's user to read and write (and a directory to fill), with the template's other permission
+// bits where it is not a link, and what the template says beyond that is kept beside it, and in
+// the record for the next run.
+func (m *Machine) inherit(mt *mounted, rel string, inode *Inode) {
+	if inode == nil {
+		return
+	}
+	failed := func(what string, err error) {
+		stopf("the data volume: %s %s: %v", what, pathpkg.Join(mt.guest, rel), err)
+	}
+	fi, err := mt.root.Lstat(rel)
+	if err != nil {
+		failed("looking at", err)
+	}
+	k := kept{Owner: Owner{inode.UID, inode.GID}, mode: inode.Mode & 0o7777}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		host := os.FileMode(k.mode&0o777) | 0o600
+		if fi.IsDir() {
+			host |= 0o700
+		}
+		if err := mt.root.Chmod(rel, host); err != nil {
+			failed("setting the mode of", err)
+		}
+		k.said = uint16(host) != k.mode
+	}
+	var st syscall.Stat_t
+	if err := statInRoot(mt.root, rel, false, &st); err != nil {
+		failed("looking at", err)
+	}
+	k.ino = uint64(st.Ino)
+	m.keep(hostFileOf(&st), k)
+	if mt.record != nil && (k.said || k.Owner != (Owner{m.user.uid, m.user.gid})) {
+		said := "-"
+		if k.said {
+			said = strconv.FormatUint(uint64(k.mode), 8)
+		}
+		line := strings.Join([]string{ownerLine, mt.guest, strconv.FormatUint(uint64(k.UID), 10), strconv.FormatUint(uint64(k.GID), 10), said, strconv.FormatUint(k.ino, 10), rel}, "\t")
+		if _, err := mt.record.WriteString(line + "\n"); err != nil {
+			failed("recording the owner of", err)
+		}
+	}
+}
+
+// keep has a host file be said to be whose and as the template has it.
+func (m *Machine) keep(id hostFile, k kept) {
+	m.own(id, k.Owner)
+	if k.said {
+		m.said[id] = k.mode
+	}
+}
+
+// claim says again what the template says of the files of a volume kept from an earlier run. A
+// file is known by the host's number for it, which a copy of the volume does not keep: what was
+// copied is then the user's, as every file of the host's is that nothing more is known of.
+func (m *Machine) claim(mt *mounted) {
+	for rel, k := range mt.kept {
+		var st syscall.Stat_t
+		if statInRoot(mt.root, rel, false, &st) == nil && uint64(st.Ino) == k.ino {
+			m.keep(hostFileOf(&st), k)
+		}
+	}
+}
+
+// openRecord reads which directories of a mount were filled in earlier runs and whom what they
+// were filled with belongs to, from the file that is kept of that, and opens it to add to.
 func (mt *mounted) openRecord(path string) error {
 	mt.populated = map[string]bool{}
 	if path == "" {
@@ -117,8 +208,22 @@ func (mt *mounted) openRecord(path string) error {
 	if err != nil {
 		return err
 	}
+	mt.kept = map[string]kept{}
 	for lines := bufio.NewScanner(f); lines.Scan(); {
-		if guest, dir, ok := strings.Cut(lines.Text(), "\t"); ok && guest == mt.guest {
+		// What an owner's line says comes before the path, which may have anything in it.
+		if fields := strings.SplitN(lines.Text(), "\t", 7); len(fields) == 7 && fields[0] == ownerLine {
+			uid, err1 := strconv.ParseUint(fields[2], 10, 32)
+			gid, err2 := strconv.ParseUint(fields[3], 10, 32)
+			ino, err3 := strconv.ParseUint(fields[5], 10, 64)
+			k := kept{Owner: Owner{uint32(uid), uint32(gid)}, ino: ino}
+			if fields[4] != "-" {
+				mode, err := strconv.ParseUint(fields[4], 8, 16)
+				k.mode, k.said, err1 = uint16(mode), true, cmp.Or(err1, err)
+			}
+			if fields[1] == mt.guest && err1 == nil && err2 == nil && err3 == nil {
+				mt.kept[fields[6]] = k
+			}
+		} else if guest, dir, ok := strings.Cut(lines.Text(), "\t"); ok && guest == mt.guest {
 			mt.populated[dir] = true
 		}
 	}

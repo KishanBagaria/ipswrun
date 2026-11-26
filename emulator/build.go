@@ -40,12 +40,12 @@ func BaseEnv(home string) []string {
 		"CFFIXED_USER_HOME=" + home, "TMPDIR=" + home + "/tmp/"}
 }
 
-// DefaultSystem is what a guest may read from the build's system volume unless told otherwise:
+// ClosedSystem is what a guest may read from the build's system volume when it is closed (--closed-system):
 // the feature flags, the system version, ICU's data (locales, calendars, time zones), the
 // Objective-C runtime's block trampolines, which are not in the shared cache, and the sandbox
 // profiles, which a daemon that cannot read its own gives up over, and the programs, which a
 // guest that starts one looks for first.
-var DefaultSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/CoreServices/SystemVersion.plist", "/usr/share/icu/",
+var ClosedSystem = []string{"/System/Library/FeatureFlags/", "/System/Library/CoreServices/SystemVersion.plist", "/usr/share/icu/",
 	"/usr/lib/libobjc-trampolines.dylib", "/System/Library/Sandbox/Profiles/", "/usr/share/sandbox/",
 	"/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/libexec/"}
 
@@ -67,7 +67,7 @@ type Run struct {
 	Daemons []Guest
 	Drivers []Driver      // the kernel's services, which guests reach through IOKit: none unless given
 	Env     []string      // for every guest: KEY=VALUE is added to BaseEnv, and KEY alone is taken out of it
-	System  []string      // system-volume files and directory prefixes (ending in "/") the guest may read; DefaultSystem if empty
+	System  []string      // system-volume files and directory prefixes (ending in "/") the guest may read; all of it if empty
 	Timeout time.Duration // for the whole run
 	Trace   bool          // print every system call to stderr
 	// OnDemand are the Mach services, by name or by pattern (as path.Match has them: "*" is
@@ -91,6 +91,11 @@ func inCacheDir(dirs map[string]bool, path string) bool {
 		}
 	}
 	return false
+}
+
+// inodeOf is what the volume's record of an entry says of its owner and permissions.
+func inodeOf(e rangefs.Entry) *Inode {
+	return &Inode{Mode: uint16(e.Mode), UID: e.UID, GID: e.GID}
 }
 
 // realDirectory is the path of a directory of the system volume with every symbolic link on the
@@ -151,7 +156,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 	}
 	allowed := run.System
 	if len(allowed) == 0 {
-		allowed = DefaultSystem
+		allowed = []string{"/"} // all of it, as a Mac's and an iPhone's is to what runs on it
 	}
 	notes := run.Notes
 	if notes == nil {
@@ -213,7 +218,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 
 	isAllowed := func(path string) bool {
 		for _, prefix := range allowed {
-			if strings.HasPrefix(path, prefix) || path+"/" == prefix || strings.HasPrefix(prefix, path+"/") {
+			if path == "/" || strings.HasPrefix(path, prefix) || path+"/" == prefix || strings.HasPrefix(prefix, path+"/") {
 				return true
 			}
 		}
@@ -281,6 +286,11 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 			var f SystemFile
 			if dirs[real] {
 				f = SystemFile{Dir: true, ReadDir: visibleEntries(image, vol, real, func(p string) bool { return dirs[p] || isAllowed(p) })}
+				if at, err := image.Stat(vol, real); err != nil {
+					return SystemFile{}, err
+				} else if at.Kind == rangefs.Directory {
+					f.Inode = inodeOf(at)
+				}
 				if real != path {
 					// Its last part may be a link itself, which those who walk the path see.
 					parent, err := realDir(pathpkg.Dir(path))
@@ -293,7 +303,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 					}
 					f.Real = real
 					if entry.Kind == rangefs.Symlink {
-						f.Link = entry.Target
+						f.Link, f.LinkInode = entry.Target, inodeOf(entry)
 					}
 				}
 			}
@@ -311,9 +321,9 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 		var f SystemFile
 		switch entry.Kind {
 		case rangefs.Directory:
-			f = SystemFile{Dir: true, ReadDir: visibleEntries(image, vol, rel, isAllowed)}
+			f = SystemFile{Dir: true, ReadDir: visibleEntries(image, vol, rel, isAllowed), Inode: inodeOf(entry)}
 		case rangefs.Regular:
-			f = SystemFile{File: entry.File}
+			f = SystemFile{File: entry.File, Inode: inodeOf(entry)}
 		case rangefs.Symlink:
 			// A link to a file, as /usr/bin/tar is to bsdtar: what it leads to, if a guest may
 			// read that too, and the link's own text for those who ask what it is.
@@ -321,12 +331,47 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 			if !strings.HasPrefix(to, "/") {
 				to = pathpkg.Join(pathpkg.Dir(path), to)
 			}
+			to = pathpkg.Clean(to)
 			known[path] = SystemFile{} // a link that leads back to itself leads nowhere
 			if f, err = system(to); err != nil {
 				return SystemFile{}, err
 			}
-			if f.Dir || f.File != nil {
-				f.Link = entry.Target
+			f.Link, f.LinkInode = entry.Target, inodeOf(entry)
+			if !f.Dir && f.File == nil {
+				f = SystemFile{Link: f.Link, LinkInode: f.LinkInode, Leads: to} // off the volume: to the data volume, or nowhere
+			}
+			if f.Dir && f.Real == "" {
+				f.Real = to
+			}
+		default:
+			// Nothing by that path as it is written: a directory on the way to it may be a link
+			// (a framework inside another is under Frameworks, which is one to
+			// Versions/Current/Frameworks), and it is then what is there by the path without them.
+			if parent := pathpkg.Dir(path); vol == rangefs.FileSystem && parent != "/" {
+				real, err := realDir(parent)
+				if err != nil {
+					return SystemFile{}, err
+				}
+				if real == "" {
+					// Or a link on the way leads off the volume, and so does the path.
+					up, err := system(parent)
+					if err != nil {
+						return SystemFile{}, err
+					}
+					if up.Leads != "" {
+						f = SystemFile{Leads: pathpkg.Join(up.Leads, pathpkg.Base(path))}
+					}
+				}
+				if real != "" && real != parent {
+					through := pathpkg.Join(real, pathpkg.Base(path))
+					known[path] = SystemFile{}
+					if f, err = system(through); err != nil {
+						return SystemFile{}, err
+					}
+					if f.Dir && f.Real == "" {
+						f.Real = through
+					}
+				}
 			}
 		}
 		known[path] = f
@@ -466,11 +511,11 @@ func dataVolume(image *rangefs.Image, host string) ([]Mount, error) {
 				return TemplateEntry{}, err
 			case entry.Kind == rangefs.Directory:
 				names, err := image.ReadDir(rangefs.FileSystem, path)
-				return TemplateEntry{Dir: true, Names: names}, err
+				return TemplateEntry{Dir: true, Names: names, Inode: inodeOf(entry)}, err
 			case entry.Kind == rangefs.Symlink:
-				return TemplateEntry{Link: entry.Target}, nil
+				return TemplateEntry{Link: entry.Target, Inode: inodeOf(entry)}, nil
 			case entry.Kind == rangefs.Regular:
-				return TemplateEntry{Size: entry.File.Size(), Read: entry.File.ReadAll, Mode: entry.File.Mode()}, nil
+				return TemplateEntry{Size: entry.File.Size(), Read: entry.File.ReadAll, Inode: inodeOf(entry)}, nil
 			}
 			return TemplateEntry{}, nil
 		}})

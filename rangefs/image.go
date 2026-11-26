@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -407,6 +408,10 @@ type Entry struct {
 	Kind   Kind
 	Target string
 	File   *File
+	// Mode is its permission bits, with the sticky and set-id bits, and UID and GID its owner, as
+	// its inode has them.
+	Mode     uint32
+	UID, GID uint32
 }
 
 // File is a regular file inside a volume.
@@ -427,23 +432,40 @@ func (m *Image) Stat(vol, path string) (Entry, error) {
 	if err != nil {
 		return Entry{Kind: Missing}, nil
 	}
+	out := Entry{Kind: Missing}
 	switch entry.Type {
 	case uint16(types.DT_DIR):
-		return Entry{Kind: Directory}, nil
+		out.Kind = Directory
 	case uint16(types.DT_LNK):
-		target, err := v.Readlink(entry.ID)
-		if err != nil {
+		out.Kind = Symlink
+		if out.Target, err = v.Readlink(entry.ID); err != nil {
 			return fail(err)
 		}
-		return Entry{Kind: Symlink, Target: target}, nil
 	case uint16(types.DT_REG):
 		f, err := v.OpenFileID(entry.ID)
 		if err != nil {
 			return fail(err)
 		}
-		return Entry{Kind: Regular, File: &File{file: f, name: vol + ":" + path}}, nil
+		out.Kind, out.File = Regular, &File{file: f, name: vol + ":" + path}
+		out.Mode, out.UID, out.GID = uint32(f.Mode.Perm()), f.UID, f.GID
+		for _, bit := range []struct {
+			named fs.FileMode
+			bit   uint32
+		}{{fs.ModeSticky, 0o1000}, {fs.ModeSetgid, 0o2000}, {fs.ModeSetuid, 0o4000}} {
+			if f.Mode&bit.named != 0 {
+				out.Mode |= bit.bit
+			}
+		}
+		return out, nil
+	default:
+		return out, nil
 	}
-	return Entry{Kind: Missing}, nil
+	info, err := v.StatID(entry.ID)
+	if err != nil {
+		return fail(err)
+	}
+	out.Mode, out.UID, out.GID = uint32(info.RawMode)&0o7777, info.UID, info.GID
+	return out, nil
 }
 
 // Open returns the regular file at path, or nil when there is none.
@@ -472,9 +494,6 @@ func (m *Image) ReadDir(vol, path string) ([]string, error) {
 	}
 	return names, nil
 }
-
-// Mode is the file's permission bits.
-func (f *File) Mode() uint32 { return uint32(f.file.Mode.Perm()) }
 
 // Size is the file's length in bytes.
 func (f *File) Size() int64 { return f.file.Size }
