@@ -227,16 +227,12 @@ func (p *Process) spawn(abs, cwd string, image []byte, argv, env []string, actio
 	if err != nil {
 		stopf("posix_spawn of %s: %v", abs, err)
 	}
-	child.parent, child.ppid, child.stdio = p, p.pid, p.stdio
-	child.uid, child.gid, child.cwd = p.uid, p.gid, cwd // the directory of the thread that started it
-	child.cmask, child.cmaskSet = p.cmask, p.cmaskSet
+	child.parent, child.ppid = p, p.pid
+	child.cwd = cwd // the directory of the thread that started it
+	p.handOn(child, false)
 	// What a new program keeps of its parent's signals: those it ignores, and those the thread
 	// that started it blocks, unless it is told otherwise.
-	for sig := 1; sig < numSignals; sig++ {
-		if p.sigactions[sig].handler == sigIgnore && sigdefault>>(sig-1)&1 == 0 {
-			child.sigactions[sig].handler = sigIgnore
-		}
-	}
+	p.keepIgnored(child, sigdefault)
 	child.current.sigmask = sigmask
 	if errno := child.inherit(p, actions, closeAll); errno != 0 {
 		p.m.discard(child)
@@ -440,14 +436,10 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 		stopf("execve of %s: %v", abs, err)
 	}
 	m.procs = m.procs[:len(m.procs)-1] // where newProcess put it
-	next.pid, next.parent, next.ppid, next.stdio = p.pid, p.parent, p.ppid, p.stdio
-	next.uid, next.gid, next.cwd, next.usage, next.early, next.pgroup = p.uid, p.gid, p.cwd, p.usage, p.early, p.pgroup
-	next.cmask, next.cmaskSet, next.childrenUsed = p.cmask, p.cmaskSet, p.childrenUsed
-	for sig := 1; sig < numSignals; sig++ {
-		if p.sigactions[sig].handler == sigIgnore {
-			next.sigactions[sig].handler = sigIgnore
-		}
-	}
+	next.pid, next.parent, next.ppid = p.pid, p.parent, p.ppid
+	next.cwd, next.usage, next.early, next.pgroup, next.childrenUsed = p.cwd, p.usage, p.early, p.pgroup, p.childrenUsed
+	p.handOn(next, false)
+	p.keepIgnored(next, 0)
 	next.current.sigmask, next.itimer = p.current.sigmask, p.itimer
 	if err := next.load(argv, env); err != nil {
 		m.replaced = append(m.replaced, next)
@@ -480,6 +472,31 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 	// takes memory of theirs with it.
 	m.replaced = append(m.replaced, p)
 	return 0
+}
+
+// handOn gives a process what every process that comes of p has of it, whether a copy (fork), a
+// program p starts (posix_spawn) or the one p becomes (execve): who it is, where its output
+// goes, the mask for the files it makes, its limits, its priority and its I/O policies, as a
+// Mac's kernel was measured to hand them on (examples/inherit.c). The policies of single
+// threads go with them only to a copy, which has the thread.
+func (p *Process) handOn(to *Process, threads bool) {
+	to.uid, to.gid, to.stdio = p.uid, p.gid, p.stdio
+	to.cmask, to.cmaskSet, to.nice = p.cmask, p.cmaskSet, p.nice
+	to.rlimits = maps.Clone(p.rlimits)
+	to.iopolicies = maps.Clone(p.iopolicies)
+	if !threads {
+		maps.DeleteFunc(to.iopolicies, func(key [2]uint32, _ uint32) bool { return key[0]>>16 != 0 })
+	}
+}
+
+// keepIgnored has a new program ignore the signals the one that starts or becomes it ignores,
+// but for those it is told to take as they come.
+func (p *Process) keepIgnored(to *Process, sigdefault uint32) {
+	for sig := 1; sig < numSignals; sig++ {
+		if p.sigactions[sig].handler == sigIgnore && sigdefault>>(sig-1)&1 == 0 {
+			to.sigactions[sig].handler = sigIgnore
+		}
+	}
 }
 
 // group is the process group p is in: its own, as one launchd started is, unless it was started
@@ -578,11 +595,11 @@ func (p *Process) fork() *Process {
 	if err != nil {
 		stopf("fork: %v", err)
 	}
-	child.parent, child.ppid, child.stdio, child.pgroup = p, p.pid, p.stdio, p.group()
-	child.uid, child.gid, child.cwd, child.brk = p.uid, p.gid, p.workingDirectory(), p.brk
+	child.parent, child.ppid, child.pgroup = p, p.pid, p.group()
+	child.cwd, child.brk = p.workingDirectory(), p.brk
 	child.identity, child.entitlements, child.entitlementsDER = p.identity, p.entitlements, p.entitlementsDER
-	child.sigactions, child.cmask, child.cmaskSet, child.nice = p.sigactions, p.cmask, p.cmaskSet, p.nice
-	child.rlimits, child.iopolicies = maps.Clone(p.rlimits), maps.Clone(p.iopolicies)
+	p.handOn(child, true)
+	child.sigactions = p.sigactions
 	child.threadStart, child.wqThread, child.pthreadSize, child.tsdOffset, child.portOffset = p.threadStart, p.wqThread, p.pthreadSize, p.tsdOffset, p.portOffset
 	child.inodes, child.seen = maps.Clone(p.inodes), maps.Clone(p.seen)
 	child.slide, child.slideSet, child.imageInfo, child.dit = p.slide, p.slideSet, p.imageInfo, p.dit

@@ -92,6 +92,25 @@ int main(int argc, char **argv) {
 	printf("a child that has ended and is not yet waited for, as a group: %s", said(kill(-apart, 0)));
 	printf("; it %s\n", ended(apart));
 
+	// One that has ended is there to be sent a signal until its parent has waited for it, or
+	// has ended too.
+	int out[2];
+	pipe(out);
+	pid_t child = fork(), its = 0;
+	if (child == 0) {
+		if ((its = fork()) == 0)
+			_exit(0);
+		write(out[1], &its, sizeof its);
+		usleep(100000); // its child has ended by now, and is not waited for
+		_exit(0);
+	}
+	read(out[0], &its, sizeof its);
+	usleep(50000);
+	printf("a child's child that has ended, while the child has not: %s", said(kill(its, 0)));
+	printf("; the child %s", ended(child));
+	usleep(100000);
+	printf("; its child then: %s\n", said(kill(its, 0)));
+
 	// To its own group, the process is told too. It and a copy of it have a handler, and the
 	// signal blocked until they are ready for it; the child started in the group has neither.
 	struct sigaction act = {.sa_handler = handler};

@@ -4,4 +4,5 @@ a child in its parent's group: its group is the parent's 1; as a group of its ow
 a child in a group of its own: its group is its own 1; as a group: 0
 SIGTERM to the child's group: 0; the child ended by signal 15; its group then: -1 (No such process)
 a child that has ended and is not yet waited for, as a group: -1 (Operation not permitted); it ended by signal 9
+a child's child that has ended, while the child has not: 0; the child exited with 0; its child then: -1 (No such process)
 SIGUSR1 to its own group: 0; the process is told when it lets the signal in: 0 before, 1 after; the copy of it exited with 7; the child started in the group ended by signal 30

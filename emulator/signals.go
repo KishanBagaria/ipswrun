@@ -249,8 +249,11 @@ func sysKill(p *Process, a []uint64) int64 {
 	return 0
 }
 
-// unwaited is whether a process has ended and its parent is still to wait for it.
-func (p *Process) unwaited() bool { return p.exited && p.parent != nil && !p.reaped }
+// unwaited is whether a process has ended and its parent is still to wait for it. Once the parent
+// has ended too there is no one to: launchd waits for it then, and it is gone.
+func (p *Process) unwaited() bool {
+	return p.exited && p.parent != nil && !p.parent.exited && !p.reaped
+}
 
 // signals sends a process a signal, or with signal 0 none, and says whether it may: its own
 // user's process, or any if it is root's.

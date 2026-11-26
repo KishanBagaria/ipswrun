@@ -1,0 +1,7 @@
+{
+  "build": "19A346",
+  "cache_uuid": "6F028D68-85D6-300F-929A-AA58CA8327AA",
+  "exit_code": 0,
+  "output": "after it set them: umask 027, files 200, priority 5, disk policy 4, SIGUSR1 ignored, SIGUSR2 handled, SIGTERM blocked, a timer set\na copy of it: umask 027, files 200, priority 5, disk policy 4, SIGUSR1 ignored, SIGUSR2 handled, SIGTERM blocked, a timer not set\na program it starts: umask 027, files 200, priority 5, disk policy 4, SIGUSR1 ignored, SIGUSR2 as it comes, SIGTERM blocked, a timer not set\na program a copy of it becomes: umask 027, files 200, priority 5, disk policy 4, SIGUSR1 ignored, SIGUSR2 as it comes, SIGTERM blocked, a timer not set\nthe program it becomes: umask 027, files 200, priority 5, disk policy 4, SIGUSR1 ignored, SIGUSR2 as it comes, SIGTERM blocked, a timer set\n",
+  "version": "15.0"
+}
