@@ -338,6 +338,7 @@ type Process struct {
 	// The port its own task may be read by (task_read_for_pid of itself), while it has a right
 	// to it.
 	taskRead *port
+	fdRoom   int   // how many places its table of descriptors has (see procs.go)
 	lineage        // what tells it from every other process there has been (see lineage.go)
 	task     *port // the task's own port, while the process has a right to it (see kernelports.go)
 	// Where what it was started with begins, which is the top of its stack from the program's path
@@ -456,7 +457,7 @@ func heapStart(platform dyldcache.Platform) uint64 {
 func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Process, err error) {
 	cfg := m.cfg
 	m.started++
-	p = &Process{m: m, pid: guestPID + m.started - 1, uid: m.user.uid, gid: m.user.gid, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cwd: "/", cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
+	p = &Process{m: m, fdRoom: fdRoomAtFirst, pid: guestPID + m.started - 1, uid: m.user.uid, gid: m.user.gid, name: filepath.Base(executable), label: filepath.Base(executable), path: path, mounts: m.mounts, cwd: "/", cache: cfg.Cache, dyld: m.dyld, exe: exe, exePath: executable,
 		system: cfg.System, os: cfg.OS, trace: cfg.Trace, survey: cfg.Survey,
 		mapped: map[uint64]struct{}{}, brk: heapStart(cfg.Cache.Platform), nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},

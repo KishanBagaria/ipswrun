@@ -19,6 +19,8 @@ type status struct {
 const (
 	flagFsync   = 0x80     // O_FSYNC
 	flagEvtOnly = 0x8000   // O_EVTONLY
+	flagNoCache = 0x40000  // what it reads and writes is not to be kept in memory (F_NOCACHE)
+	flagNoAhead = 0x80000  // nor read ahead of where it is read (F_RDAHEAD)
 	flagDsync   = 0x400000 // O_DSYNC
 	oTruncate   = 0x400
 

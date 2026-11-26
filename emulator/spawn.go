@@ -317,6 +317,7 @@ func (p *Process) inherit(parent *Process, actions []byte, closeAll bool) int64 
 	for _, n := range slices.Sorted(maps.Keys(p.cloexec)) {
 		p.closeFD(n)
 	}
+	p.inherits() // what it starts with, once it has all it is to have and no more
 	return 0
 }
 
@@ -472,6 +473,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 		p.closeFD(n)
 	}
 	next.fds, p.fds = p.fds, map[uint64]*fd{}
+	next.inherits()
 	for _, q := range m.procs {
 		if q.parent == p {
 			q.parent = next
@@ -791,6 +793,7 @@ func (p *Process) fork() *Process {
 			child.cloexec[n] = true
 		}
 	}
+	child.inherits()
 	p.note("  forked, as pid %d", child.pid)
 	return child
 }

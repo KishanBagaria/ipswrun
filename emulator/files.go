@@ -671,6 +671,7 @@ func (p *Process) allocFD(minFD uint64) uint64 {
 func (p *Process) newFD(f *fd) uint64 {
 	n := p.allocFD(0)
 	p.fds[n] = f
+	p.holds(n)
 	return n
 }
 
@@ -1481,6 +1482,7 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 		return -eMFILE
 	}
 	p.fds[n] = dup
+	p.holds(n)
 	delete(p.cloexec, n) // a duplicate is the child's too, whatever the original is
 	return int64(n)
 }
@@ -1537,6 +1539,10 @@ func sysFcntl(p *Process, a []uint64) int64 {
 		p.write(arg+20, le16(lockNone))
 	case 90, 91: // F_OFD_SETLK, F_OFD_SETLKW
 		return p.setRange(f, arg, cmd == 91, a)
+	case 42: // F_PREALLOCATE
+		return p.preallocate(f, arg, a)
+	case 45, 48, 51, 85: // F_RDAHEAD, F_NOCACHE, F_FULLFSYNC, F_BARRIERFSYNC
+		return p.fcntlCaching(f, cmd, arg, a)
 	case 63, 95, 96, 98, 101:
 		return p.fcntlMeasured(f, cmd, arg, a)
 	default:
@@ -1546,11 +1552,70 @@ func sysFcntl(p *Process, a []uint64) int64 {
 	return 0
 }
 
+// plain is whether a descriptor is of a file and nothing else: one of the host's or of the
+// build, and no directory, pipe, socket, kqueue or shared memory.
+func (f *fd) plain() bool {
+	return f.kind == hostFD || f.kind == cacheFD || f.kind == dataFD && f.kq == nil && f.shared == nil
+}
+
+// fcntlCaching answers what is asked of how a file is read and written out, which a shell asks
+// of each script it reads and a database of each file it writes, as measured (examples/fileflags.c):
+// not keeping it in memory and not reading ahead of it, which here are only said back by F_GETFL,
+// there being no such memory to keep it in; and writing it out to the disk, which is the host's
+// to do for a file of its own. A pipe is EBADF.
+func (p *Process) fcntlCaching(f *fd, cmd, arg uint64, a []uint64) int64 {
+	if f.streams() {
+		return -eBADF
+	}
+	if !f.plain() && f.kind != dirFD {
+		p.unimplemented(fmt.Sprintf("fcntl request %d of this kind of descriptor", cmd), a)
+		return -eINVAL
+	}
+	flag, set := uint32(flagNoCache), arg != 0
+	switch cmd {
+	case 45: // read ahead, unless told 0
+		flag, set = flagNoAhead, arg == 0
+	case 51, 85:
+		return sysFsync(p, a)
+	}
+	if s := f.status(); set {
+		s.flags |= flag
+	} else {
+		s.flags &^= flag
+	}
+	return 0
+}
+
+// preallocate is F_PREALLOCATE, by which cp and the like ask for room for what they are about to
+// write, past the end of a file (examples/fileflags.c). The file is no longer for it, and the
+// room is said to be had, all that was asked: none is kept for it on the host, so what stat says
+// the file takes on the disk does not grow as a Mac's does. Asked from anywhere but the end of
+// the file, or for less than nothing, it is EINVAL; of what is not a file open to write, EBADF.
+func (p *Process) preallocate(f *fd, arg uint64, a []uint64) int64 {
+	const fromEnd = 3        // F_PEOFPOSMODE
+	asked := p.read(arg, 32) // how, from where (a mode and an offset), how much, and how much was had
+	mode, offset, length := le.Uint32(asked[4:]), int64(le.Uint64(asked[8:])), int64(le.Uint64(asked[16:]))
+	switch {
+	case f.streams() || f.kind == dirFD || f.kind == hostFD && f.accessMode() == 0:
+		return -eBADF
+	case f.kind != hostFD:
+		p.unimplemented("room asked ahead (F_PREALLOCATE) for what is no file of the home's or a mount's", a)
+		return -eNOSYS
+	case mode != fromEnd || offset != 0:
+		return -eINVAL
+	case length < 0:
+		p.write(arg+24, le64(0))
+		return -eINVAL
+	}
+	p.write(arg+24, le64(uint64(length)))
+	return 0
+}
+
 // fcntlMeasured answers the requests SQLite and dyld make of every file they open, as a Mac's
 // kernel of macOS 27.2.1 was measured to answer a user's process (examples/rangelocks.c). What
 // was not measured, of a request or of a kind of descriptor, stops.
 func (p *Process) fcntlMeasured(f *fd, cmd, arg uint64, a []uint64) int64 {
-	file := f.kind == hostFD || f.kind == dataFD || f.kind == cacheFD
+	file := f.plain()
 	switch cmd {
 	case 63: // F_GETPROTECTIONCLASS: how it is protected. An iPhone's files have this class unless given another, as Apple documents, which was not measured.
 		switch {

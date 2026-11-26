@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -98,8 +99,42 @@ int main(void) {
 	printf("; cut short: %#x\n", fcntl(fd, F_GETFL));
 	close(fd);
 
+	// What is asked of how it is read and written out, which the shell asks of each script it reads.
+	int ends[2], dir = open("/", O_RDONLY), reads = open(path, O_RDONLY);
+	pipe(ends);
+	fd = open(path, O_RDWR);
+	printf("not to be kept in memory: %d", fcntl(fd, F_NOCACHE, 1));
+	printf(", and it is then %#x", fcntl(fd, F_GETFL));
+	fcntl(fd, F_SETFL, 0);
+	printf("; with nothing set after: %#x; to be kept again: %d", fcntl(fd, F_GETFL), fcntl(fd, F_NOCACHE, 0));
+	printf(", and it is then %#x; of a directory: %d; of a pipe: %d (%s)\n", fcntl(fd, F_GETFL), fcntl(dir, F_NOCACHE, 1), fcntl(ends[0], F_NOCACHE, 1), strerror(errno));
+	printf("not to be read ahead: %d", fcntl(fd, F_RDAHEAD, 0));
+	printf(", and it is then %#x; to be read ahead again: %d", fcntl(fd, F_GETFL), fcntl(fd, F_RDAHEAD, 1));
+	printf(", and it is then %#x; of a directory: %d; of a pipe: %d (%s)\n", fcntl(fd, F_GETFL), fcntl(dir, F_RDAHEAD, 0), fcntl(ends[0], F_RDAHEAD, 0), strerror(errno));
+	printf("written out to the disk: %d, in order: %d; one opened only to read: %d and %d; a directory: %d and %d", fcntl(fd, F_FULLFSYNC), fcntl(fd, F_BARRIERFSYNC), fcntl(reads, F_FULLFSYNC),
+	       fcntl(reads, F_BARRIERFSYNC), fcntl(dir, F_FULLFSYNC), fcntl(dir, F_BARRIERFSYNC));
+	printf("; a pipe: %d (%s)", fcntl(ends[0], F_FULLFSYNC), strerror(errno));
+	printf(" and %d (%s)\n", fcntl(ends[0], F_BARRIERFSYNC), strerror(errno));
+	// Room asked for ahead of writing, as cp asks.
+	fstore_t room = {F_ALLOCATECONTIG | F_ALLOCATEALL, F_PEOFPOSMODE, 0, 5000, -7}, less = {F_ALLOCATEALL, F_PEOFPOSMODE, 0, -1, -7}, within = {F_ALLOCATEALL, F_PEOFPOSMODE, 5, 5000, -7},
+	         elsewhere = {F_ALLOCATEALL, F_VOLPOSMODE, 0, 5000, -7}, again = {F_ALLOCATEALL, F_PEOFPOSMODE, 0, 0, -7};
+	struct stat before, after;
+	fstat(fd, &before);
+	printf("room for 5000 bytes past its end: %d, had %lld", fcntl(fd, F_PREALLOCATE, &room), room.fst_bytesalloc);
+	fstat(fd, &after);
+	printf(", and it is as long as it was %d; for none: %d, had %lld", after.st_size == before.st_size, fcntl(fd, F_PREALLOCATE, &again), again.fst_bytesalloc);
+	printf("; for less than none: %d (%s), had %lld", fcntl(fd, F_PREALLOCATE, &less), strerror(errno), less.fst_bytesalloc);
+	printf("; from a place in it: %d (%s), had %lld", fcntl(fd, F_PREALLOCATE, &within), strerror(errno), within.fst_bytesalloc);
+	printf("; from a place on the disk: %d (%s)\n", fcntl(fd, F_PREALLOCATE, &elsewhere), strerror(errno));
+	printf("of one opened only to read: %d (%s)", fcntl(reads, F_PREALLOCATE, &room), strerror(errno));
+	printf("; of a directory: %d (%s)", fcntl(dir, F_PREALLOCATE, &room), strerror(errno));
+	printf("; of a pipe: %d (%s)\n", fcntl(ends[1], F_PREALLOCATE, &room), strerror(errno));
+	close(fd);
+	close(reads);
+	close(dir);
+
 	// A directory.
-	int dir = open("/", O_RDONLY);
+	dir = open("/", O_RDONLY);
 	printf("a directory: %#x; appending set: %d", fcntl(dir, F_GETFL), fcntl(dir, F_SETFL, O_APPEND));
 	printf(", and it is then %#x\n", fcntl(dir, F_GETFL));
 	close(dir);

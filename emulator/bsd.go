@@ -969,6 +969,9 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 		p.unimplemented("proc_pidinfo's unique record of a program with no UUID", a)
 		return -eNOSYS
 	}
+	if flavor == pidListFDs {
+		return p.listFDs(about, buf, size, a)
+	}
 	{ // a flavour with too little room for it falls to the stop below, but for those measured
 		switch r := about.record(); {
 		case flavor == pidBSDInfo && size >= 136:
@@ -1001,6 +1004,7 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 
 // The flavours of proc_pidinfo that are answered.
 const (
+	pidListFDs       = 1  // PROC_PIDLISTFDS: its descriptors (see procs.go)
 	pidBSDInfo       = 3  // PROC_PIDTBSDINFO: struct proc_bsdinfo
 	pidPathInfo      = 11 // PROC_PIDPATHINFO: where its program is
 	pidShortBSDInfo  = 13 // PROC_PIDT_SHORTBSDINFO: struct proc_bsdshortinfo
@@ -1071,7 +1075,7 @@ func (p *Process) launchdInfo(flavor, buf, size uint64, a []uint64) int64 {
 		of.uuid = *p.m.launchdUUID
 		p.write(buf, of.uniqueInfo())
 		return 56
-	case (flavor == pidBSDInfo || flavor == pidBSDInfoUnique || flavor == pidArchInfo) && p.uid != 0:
+	case (flavor == pidBSDInfo || flavor == pidBSDInfoUnique || flavor == pidArchInfo || flavor == pidListFDs) && p.uid != 0:
 		return -ePERM
 	}
 	p.unimplemented(fmt.Sprintf("proc_pidinfo of launchd, flavor %d", flavor), a)

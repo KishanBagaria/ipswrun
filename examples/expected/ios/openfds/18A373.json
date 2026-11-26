@@ -1,0 +1,7 @@
+{
+  "build": "18A373",
+  "cache_uuid": "697D6E36-0D7B-3237-9F15-4777E3A773AE",
+  "exit_code": 0,
+  "output": "a file is 3, a directory 4, a kqueue 5, a pipe 6 and 7, a pair of sockets 8 and 9, shared memory 10, and the file again 40\nall of them: 96 bytes, 3 of kind 1, 4 of kind 1, 5 of kind 5, 6 of kind 6, 7 of kind 6, 8 of kind 2, 9 of kind 2, 10 of kind 3, 40 of kind 1; the three it started with first 1; nothing written after 1\ninto room for five: 40 bytes, 3 of kind 1, 4 of kind 1; the three it started with first 1; nothing written after 1\ninto room for two and a half: 16 bytes; the three it started with first 0; nothing written after 1\ninto room for less than one: 0 bytes (Cannot allocate memory); the three it started with first 0; nothing written after 1\nwith the directory closed: 88 bytes, 3 of kind 1, 5 of kind 5, 6 of kind 6, 7 of kind 6, 8 of kind 2, 9 of kind 2, 10 of kind 3, 40 of kind 1; the three it started with first 1; nothing written after 1\nroom would be had for more than the highest that is open 1; with descriptor 200 open, for more than before 1, a table of 256 and 20 more 1; with it closed again, as many still 1\nof launchd's: 0 (Operation not permitted)\n",
+  "version": "14.0"
+}

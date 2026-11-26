@@ -2,6 +2,9 @@ package emulator
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+	"syscall"
 	"time"
 )
 
@@ -207,4 +210,88 @@ func sysTaskReadForPID(p *Process, a []uint64) int64 {
 		return -eNOSYS
 	}
 	return -ePERM
+}
+
+// The descriptors a process has open, as proc_pidinfo lists them (PROC_PIDLISTFDS, by which ssh
+// finds what to close), measured on macOS 27.2.1: each as its number and what kind of thing it
+// is of, in order, as many whole ones as there is room for, and ENOMEM into room for less than
+// one. Asked with no room, it says how much the whole table of them would take, which is 20
+// more than the table has places: 25 to begin with, 64 once one of that number or above is
+// opened, and twice as many each time after, never fewer again.
+
+const (
+	fdRoomAtFirst = 25
+	fdRoomUnknown = -1 // of a process that began with a descriptor above the first 25, which was not measured
+
+	listedFile, listedSocket, listedShared, listedKqueue, listedPipe = 1, 2, 3, 5, 6
+)
+
+// holds notes that a descriptor of a number is opened, for how large the table of them is.
+func (p *Process) holds(n uint64) {
+	for p.fdRoom != fdRoomUnknown && n >= uint64(p.fdRoom) {
+		p.fdRoom = max(64, 2*p.fdRoom)
+	}
+}
+
+// inherits notes what a new process, or the program one becomes, has open as it starts: a table
+// of the first size, as measured of one with nothing above it.
+func (p *Process) inherits() {
+	p.fdRoom = fdRoomAtFirst
+	for n := range p.fds {
+		if n >= fdRoomAtFirst {
+			p.fdRoom = fdRoomUnknown
+		}
+	}
+}
+
+// listed is the kind proc_pidinfo says a descriptor is of. What the run itself was given to
+// read and write is what the host says it is.
+func (f *fd) listed() uint32 {
+	switch {
+	case f.kind == pipeFD:
+		return listedPipe
+	case f.kind == socketFD:
+		return listedSocket
+	case f.kq != nil:
+		return listedKqueue
+	case f.shared != nil:
+		return listedShared
+	case f.kind == stdioFD:
+		var st syscall.Stat_t
+		if syscall.Fstat(f.host, &st) == nil {
+			switch st.Mode & syscall.S_IFMT {
+			case syscall.S_IFIFO:
+				return listedPipe
+			case syscall.S_IFSOCK:
+				return listedSocket
+			}
+		}
+	}
+	return listedFile
+}
+
+// listFDs is PROC_PIDLISTFDS of a process, for the process itself.
+func (p *Process) listFDs(about *Process, buf, size uint64, a []uint64) int64 {
+	switch {
+	case about != p:
+		p.unimplemented("proc_pidinfo's list of another process's descriptors", a)
+		return -eNOSYS
+	case buf == 0 && size == 0:
+		if p.fdRoom == fdRoomUnknown {
+			p.unimplemented("how large the table of descriptors is, of a process that began with one above the first 25", a)
+			return -eNOSYS
+		}
+		return int64(p.fdRoom+20) * 8
+	case size < 8:
+		return -eNOMEM
+	}
+	var out []byte
+	for _, n := range slices.Sorted(maps.Keys(p.fds)) {
+		if uint64(len(out))+8 > size {
+			break
+		}
+		out = append(out, le32(uint32(n), p.fds[n].listed())...)
+	}
+	p.write(buf, out)
+	return int64(len(out))
 }
