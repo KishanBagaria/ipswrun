@@ -736,7 +736,18 @@ func sysMacSyscall(p *Process, a []uint64) int64 {
 		return p.sandboxQuery(a)
 	case "Sandbox 12":
 		return p.sandboxPassthrough(a)
-	case "Sandbox 22": // a profile the kernel has by name: none, so libsandbox compiles it
+	case "Sandbox 1": // putting on a profile the kernel has by name, {its name, ...}: as one that was compiled, it confines nothing
+		name := p.cstr(p.u64(a[2]))
+		p.note("  the profile %q", name)
+		if !p.kernelHasProfile(name, a) {
+			p.unimplemented("putting on a sandbox profile by a name the kernel has none for", a)
+			return -eNOENT
+		}
+		return 0
+	case "Sandbox 22": // a profile the kernel has by name; of any other ENOENT, and libsandbox compiles it from its file
+		if p.kernelHasProfile(p.cstr(p.u64(a[2])), a) {
+			return 0
+		}
 		return -eNOENT
 	case "Sandbox 67": // sandbox_get_container_expected: {&expected, &second}
 		p.write(p.u64(a[2]), le64(0))

@@ -224,13 +224,28 @@ func im4pPayloadData(raw []byte) ([]byte, error) {
 		return nil, ErrEncrypted
 	}
 	data := p.Data
-	if isLZFSE(data) {
-		if data = lzfse.DecodeBuffer(data); len(data) == 0 {
-			return nil, errors.New("payload does not decompress")
+	if !isLZFSE(data) {
+		return data, nil
+	}
+	// The payload says how long it is unpacked, where it says anything; where it does not, room
+	// is made for more and more until it fits (a kernelcache unpacks to over four times its size).
+	if size := p.Compression.UncompressedSize; size > 0 {
+		out := make([]byte, size+1)
+		if n := lzfse.DecodeBufferInto(data, out); n == size {
+			return out[:n], nil
+		}
+		return nil, errors.New("payload does not decompress")
+	}
+	for room := 4 * len(data); room <= maxUnpackedPayload; room *= 2 {
+		out := make([]byte, room)
+		if n := lzfse.DecodeBufferInto(data, out); n > 0 && n < room {
+			return out[:n], nil
 		}
 	}
-	return data, nil
+	return nil, errors.New("payload does not decompress")
 }
+
+const maxUnpackedPayload = 1 << 30
 
 func isLZFSE(data []byte) bool {
 	if len(data) < 4 {

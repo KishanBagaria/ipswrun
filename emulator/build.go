@@ -386,7 +386,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 	}
 
 	build := image.Build()
-	m, err := NewMachine(Config{Program: program, Launch: launch, Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, Stdout: run.Stdout, Stderr: run.Stderr, System: system, Trace: run.Trace, Survey: run.Survey,
+	m, err := NewMachine(Config{Program: program, Launch: launch, Unicorn: run.Unicorn, Cache: cache, CacheDir: guestDir, Home: run.Home, Mounts: mounts, Dyld: dyld, Drivers: run.Drivers, DeviceTree: image.DeviceTree, KernelCache: image.KernelCache, Stdout: run.Stdout, Stderr: run.Stderr, System: system, Trace: run.Trace, Survey: run.Survey,
 		OS: map[string]string{"build": build, "version": image.Version(), "release": leadingDigits.FindString(build) + ".0.0", "model": image.Device(), "board": image.Board()}})
 	if err != nil {
 		return nil, cache, err

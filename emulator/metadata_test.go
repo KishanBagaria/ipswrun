@@ -491,7 +491,8 @@ func TestMacSyscall(t *testing.T) {
 		words  []uint64
 		stop   string
 	}{
-		{"Sandbox", 1, nil, "__mac_syscall Sandbox 1"},
+		{"Sandbox", 1, []uint64{dataAddr}, "putting on a sandbox profile by a name the kernel has none for"}, // the name is at dataAddr
+		{"Sandbox", 3, nil, "__mac_syscall Sandbox 3"},
 		{"Sandbox", 12, []uint64{1, 0x102}, "sandbox passthrough access of descriptor 1, flags 0x102"},
 		{"Quarantine", 88, nil, "__mac_syscall Quarantine 88"},
 		{"AMFI", 91, nil, "__mac_syscall AMFI 91"},

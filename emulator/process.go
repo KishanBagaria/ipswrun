@@ -220,6 +220,10 @@ type Config struct {
 	// DeviceTree reads the device's flattened device tree, which is what the I/O Registry holds;
 	// with none, the registry is not there to ask. It is read when a guest first asks.
 	DeviceTree func() ([]byte, error)
+	// KernelCache reads the release's kernel and the extensions it starts with, unpacked: where
+	// the sandbox profiles the kernel has by name are. It is read when a guest first asks for a
+	// profile the release has no file for; with none, the kernel has no profile by name.
+	KernelCache func() ([]byte, error)
 	// System serves read-only files from the build's system volume; a lookup failure stops the run.
 	System func(path string) (SystemFile, error)
 	OS     map[string]string // "version", "build" and "release" reported by sysctl

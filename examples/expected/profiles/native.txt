@@ -1,0 +1,3 @@
+a profile the kernel has (com.apple.opendirectoryd): 0
+one that is a file of the release's (com.apple.notifyd): 0
+one there is not (no.such.profile): -1, no.such.profile: profile not found

@@ -148,29 +148,42 @@ func (m *Image) Board() string {
 // it: flattened, with the values the boot loader fills in still to be filled. The error is
 // ErrEncrypted's for a tree only the device can decrypt.
 func (m *Image) DeviceTree() ([]byte, error) {
+	return m.firmware("DeviceTree", "device tree", maxDeviceTreeSize)
+}
+
+// KernelCache is the kernel the restore image has for Device, with the extensions it starts
+// with, unpacked. The error is ErrEncrypted's for one only the device can decrypt.
+func (m *Image) KernelCache() ([]byte, error) {
+	return m.firmware("KernelCache", "kernelcache", maxKernelCacheSize)
+}
+
+const maxKernelCacheSize = 256 << 20
+
+// firmware is the payload of the file the restore image's manifest has for Device under a key.
+func (m *Image) firmware(key, what string, max int) ([]byte, error) {
 	identities, err := m.deviceIdentities()
 	if err != nil {
 		return nil, err
 	}
 	var name string
 	for _, identity := range identities {
-		p := identity.Manifest["DeviceTree"].Info.Path
+		p := identity.Manifest[key].Info.Path
 		if strings.Contains(identity.Info.Variant, "Recovery") || p == "" {
 			continue
 		}
 		if name != "" && name != p {
-			return nil, fmt.Errorf("several device trees for %s (%s, %s)", m.device, name, p)
+			return nil, fmt.Errorf("several %ss for %s (%s, %s)", what, m.device, name, p)
 		}
 		name = p
 	}
 	if name == "" {
-		return nil, fmt.Errorf("the restore image names no device tree for %s", m.device)
+		return nil, fmt.Errorf("the restore image names no %s for %s", what, m.device)
 	}
 	for _, f := range m.archive.File {
 		if f.Name != name {
 			continue
 		}
-		raw, err := readMember(f, maxDeviceTreeSize)
+		raw, err := readMember(f, max)
 		if err != nil {
 			return nil, err
 		}
