@@ -344,8 +344,7 @@ type Process struct {
 	cacheDir   string
 	cachePaths map[string]dyldcache.File
 	inodes     map[string]uint64
-	seen       map[fileID]string // every file the guest has looked at, for fsgetpath
-	slide      uint64            // of the shared region, once dyld maps the cache into it
+	slide      uint64 // of the shared region, once dyld maps the cache into it
 	slideSet   bool
 	imageInfo  [2]uint64 // address and size of dyld's __all_image_info, for TASK_DYLD_INFO
 }
@@ -454,11 +453,8 @@ func (m *Machine) newProcess(executable string, exe []byte, path string) (p *Pro
 		mapped: map[uint64]struct{}{}, brk: heapStart(cfg.Cache.Platform), nextPort: 0x1003, unknown: map[unknownMIG]int{}, semaphores: map[uint32]int{}, handoffs: map[uint64]int{}, kqueues: map[uint64]*kqueue{}, rwlocks: map[uint64]*rwlock{},
 		names: map[uint32]*right{}, named: map[*port]uint32{}, ignored: map[int]int{},
 		fds:      map[uint64]*fd{0: {kind: stdioFD, host: 0}, 1: {kind: stdioFD, host: 1}, 2: {kind: stdioFD, host: 2}},
-		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{path: exeInode, guestDyld: dyldInode}, seen: map[fileID]string{}}
+		cacheDir: cfg.CacheDir, cachePaths: map[string]dyldcache.File{}, inodes: map[string]uint64{path: exeInode, guestDyld: dyldInode}}
 	p.ppid, p.stdio, p.cloexec, p.began = launchdPID, p, map[uint64]bool{}, m.clock.now()
-	for _, v := range volumes { // their roots, for fsgetpath
-		p.seen[fileID{v.dev, rootInode}] = v.mount
-	}
 	for suffix, f := range cfg.Cache.Files {
 		p.cachePaths[cfg.CacheDir+"/"+CacheName+suffix] = f
 	}

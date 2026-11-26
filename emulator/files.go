@@ -1651,16 +1651,33 @@ func sysPathconf(p *Process, a []uint64) int64 {
 	return -eINVAL
 }
 
+// saw notes where a file of a number is, for fsgetpath: every file a guest has looked at, which
+// is the machine's to know and so any process's to ask, as a Mac's kernel finds a file by its
+// number for whoever asks (examples/spawngroup.c). One no guest has looked at is not found here.
+func (m *Machine) saw(id fileID, path string) {
+	if m.seen == nil {
+		m.seen = map[fileID]string{}
+	}
+	m.seen[id] = path
+}
+
 // sysFsgetpath turns a volume and an inode number back into a path: of a volume's root, or of a
-// file the guest has looked at before.
+// file a guest has looked at before. Every process's own program has one number here, so that
+// number is the asker's own program, whoever looked last.
 func sysFsgetpath(p *Process, a []uint64) int64 {
-	id := le.Uint32(p.read(a[2], 8))
-	for _, v := range volumes { // a volume by its own id: its files are known by their device's
-		if id == v.fsid {
-			id = v.dev
+	id, root := le.Uint32(p.read(a[2], 8)), ""
+	for _, v := range volumes { // a volume by its own id or its device's: its files are known by the device's
+		if id == v.fsid || id == v.dev {
+			id, root = v.dev, v.mount
 		}
 	}
-	path, ok := p.seen[fileID{id, a[3]}]
+	path, ok := p.m.seen[fileID{id, a[3]}]
+	switch {
+	case a[3] == rootInode && root != "": // which is there whoever has looked
+		path, ok = root, true
+	case ok && a[3] == exeInode:
+		path = p.path
+	}
 	if !ok || uint64(len(path)) >= a[1] {
 		return -eNOENT
 	}

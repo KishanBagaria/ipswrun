@@ -40,6 +40,7 @@ type Machine struct {
 	polls        []carried          // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
 	pipes        uint64             // how many pipes were ever made: the next one's number
 	host, clocks *port              // the host's port and its clock's, while any process has a right to them (see kernelports.go)
+	seen         map[fileID]string  // where each file a guest has looked at is, by its number (see saw)
 	uniques      uint64             // how many processes were given a number of their own, after launchd's
 	versions     uint32             // how many versions were given, after launchd's (see lineage)
 	launchdUUID  *[16]byte          // the UUID of the release's launchd, once a process has asked for it

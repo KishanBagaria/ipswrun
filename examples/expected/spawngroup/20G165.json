@@ -1,0 +1,7 @@
+{
+  "build": "20G165",
+  "cache_uuid": "5F50D953-A228-3416-A982-9FDE102DB036",
+  "exit_code": 0,
+  "output": "into a group of its own: 0, its group its own 1\ninto that one's group: 0, its group that 1\ninto its parent's by number: 0, its group its parent's 1\ninto a group there is not: 1 (Operation not permitted), a process started 0\ninto launchd's, which is another session's: 1 (Operation not permitted), a process started 0\ntold a group below zero: 22 (Invalid argument)\na program told a file's numbers finds it: the file\n",
+  "version": "11.6"
+}

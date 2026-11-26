@@ -1,0 +1,7 @@
+into a group of its own: 0, its group its own 1
+into that one's group: 0, its group that 1
+into its parent's by number: 0, its group its parent's 1
+into a group there is not: 1 (Operation not permitted), a process started 0
+into launchd's, which is another session's: 1 (Operation not permitted), a process started 0
+told a group below zero: 22 (Invalid argument)
+a program told a file's numbers finds it: the file

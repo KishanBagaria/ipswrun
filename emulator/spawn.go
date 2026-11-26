@@ -192,8 +192,15 @@ func sysPosixSpawn(p *Process, a []uint64) int64 {
 	if a[2] != 0 && flags&(spawnSetPgroup|spawnSetSigdef|spawnSetSigmask) != 0 {
 		attr := p.read(p.u64(a[2]+8), 16)
 		if flags&spawnSetPgroup != 0 {
+			// As setpgid has it, and as measured (examples/spawngroup.c): a group below zero
+			// is EINVAL, and one that no process of the session is in EPERM; nothing is started.
 			group = le.Uint32(attr[12:])
-			ownGroup = group == 0
+			switch ownGroup = group == 0; {
+			case int32(group) < 0:
+				return -eINVAL
+			case !ownGroup && !p.groupThere(group):
+				return -ePERM
+			}
 		}
 		if flags&spawnSetSigdef != 0 {
 			sigdefault = le.Uint32(attr[4:])
@@ -567,19 +574,23 @@ func sysSetpgid(p *Process, a []uint64) int64 {
 	if to == 0 {
 		to = of.pid
 	}
-	there := func(q *Process) bool { return q.group() == to && q.sessionOf() == of.sessionOf() }
 	switch {
 	case group < 0:
 		return -eINVAL
 	case of.sessionOf() == of.pid || of.sessionOf() != p.sessionOf():
 		return -ePERM
-	case to != of.pid && !slices.ContainsFunc(p.m.live(), there):
+	case to != of.pid && !of.groupThere(to):
 		return -ePERM
 	}
 	if of.pgroup = to; to == of.pid {
 		of.pgroup = 0
 	}
 	return 0
+}
+
+// groupThere is whether a group is one a process may go into: one a process of its session is in.
+func (p *Process) groupThere(group uint32) bool {
+	return slices.ContainsFunc(p.m.live(), func(q *Process) bool { return q.group() == group && q.sessionOf() == p.sessionOf() })
 }
 
 // sysGetsid is the session of a process, by its pid, or with 0 of the caller. launchd's is its
@@ -694,7 +705,7 @@ func (p *Process) fork() *Process {
 	p.handOn(child, true)
 	child.sigactions = p.sigactions
 	child.threadStart, child.wqThread, child.pthreadSize, child.tsdOffset, child.portOffset = p.threadStart, p.wqThread, p.pthreadSize, p.tsdOffset, p.portOffset
-	child.inodes, child.seen = maps.Clone(p.inodes), maps.Clone(p.seen)
+	child.inodes = maps.Clone(p.inodes)
 	child.slide, child.slideSet, child.imageInfo, child.dit = p.slide, p.slideSet, p.imageInfo, p.dit
 
 	// Its memory: what a new process has that is the kernel's (the commpage, the tables that

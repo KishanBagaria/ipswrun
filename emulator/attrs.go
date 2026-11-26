@@ -57,7 +57,7 @@ func (p *Process) describe(kind fdKind, path string, size int64, hostStat func(*
 		info.ino = crcInode(path)
 	}
 	if path != "" {
-		p.seen[fileID{info.dev, info.ino}] = path
+		p.m.saw(fileID{info.dev, info.ino}, path)
 	}
 	return info, 0
 }

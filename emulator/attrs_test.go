@@ -119,7 +119,6 @@ func testMountsProcess(t *testing.T, exe string, mounts []Mount) *Process {
 		exePath: exe,
 		path:    GuestExe,
 		fds:     map[uint64]*fd{0: {kind: stdioFD, host: 0}, 1: {kind: stdioFD, host: 1}, 2: {kind: stdioFD, host: 2}},
-		seen:    map[fileID]string{},
 		inodes:  map[string]uint64{},
 	}
 }
