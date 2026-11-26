@@ -1509,6 +1509,8 @@ func sysDup2(p *Process, a []uint64) int64 { return p.dupFD(a[0], a[1], true) }
 type volume struct {
 	dev           uint32 // what stat says of its files
 	mount, device string
+	name          string // as a newly installed Mac calls it
+	uuid          string // 16 bytes that are this machine's own for it, and no other volume's
 	// What statfs says besides: the volume's own id, and how a Mac has it mounted (measured on
 	// macOS 27.2.1; not known for iOS, and left out there).
 	fsid, flags uint32
@@ -1525,11 +1527,11 @@ const (
 // system's has an id of its own there, and either id finds a file of either (fsgetpath).
 var (
 	volumes = []volume{
-		{dev: deviceID + 1, mount: preboot, device: "/dev/disk1s2", fsid: deviceID + 1, flags: 0x4909000},
-		{dev: deviceID, mount: "/", device: "/dev/disk1", fsid: systemFSID, flags: 0x4480d001},
+		{dev: deviceID + 1, mount: preboot, device: "/dev/disk1s2", name: "Preboot", uuid: "ipswrun preboot\x00", fsid: deviceID + 1, flags: 0x4909000},
+		{dev: deviceID, mount: "/", device: "/dev/disk1", name: "Macintosh HD", uuid: "ipswrun volume \x00", fsid: systemFSID, flags: 0x4480d001},
 	}
 	// dataFiles is the volume the home and the paths of the data volume are on.
-	dataFiles = volume{dev: deviceID, mount: dataMount, device: "/dev/disk1s1", fsid: deviceID, flags: 0x4909080}
+	dataFiles = volume{dev: deviceID, mount: dataMount, device: "/dev/disk1s1", name: "Data", uuid: "ipswrun data   \x00", fsid: deviceID, flags: 0x4909080}
 )
 
 // volumeOf is the volume a canonical guest path is on, by where it is.
@@ -1566,8 +1568,15 @@ func (p *Process) volumeAt(path string) volume {
 }
 
 func (p *Process) statfs(path string, buf uint64) int64 {
-	v := p.volumeAt(path)
-	b := make([]byte, 2168)
+	p.write(buf, p.volumeAt(path).statfs())
+	return 0
+}
+
+const statfsSize = 2168
+
+// statfs is the struct statfs of a volume.
+func (v volume) statfs() []byte {
+	b := make([]byte, statfsSize)
 	le.PutUint32(b[0:], volumeBlockSize)  // f_bsize
 	le.PutUint32(b[4:], 1<<20)            // f_iosize
 	le.PutUint64(b[8:], volumeBlocks)     // f_blocks
@@ -1581,8 +1590,27 @@ func (p *Process) statfs(path string, buf uint64) int64 {
 	copy(b[72:], "apfs")
 	copy(b[88:], v.mount)
 	copy(b[1112:], v.device)
-	p.write(buf, b)
-	return 0
+	return b
+}
+
+// sysGetfsstat64 is getfsstat(buffer, its size, flags): the volumes that are mounted, the root
+// first, as many as there is room for, or with no buffer how many there are. They are the three
+// of a Mac's that are here: a Mac has more (/dev, and the volumes it keeps for itself), which
+// are left out. Of an iPhone's only the root is known to be, and is all that is listed, as
+// statfs says it there (its dyld asks as it starts).
+func sysGetfsstat64(p *Process, a []uint64) int64 {
+	list := []volume{p.volumeAt("/")}
+	if p.cache.Platform != dyldcache.IOS {
+		list = []volume{volumeOf("/"), volumeOf(preboot), dataFiles}
+	}
+	if a[0] == 0 {
+		return int64(len(list))
+	}
+	n := min(uint64(len(list)), a[1]/statfsSize)
+	for i := range n {
+		p.write(a[0]+i*statfsSize, list[i].statfs())
+	}
+	return int64(n)
 }
 
 func sysStatfs64(p *Process, a []uint64) int64 {

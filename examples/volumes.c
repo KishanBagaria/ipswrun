@@ -38,6 +38,18 @@ static void volume(const char *what, const char *path, int named) {
 	printf("%s: mounted on %s, as an %s volume, flags %#x (read-only %d, local %d)\n", what, f.f_mntonname, f.f_fstypename, f.f_flags, (f.f_flags & MNT_RDONLY) != 0, (f.f_flags & MNT_LOCAL) != 0);
 	printf("   its device to stat is the first file's %d, and to getattrlist that too %d, as is the volume getattrlist names %d; the volume statfs names is that device %d\n", s.st_dev == first,
 	       attrs.dev == s.st_dev, attrs.fsid.val[0] == s.st_dev, f.f_fsid.val[0] == s.st_dev);
+	struct attrlist ofVolume = {.bitmapcount = ATTR_BIT_MAP_COUNT, .volattr = ATTR_VOL_INFO | ATTR_VOL_MOUNTPOINT | ATTR_VOL_NAME | ATTR_VOL_MOUNTFLAGS};
+	struct {
+		uint32_t length;
+		attrreference_t mount, name;
+		uint32_t flags;
+		char text[2048];
+	} __attribute__((packed)) v = {0};
+	if (getattrlist(path, &ofVolume, &v, sizeof v, 0))
+		printf("   its volume to getattrlist: %s\n", strerror(errno));
+	else
+		printf("   its volume to getattrlist: \"%s\", mounted on what statfs says %d, with its flags %d\n", (char *)&v.name + v.name.attr_dataoffset,
+		       !strcmp((char *)&v.mount + v.mount.attr_dataoffset, f.f_mntonname), v.flags == f.f_flags);
 	if (named)
 		printf("   found again by the volume statfs names: %s; by its device: %s\n", byVolume > 0 ? found : strerror(errno), byDevice > 0 ? again : strerror(errno));
 	else
@@ -53,5 +65,20 @@ int main(void) {
 	volume("the root", "/", 1);
 	volume("a file of the user's own", own, 0);
 	unlink(own);
+
+	// What is mounted: a Mac has more than these two, and these are among them, the root first.
+	int count = getfsstat(NULL, 0, MNT_NOWAIT);
+	struct statfs *mounts = calloc(count + 1, sizeof *mounts);
+	int listed = getfsstat(mounts, (count + 1) * (int)sizeof *mounts, MNT_NOWAIT), root = -1, data = -1;
+	for (int i = 0; i < listed; i++) {
+		if (!strcmp(mounts[i].f_mntonname, "/"))
+			root = i;
+		if (!strcmp(mounts[i].f_mntonname, "/System/Volumes/Data"))
+			data = i;
+	}
+	printf("mounted: as many listed as counted %d; the root first %d, read-only %d; the data volume among them %d, as statfs says of a file on it %d\n", count > 0 && listed == count, root == 0,
+	       root >= 0 && (mounts[root].f_flags & MNT_RDONLY) != 0, data > 0, data > 0 && mounts[data].f_fsid.val[0] == first);
+	printf("with room for one: %d; for less than one: %d; told to wait for each to answer: as many %d\n", getfsstat(mounts, sizeof *mounts, MNT_NOWAIT), getfsstat(mounts, 100, MNT_NOWAIT),
+	       getfsstat(NULL, 0, MNT_WAIT) == count);
 	return 0;
 }

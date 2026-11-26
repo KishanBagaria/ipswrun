@@ -1,9 +1,14 @@
 a program of the system's: mounted on /, as an apfs volume, flags 0x4480d001 (read-only 1, local 1)
    its device to stat is the first file's 1, and to getattrlist that too 1, as is the volume getattrlist names 1; the volume statfs names is that device 0
+   its volume to getattrlist: "Macintosh HD", mounted on what statfs says 1, with its flags 1
    found again by the volume statfs names: /usr/lib/dyld; by its device: /usr/lib/dyld
 the root: mounted on /, as an apfs volume, flags 0x4480d001 (read-only 1, local 1)
    its device to stat is the first file's 1, and to getattrlist that too 1, as is the volume getattrlist names 1; the volume statfs names is that device 0
+   its volume to getattrlist: "Macintosh HD", mounted on what statfs says 1, with its flags 1
    found again by the volume statfs names: /; by its device: /
 a file of the user's own: mounted on /System/Volumes/Data, as an apfs volume, flags 0x4909080 (read-only 0, local 1)
    its device to stat is the first file's 1, and to getattrlist that too 1, as is the volume getattrlist names 1; the volume statfs names is that device 1
+   its volume to getattrlist: "Data", mounted on what statfs says 1, with its flags 1
    found again by the volume statfs names: 1; by its device: 1
+mounted: as many listed as counted 1; the root first 1, read-only 1; the data volume among them 1, as statfs says of a file on it 1
+with room for one: 1; for less than one: 0; told to wait for each to answer: as many 1

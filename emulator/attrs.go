@@ -132,6 +132,9 @@ type attrContext struct {
 	path string // canonical guest path
 }
 
+// volume is the volume the file is on, as statfs names it.
+func (c *attrContext) volume() volume { return c.p.volumeAt(c.path) }
+
 func (c *attrContext) isDir() bool { return c.mode&syscall.S_IFMT == syscall.S_IFDIR }
 
 // attrFinderInfo is a file's Finder info, which is its attribute com.apple.FinderInfo: nil if
@@ -227,13 +230,16 @@ var (
 		{0x80, 4, attrBlock},
 		{0x100, 4, always(le32(volumeObjects / 2))}, {0x200, 4, nil}, {0x400, 4, nil},
 		{0x800, 4, always(le32(volumeObjects))},
-		{0x1000, 0, func(c *attrContext) []byte { return str(volumeOf(c.path).mount) }}, {0x2000, 0, always(str("Macintosh HD"))},
-		{0x4000, 4, nil}, {0x8000, 0, func(c *attrContext) []byte { return str(volumeOf(c.path).device) }}, {0x10000, -8, nil},
+		// Where it is mounted, its name, how it is mounted and from what: statfs's own answers.
+		{0x1000, 0, func(c *attrContext) []byte { return str(c.volume().mount) }},
+		{0x2000, 0, func(c *attrContext) []byte { return str(c.volume().name) }},
+		{0x4000, 4, func(c *attrContext) []byte { return le32(c.volume().flags) }},
+		{0x8000, 0, func(c *attrContext) []byte { return str(c.volume().device) }}, {0x10000, -8, nil},
 		// Capabilities, then which of them are valid: a case-preserving volume with persistent 64-bit
 		// object ids, links, sparse files and attribute lists; nothing that renames atomically in
 		// more than one step, so callers fall back to plain rename.
 		{0x20000, 32, always(le32(0x26E47, 0x2, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0))},
-		{0x40000, 16, always([]byte("ipswrun volume \x00"))},
+		{0x40000, 16, func(c *attrContext) []byte { return []byte(c.volume().uuid) }}, // its own, as each volume of a Mac's has
 		{0x80000, 4, nil}, {0x100000, 0, always(str("apfs"))}, // extended mount flags, type name
 		{0x200000, 4, nil}, {0x400000, 4, nil}, // subtype, owner
 		{0x800000, 8, always(le64((volumeBlocks - volumeFree) * volumeBlockSize))},
