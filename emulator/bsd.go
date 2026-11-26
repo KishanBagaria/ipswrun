@@ -947,9 +947,16 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 	// Everything else is asked about a process, which may be another: a daemon asks about its
 	// client. One that has ended is not there to ask of, waited for or not. launchd is, and being
 	// root's says less of itself to a user: what it says in short, and where its program is.
-	// Only that is answered (call 2, PROC_INFO_CALL_PIDINFO): any other call stops and names itself,
+	// That (call 2, PROC_INFO_CALL_PIDINFO) and what a process sets of itself (5) and of its
+	// work in hand (8, see procctl.go) are answered: any other call stops and names itself,
 	// whatever its second argument is, which is not always a pid.
-	if callnum != 2 {
+	switch callnum {
+	case 2: // answered below
+	case 5:
+		return p.procSetControl(uint32(a[1]), flavor, buf, size, a)
+	case 8:
+		return p.procDirtyControl(uint32(a[1]), flavor, a[3], a)
+	default:
 		p.unimplemented(fmt.Sprintf("proc_info call %d, flavor %d", callnum, flavor), a)
 		return -eNOSYS
 	}

@@ -1,0 +1,7 @@
+two pages copied: 0, as the first has them 1, and the third left as it was 1
+14 bytes from across the edge of a page, to a place within one: 0, "edge of a page", with what is beside them left 1
+8 bytes to two bytes on in the same place: 0, "0101234567"
+of no bytes: 0; of no bytes from memory that is not there: 0
+from memory that is not there: 1; to memory that is not there: 1; a length that runs past what is there: 1
+to memory that may only be read: 1; from memory that may not be read: 1
+asked of the host: 4

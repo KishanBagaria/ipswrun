@@ -37,6 +37,7 @@ const (
 	eLOOP     = 62
 	eRANGE    = 34
 	eAGAIN    = 35
+	eALREADY  = 37
 	ePIPE     = 32
 	eNOTSUP   = 45
 	eTIMEDOUT = 60

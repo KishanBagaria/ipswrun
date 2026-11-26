@@ -338,9 +338,10 @@ type Process struct {
 	// The port its own task may be read by (task_read_for_pid of itself), while it has a right
 	// to it.
 	taskRead *port
-	fdRoom   int   // how many places its table of descriptors has (see procs.go)
-	lineage        // what tells it from every other process there has been (see lineage.go)
-	task     *port // the task's own port, while the process has a right to it (see kernelports.go)
+	dirtying dirtyTracking // what it told the kernel of having work in hand (see procctl.go)
+	fdRoom   int           // how many places its table of descriptors has (see procs.go)
+	lineage                // what tells it from every other process there has been (see lineage.go)
+	task     *port         // the task's own port, while the process has a right to it (see kernelports.go)
 	// Where what it was started with begins, which is the top of its stack from the program's path
 	// up, and how many arguments, as the kernel keeps them for whoever asks (kern.procargs2).
 	started uint64

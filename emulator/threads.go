@@ -51,6 +51,7 @@ type thread struct {
 	// What it has had of the CPU, as the user and in the kernel: its part of the process's usage.
 	user, system time.Duration
 	port         uint32 // what mach_thread_self names it
+	name         string // what it named itself (see procctl.go)
 	self         *port  // what that names: the thread, as the kernel answers for it
 	ctx          uintptr
 	pc           uint64

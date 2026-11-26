@@ -415,6 +415,7 @@ func init() {
 		3410: ok, // task_set_special_port
 		3418: migSemaphoreCreate,
 		3419: migSemaphoreDestroy,
+		4807: migVMCopy,
 		4811: migVMMap,
 		4817: migMakeMemoryEntry,
 		4813: migVMRemap,
@@ -432,6 +433,38 @@ func migTaskGetSpecialPort(p *Process, body []byte) migReply {
 		return migPort(bootstrapPort)
 	}
 	return migPort(0)
+}
+
+// migVMCopy is mach_vm_copy(task, from, size, to): so many bytes of the task's memory copied to
+// another place in it, as measured (examples/vmcopy.c). No bytes is no error, wherever from.
+// Memory that is not there, or that may not be read where it is read from or written where it
+// is written to, is KERN_INVALID_ADDRESS, and nothing is copied. Where the two overlap, what
+// is copied is what was there before.
+func migVMCopy(p *Process, body []byte) migReply {
+	from, size, to := le.Uint64(body[32:]), le.Uint64(body[40:]), le.Uint64(body[48:])
+	if size == 0 {
+		return migCode(0)
+	}
+	if !p.may(from, size, 1) || !p.may(to, size, 2) { // VM_PROT_READ, VM_PROT_WRITE
+		return migCode(kernInvalidAddress)
+	}
+	p.write(to, p.read(from, size))
+	return migCode(0)
+}
+
+// may is whether all of a stretch of memory is there and may be accessed so.
+func (p *Process) may(start, size uint64, prot uint32) bool {
+	end := start + size
+	if end < start {
+		return false
+	}
+	for _, r := range p.overlaps(start, end) { // in the order they are in
+		if r.start > start || r.prot()&prot == 0 {
+			return false
+		}
+		start = r.end
+	}
+	return start >= end
 }
 
 // How mach_make_memory_entry is asked for memory that is not the caller's own as it stands.

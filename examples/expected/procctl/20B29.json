@@ -1,0 +1,7 @@
+{
+  "build": "20B29",
+  "cache_uuid": "5B214DF8-6286-3F23-9467-D8050EA7AF75",
+  "exit_code": 0,
+  "output": "a thread named with 6 bytes: 0; with 63: 0; with 64: -1 (File name too long); with none: 0; of another process: -1 (Invalid argument)\nnamed by the library: 0, and it reads back \"as the library names it\"\nbefore it keeps track: it says 0; saying it has work: -1 (Invalid argument); giving up that it is starting: -1 (Invalid argument)\nasked to keep track of nothing: 0, and it says 0\nto be ended when idle without keeping track: -1 (Invalid argument); starting, without: -1 (Invalid argument); put off, without being ended when idle: -1 (Invalid argument); put off both ways: -1 (Invalid argument)\nkeeping track: 0, and it says 1; with work: 0, and it says 5; said again: -1 (Operation already in progress); with none: 0, and it says 1; said again: -1 (Operation already in progress)\nto be ended when idle, and starting: 0, and it says 11\ngiving up nothing: -1 (Invalid argument); that it keeps track: -1 (Invalid argument); that it is starting: 0, and it says 3\nto be put off once: 0, and it says 3; and then every time: 0; giving up being put off: 0, and it says 3\nof the kernel, pid 0: what it is 0, asked to keep track -1 (Operation not permitted)\nof no process: -1 (No such process); launchd asked to keep track, by a user: -1 (Operation not permitted)\n",
+  "version": "11.0.1"
+}
