@@ -117,6 +117,8 @@ for guest in ${guests//,/ }; do
 	[ "$platform" != ios ] || [ "$guest" != shell ] || continue
 	# datavolume and oslog need a data volume, which only a macOS release says how to make.
 	[ "$platform" != ios ] || { [ "$guest" != datavolume ] && [ "$guest" != oslog ]; } || continue
+	# volumes prints how a Mac's volumes are mounted, which is not known of an iPhone's.
+	[ "$platform" != ios ] || [ "$guest" != volumes ] || continue
 	if [ "$(uname)" = Darwin ]; then
 		make -s -C examples PLATFORM=$platform "${bin#examples/}/$guest" || exit
 	elif [ ! -x "$bin/$guest" ]; then
@@ -161,7 +163,7 @@ wait
 
 failed=0
 for guest in ${guests//,/ }; do
-	if [ "$platform" = ios ] && { [ "$guest" = adi ] || [ "$guest" = shell ] || [ "$guest" = datavolume ] || [ "$guest" = oslog ]; }; then
+	if [ "$platform" = ios ] && { [ "$guest" = adi ] || [ "$guest" = shell ] || [ "$guest" = datavolume ] || [ "$guest" = oslog ] || [ "$guest" = volumes ]; }; then
 		echo "== $guest: not run on iOS"
 		continue
 	fi

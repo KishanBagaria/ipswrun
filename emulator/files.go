@@ -392,7 +392,7 @@ func (p *Process) lookup(path string) (target, bool) {
 		return target{kind: dirFD}, true
 	}
 	switch path {
-	case "/", devFDs, "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/private/etc", "/var", "/var/root", "/private/var/root", "/tmp", "/private/tmp", "/emu":
+	case "/", devFDs, "/System/Volumes", dataMount, "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/private/etc", "/var", "/var/root", "/private/var/root", "/tmp", "/private/tmp", "/emu":
 		return target{kind: dirFD}, true
 	}
 	if p.system != nil {
@@ -1507,16 +1507,32 @@ func sysDup2(p *Process, a []uint64) int64 { return p.dupFD(a[0], a[1], true) }
 // volume is a mounted file system. There are two, as on a real system, because callers that list
 // the mounts (CarbonCore) insist that each has its own device id.
 type volume struct {
-	dev           uint32
+	dev           uint32 // what stat says of its files
 	mount, device string
+	// What statfs says besides: the volume's own id, and how a Mac has it mounted (measured on
+	// macOS 27.2.1; not known for iOS, and left out there).
+	fsid, flags uint32
 }
 
-const preboot = "/System/Volumes/Preboot"
+const (
+	preboot    = "/System/Volumes/Preboot"
+	dataMount  = "/System/Volumes/Data"
+	systemFSID = deviceID + 2 // the system volume's own id, to statfs
+)
 
-// volumes are the mounts, the root last.
-var volumes = []volume{{deviceID + 1, preboot, "/dev/disk1s2"}, {deviceID, "/", "/dev/disk1"}}
+// volumes are the mounts, the root last. A Mac's system volume and its data volume are one
+// device to stat and getattrlist, which is the data volume's, and two volumes to statfs: the
+// system's has an id of its own there, and either id finds a file of either (fsgetpath).
+var (
+	volumes = []volume{
+		{dev: deviceID + 1, mount: preboot, device: "/dev/disk1s2", fsid: deviceID + 1, flags: 0x4909000},
+		{dev: deviceID, mount: "/", device: "/dev/disk1", fsid: systemFSID, flags: 0x4480d001},
+	}
+	// dataFiles is the volume the home and the paths of the data volume are on.
+	dataFiles = volume{dev: deviceID, mount: dataMount, device: "/dev/disk1s1", fsid: deviceID, flags: 0x4909080}
+)
 
-// volumeOf is the volume a canonical guest path is on.
+// volumeOf is the volume a canonical guest path is on, by where it is.
 func volumeOf(path string) volume {
 	for _, v := range volumes {
 		if under(path, v.mount) {
@@ -1526,8 +1542,31 @@ func volumeOf(path string) volume {
 	return volumes[len(volumes)-1]
 }
 
+// volumeAt is the volume statfs and the volume's attributes name for a path: on a Mac the data
+// volume for the home and the paths of the data volume, and otherwise where it is. How an
+// iPhone has its volumes mounted is not known: there it is where the path is, with no flags.
+func (p *Process) volumeAt(path string) volume {
+	if p.cache.Platform == dyldcache.IOS {
+		v := volumeOf(path)
+		v.flags = 0
+		return v
+	}
+	for _, m := range p.mounts {
+		switch {
+		case !under(path, m.guest):
+		case m.dataOn != 0:
+			return dataFiles
+		default: // a mount of the run's own, which is no volume of a Mac's: the root's, and how it is mounted not said
+			v := volumeOf(path)
+			v.flags = 0
+			return v
+		}
+	}
+	return volumeOf(path)
+}
+
 func (p *Process) statfs(path string, buf uint64) int64 {
-	v := volumeOf(path)
+	v := p.volumeAt(path)
 	b := make([]byte, 2168)
 	le.PutUint32(b[0:], volumeBlockSize)  // f_bsize
 	le.PutUint32(b[4:], 1<<20)            // f_iosize
@@ -1536,8 +1575,9 @@ func (p *Process) statfs(path string, buf uint64) int64 {
 	le.PutUint64(b[24:], volumeFree)      // f_bavail
 	le.PutUint64(b[32:], volumeObjects)   // f_files
 	le.PutUint64(b[40:], volumeObjects/2) // f_ffree
-	le.PutUint32(b[48:], v.dev)
+	le.PutUint32(b[48:], v.fsid)
 	le.PutUint32(b[52:], fsTypeAPFS)
+	le.PutUint32(b[64:], v.flags) // f_flags
 	copy(b[72:], "apfs")
 	copy(b[88:], v.mount)
 	copy(b[1112:], v.device)
@@ -1577,7 +1617,13 @@ func sysPathconf(p *Process, a []uint64) int64 {
 // sysFsgetpath turns a volume and an inode number back into a path: of a volume's root, or of a
 // file the guest has looked at before.
 func sysFsgetpath(p *Process, a []uint64) int64 {
-	path, ok := p.seen[fileID{le.Uint32(p.read(a[2], 8)), a[3]}]
+	id := le.Uint32(p.read(a[2], 8))
+	for _, v := range volumes { // a volume by its own id: its files are known by their device's
+		if id == v.fsid {
+			id = v.dev
+		}
+	}
+	path, ok := p.seen[fileID{id, a[3]}]
 	if !ok || uint64(len(path)) >= a[1] {
 		return -eNOENT
 	}

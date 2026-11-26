@@ -1,0 +1,7 @@
+{
+  "build": "20B29",
+  "cache_uuid": "5B214DF8-6286-3F23-9467-D8050EA7AF75",
+  "exit_code": 0,
+  "output": "a program of the system's: mounted on /, as an apfs volume, flags 0x4480d001 (read-only 1, local 1)\n   its device to stat is the first file's 1, and to getattrlist that too 1, as is the volume getattrlist names 1; the volume statfs names is that device 0\n   found again by the volume statfs names: /usr/lib/dyld; by its device: /usr/lib/dyld\nthe root: mounted on /, as an apfs volume, flags 0x4480d001 (read-only 1, local 1)\n   its device to stat is the first file's 1, and to getattrlist that too 1, as is the volume getattrlist names 1; the volume statfs names is that device 0\n   found again by the volume statfs names: /; by its device: /\na file of the user's own: mounted on /System/Volumes/Data, as an apfs volume, flags 0x4909080 (read-only 0, local 1)\n   its device to stat is the first file's 1, and to getattrlist that too 1, as is the volume getattrlist names 1; the volume statfs names is that device 1\n   found again by the volume statfs names: 1; by its device: 1\n",
+  "version": "11.0.1"
+}

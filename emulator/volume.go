@@ -11,8 +11,8 @@ import (
 // one volume to a guest, as they are on a Mac: a file is moved, linked and cloned between them.
 // That holds for those the host keeps on one file system of its own, which is where it can be
 // done at all; one the host keeps elsewhere is a volume of its own, as any other mount is, and
-// as the system's is. (What stat and statfs say of a file's volume is volumeOf's, which knows
-// none of this yet.)
+// as the system's is. (What statfs says of a file's volume is volumeAt's: the home and those paths
+// are a Mac's data volume there whatever the host keeps them on.)
 
 // sameVolume says whether two files under the home or a mount are on one volume.
 func sameVolume(t1, t2 target) bool {

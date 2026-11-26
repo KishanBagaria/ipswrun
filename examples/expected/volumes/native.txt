@@ -1,0 +1,9 @@
+a program of the system's: mounted on /, as an apfs volume, flags 0x4480d001 (read-only 1, local 1)
+   its device to stat is the first file's 1, and to getattrlist that too 1, as is the volume getattrlist names 1; the volume statfs names is that device 0
+   found again by the volume statfs names: /usr/lib/dyld; by its device: /usr/lib/dyld
+the root: mounted on /, as an apfs volume, flags 0x4480d001 (read-only 1, local 1)
+   its device to stat is the first file's 1, and to getattrlist that too 1, as is the volume getattrlist names 1; the volume statfs names is that device 0
+   found again by the volume statfs names: /; by its device: /
+a file of the user's own: mounted on /System/Volumes/Data, as an apfs volume, flags 0x4909080 (read-only 0, local 1)
+   its device to stat is the first file's 1, and to getattrlist that too 1, as is the volume getattrlist names 1; the volume statfs names is that device 1
+   found again by the volume statfs names: 1; by its device: 1
