@@ -35,17 +35,18 @@ type Machine struct {
 	// (see kernelprofiles.go), or why they could not be.
 	profiles     []string
 	profilesErr  error
-	fifos        map[hostFile]bool  // the named pipes guests have made under the home and mounts (see sysMkfifo)
-	owners       map[hostFile]Owner // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
-	polls        []carried          // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
-	pipes        uint64             // how many pipes were ever made: the next one's number
-	host, clocks *port              // the host's port and its clock's, while any process has a right to them (see kernelports.go)
-	seen         map[fileID]string  // where each file a guest has looked at is, by its number (see saw)
-	uniques      uint64             // how many processes were given a number of their own, after launchd's
-	versions     uint32             // how many versions were given, after launchd's (see lineage)
-	launchdUUID  *[16]byte          // the UUID of the release's launchd, once a process has asked for it
-	started      uint32             // how many processes were ever made: a pid is not given twice, whatever has ended since
-	ioRoot       *ioEntry           // the root of the I/O Registry, once a process has asked for it (see registry.go)
+	fifos        map[hostFile]bool        // the named pipes guests have made under the home and mounts (see sysMkfifo)
+	owners       map[hostFile]Owner       // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
+	polls        []carried                // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
+	pipes        uint64                   // how many pipes were ever made: the next one's number
+	host, clocks *port                    // the host's port and its clock's, while any process has a right to them (see kernelports.go)
+	seen         map[fileID]string        // where each file a guest has looked at is, by its number (see saw)
+	ranges       map[hostFile][]rangeLock // the locks open files hold on parts of files (see rangelocks.go)
+	uniques      uint64                   // how many processes were given a number of their own, after launchd's
+	versions     uint32                   // how many versions were given, after launchd's (see lineage)
+	launchdUUID  *[16]byte                // the UUID of the release's launchd, once a process has asked for it
+	started      uint32                   // how many processes were ever made: a pid is not given twice, whatever has ended since
+	ioRoot       *ioEntry                 // the root of the I/O Registry, once a process has asked for it (see registry.go)
 	clock        *clock
 	deadline     time.Time // of the run, as every time here by the machine's clock
 	settling     time.Time // once the main guest has exited: when the daemons are no longer waited for

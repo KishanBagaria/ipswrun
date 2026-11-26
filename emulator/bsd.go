@@ -29,7 +29,7 @@ func init() {
 	bsdHandlers = map[string]handler{
 		// files
 		"stat64": {2, sysStat64}, "lstat64": {2, sysLstat64}, "fstatat64": {4, sysFstatat64}, "fstat64": {2, sysFstat64},
-		"open": {3, sysOpen}, "openat": {4, sysOpenat}, "guarded_open_np": {5, sysGuardedOpen}, "open_dprotected_np": {5, sysOpenDprotected}, "guarded_close_np": {2, sysGuardedClose},
+		"open": {3, sysOpen}, "openat": {4, sysOpenat}, "guarded_open_np": {5, sysGuardedOpen}, "open_dprotected_np": {5, sysOpenDprotected}, "guarded_open_dprotected_np": {7, sysGuardedOpenDprotected}, "guarded_close_np": {2, sysGuardedClose},
 		"guarded_write_np": {4, sysGuardedWrite}, "guarded_pwrite_np": {5, sysGuardedPwrite}, "close": {1, sysClose},
 		"read": {3, sysRead}, "pread": {4, sysPread}, "write": {3, sysWrite}, "writev": {3, sysWritev}, "readv": {3, sysReadv}, "socketpair": {4, sysSocketpair}, "sendto": {6, sysSendto}, "recvfrom": {6, sysRecvfrom}, "shutdown": {2, sysShutdown}, "getsockopt": {5, sysGetsockopt}, "setsockopt": {5, sysSetsockopt}, "getsockname": {3, sysGetsockname}, "getpeername": {3, sysGetpeername}, "pwrite": {4, sysPwrite}, "lseek": {3, sysLseek},
 		"ftruncate": {2, sysFtruncate}, "fsync": {1, sysFsync}, "sync": {0, sysSync}, "umask": {1, sysUmask}, "iopolicysys": {2, sysIopolicysys}, "memorystatus_get_level": {1, sysMemorystatusGetLevel}, "getpriority": {2, sysGetpriority}, "setpriority": {3, sysSetpriority}, "access": {2, sysAccess}, "unlink": {1, sysUnlink},

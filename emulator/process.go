@@ -91,6 +91,14 @@ func le32(values ...uint32) []byte {
 	return out
 }
 
+func le16(values ...uint16) []byte {
+	out := make([]byte, 0, 2*len(values))
+	for _, v := range values {
+		out = le.AppendUint16(out, v)
+	}
+	return out
+}
+
 func le64(values ...uint64) []byte {
 	out := make([]byte, 0, 8*len(values))
 	for _, v := range values {
@@ -504,7 +512,7 @@ func (p *Process) Close() {
 	}
 	for n, f := range p.fds {
 		if f.kind == hostFD {
-			closeHost(f.host)
+			p.hostClose(f)
 		}
 		if f.shared != nil {
 			f.shared.release()

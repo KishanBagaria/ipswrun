@@ -11,7 +11,10 @@ import (
 // and whether it has been written. It is the open file's and not a descriptor's, so a duplicate
 // and a copy of the process have the same one, as a Mac's kernel was measured to keep it
 // (examples/fileflags.c). A pipe's and a socket's are their own (see pipes.go).
-type status struct{ flags uint32 }
+type status struct {
+	flags       uint32
+	descriptors int // of a file of the host's: how many descriptors it has, in every process (see rangelocks.go)
+}
 
 const (
 	flagFsync   = 0x80     // O_FSYNC
@@ -81,5 +84,16 @@ func (f *fd) hostDup() (*fd, error) {
 		return nil, err
 	}
 	syscall.CloseOnExec(h)
-	return &fd{kind: hostFD, host: h, path: f.path, state: f.status()}, nil
+	f.status().descriptors++
+	return &fd{kind: hostFD, host: h, path: f.path, state: f.state}, nil
+}
+
+// hostClose closes a descriptor of the host's that hostDup or an open made. The locks the open
+// file holds on parts of files go with its last descriptor.
+func (p *Process) hostClose(f *fd) {
+	closeHost(f.host)
+	s := f.status()
+	if s.descriptors--; s.descriptors == 0 {
+		p.m.unlockRanges(s)
+	}
 }

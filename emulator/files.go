@@ -600,6 +600,7 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 			return hostErrno(err)
 		}
 		opened = &fd{kind: hostFD, host: h, path: t.path}
+		opened.status().descriptors = 1
 	}
 	if !opened.streams() {
 		opened.opened(flags)
@@ -718,6 +719,13 @@ func sysGuardedOpen(p *Process, a []uint64) int64 { return p.doOpen(p.cstr(a[0])
 // way. Its arguments are the path, the flags, the class, flags of its own and the mode.
 func sysOpenDprotected(p *Process, a []uint64) int64 { return p.doOpen(p.cstr(a[0]), a[1], a[4]) }
 
+// sysGuardedOpenDprotected (guarded_open_dprotected_np) is both: the path, the guard and its
+// flags, the open's flags, the class and its flags, and the mode. SQLite opens a database so
+// once it is told how its file is protected (F_GETPROTECTIONCLASS).
+func sysGuardedOpenDprotected(p *Process, a []uint64) int64 {
+	return p.doOpen(p.cstr(a[0]), a[3], a[6])
+}
+
 func sysGuardedClose(p *Process, a []uint64) int64 { return sysClose(p, a[:1]) }
 func sysGuardedWrite(p *Process, a []uint64) int64 { return sysWrite(p, []uint64{a[0], a[2], a[3]}) }
 func sysGuardedPwrite(p *Process, a []uint64) int64 {
@@ -732,7 +740,7 @@ func (p *Process) closeFD(n uint64) int64 {
 	delete(p.fds, n)
 	delete(p.cloexec, n)
 	if f.kind == hostFD {
-		closeHost(f.host)
+		p.hostClose(f)
 		p.m.retryLocks() // its locks went with it, if it was the last descriptor of its file
 	}
 	if f.shared != nil {
@@ -1465,7 +1473,7 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 		p.closeFD(n) // if open
 	} else if n = p.allocFD(minFD); n >= p.fdLimit() {
 		if dup.kind == hostFD {
-			syscall.Close(dup.host)
+			p.hostClose(dup)
 		}
 		if dup == f {
 			dup.refs--
@@ -1517,11 +1525,68 @@ func sysFcntl(p *Process, a []uint64) int64 {
 		p.write(arg, p.read(arg+8, 8))
 	case 105: // F_GETSIGSINFO: files of the build are platform binaries, the guest's own are not
 		p.write(arg+12, le32(uint32(truth(f.kind != hostFD))))
-	case 7, 92: // F_GETLK / F_OFD_GETLK: nobody else holds locks
-		p.write(arg+20, []byte{2, 0})
+	case 92: // F_OFD_GETLK
+		return p.getRange(f, arg, a)
+	case 7: // F_GETLK: no process holds a lock of its own, there being none to take here (F_SETLK stops)
+		if id, _, _, _, errno := p.rangeAsked(f, arg, a); errno != 0 {
+			return errno
+		} else if len(p.m.ranges[id]) != 0 {
+			p.unimplemented("F_GETLK of a file that an open file holds a lock on part of", a)
+			return -eNOSYS
+		}
+		p.write(arg+20, le16(lockNone))
+	case 90, 91: // F_OFD_SETLK, F_OFD_SETLKW
+		return p.setRange(f, arg, cmd == 91, a)
+	case 63, 95, 96, 98, 101:
+		return p.fcntlMeasured(f, cmd, arg, a)
+	default:
+		p.unimplemented(fmt.Sprintf("fcntl request %d", cmd), a)
+		return -eINVAL
 	}
-	p.note("  fcntl %d cmd %d", a[0], a[1])
 	return 0
+}
+
+// fcntlMeasured answers the requests SQLite and dyld make of every file they open, as a Mac's
+// kernel of macOS 27.2.1 was measured to answer a user's process (examples/rangelocks.c). What
+// was not measured, of a request or of a kind of descriptor, stops.
+func (p *Process) fcntlMeasured(f *fd, cmd, arg uint64, a []uint64) int64 {
+	file := f.kind == hostFD || f.kind == dataFD || f.kind == cacheFD
+	switch cmd {
+	case 63: // F_GETPROTECTIONCLASS: how it is protected. An iPhone's files have this class unless given another, as Apple documents, which was not measured.
+		switch {
+		case f.streams():
+			return -eBADF
+		case file || f.kind == dirFD:
+			return 3
+		}
+	case 95: // F_SETCONFINED: keeping it from being moved out
+		switch {
+		case arg != 0: // of a file, a directory and a pipe alike
+			return -eBADF
+		case file:
+			return -ePERM
+		}
+	case 96: // F_GETCONFINED
+		if file {
+			return 0
+		}
+	case 98: // F_CHECK_LV: whether a library is signed
+		if !f.streams() {
+			return p.checkLibrary(f, arg)
+		}
+	case 101: // F_SPECULATIVE_READ: a part it will read soon, which there is nothing to do about here
+		hint := p.read(arg, 24) // flags, a word kept back, where from and how much
+		switch {
+		case f.streams():
+			return -eBADF
+		case f.kind == dirFD, int64(le.Uint64(hint[8:])) < 0, int64(le.Uint64(hint[16:])) < 0:
+			return -eINVAL
+		case file:
+			return 0
+		}
+	}
+	p.unimplemented(fmt.Sprintf("fcntl request %d of this kind of descriptor", cmd), a)
+	return -eINVAL
 }
 
 func sysDup(p *Process, a []uint64) int64  { return p.dupFD(a[0], 0, false) }
