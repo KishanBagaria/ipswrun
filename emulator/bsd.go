@@ -68,7 +68,7 @@ func init() {
 		"setrlimit": {2, sysSetrlimit}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
-		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "__pthread_canceled": {1, sysPthreadCanceled}, "sigpending": {1, sysSigpending}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getsid": {1, sysGetsid}, "clonefileat": {5, sysClonefileat}, "fclonefileat": {4, sysFclonefileat}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "__pthread_canceled": {1, sysPthreadCanceled}, "sigpending": {1, sysSigpending}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
 	}
 	for name, v := range trivial {
 		bsdHandlers[name] = handler{4, constant(v)}
@@ -104,7 +104,7 @@ func (p *Process) call(h handler, args []uint64, onFault int64) (result int64) {
 // A descriptor is an int, and the kernel reads an int's low half only: a program may leave
 // anything in the rest of the register, and the shell does.
 var descriptorArgs = func() map[string]uint8 {
-	m := map[string]uint8{"dup2": 1 | 2, "renameat": 1 | 4, "renameatx_np": 1 | 4, "linkat": 1 | 4, "symlinkat": 2, "mmap": 16}
+	m := map[string]uint8{"dup2": 1 | 2, "renameat": 1 | 4, "clonefileat": 1 | 4, "fclonefileat": 1 | 2, "renameatx_np": 1 | 4, "linkat": 1 | 4, "symlinkat": 2, "mmap": 16}
 	for _, name := range strings.Fields(`fstat64 fstatat64 openat guarded_close_np guarded_write_np guarded_pwrite_np close read pread write writev readv
 		sendto recvfrom shutdown getsockopt setsockopt getsockname getpeername pwrite lseek ftruncate fsync readlinkat mkdirat unlinkat faccessat
 		fcntl dup fchdir __pthread_fchdir fchmod fchmodat fchmod_extended fstat64_extended fchownat fchown futimes setattrlistat fsetattrlist

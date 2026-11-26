@@ -160,7 +160,7 @@ What was missing, each measured natively and now there ([examples/everyday.c](ex
 
 What still differs, of the 32:
 
-- **Six stopped as unimplemented:** `zsh` starting any program (`kill` of a process group, [there now](#signals): six `zsh` command lines that start programs, wait for them and end them then printed the same), `ditto` (`clonefileat`), `ex` (`getsid`), `say` (`kqueue_workloop_ctl`), and the two scripts in `perl`, which stop for want of `libperl` (the closed system volume).
+- **Six stopped as unimplemented:** `zsh` starting any program (`kill` of a process group, [there now](#signals): six `zsh` command lines that start programs, wait for them and end them then printed the same), `ditto` (`clonefileat`, there now, below), `ex` (`getsid`, there now: a process is in the session of the one it came of, and one launchd started leads its own), `say` (`kqueue_workloop_ctl`), and the two scripts in `perl`, which stop for want of `libperl` (the closed system volume).
 - **Four are the missing data volume:** a here-document is a file in `/tmp`, which is not there without `--data` (with it they print the same).
 - **Six are the closed system volume** or what is not on it: `strings` (the developer directory), `units`, `apropos`, `whatis`, `swift`, `iconv` to UTF-16.
 - **Five need a daemon that does not run:** `defaults` (cfprefsd), `pgrep` (sysmond), `mdfind`, `osascript`, and `nohup`, which cannot leave its console (a message to launchd that is not answered).
@@ -169,8 +169,13 @@ What still differs, of the 32:
 - **`time`** prints, with other numbers, as it must.
 - **Four are for later:** `compress` wants `/dev/stdout`, `pax` makes no `._` file, `plutil -lint` of a file that is not there says so in an error's number where a Mac has its words, and `xattr` on a Mac lists `com.apple.provenance`, which is not added here.
 
+- **A copy made by the file system** (`clonefile`, `clonefileat`, `fclonefileat`), as `ditto`, `cp -c` and Finder make one. On a Mac's the copy shares the first's blocks until one is written to, which nothing here can tell from a copy of the bytes, so that is what is made: a file of its own with what the first held, its mode, its date of modification, its attributes and its owner (or the maker as owner, with CLONE_NOOWNERCOPY). Of a symbolic link it is of what the link names, or with CLONE_NOFOLLOW of the link. A file of another volume, which the system's is of the home's, is EXDEV. A directory, which a Mac clones with all that is in it, stops as unimplemented, and so do the flags that follow no link or keep beneath a directory. [examples/clone.c](examples/clone.c) prints the same natively. `ditto` of a file and of a directory, `cp -c` and `ex` then printed the same.
+
 Found on the way and left:
 
+- **`setsid` still answers EPERM for every process,** which is true of one launchd started and not of a copy or a started program, which is in another's session and group and may start its own: a program that makes itself a daemon (fork, then `setsid`) is refused where a Mac lets it.
+- **Every mount is taken for a volume of its own** by `link`, `rename` and `clonefile` (EXDEV between two). Under `--data` the paths of the data volume are mounts each, where on a Mac they are one volume with the home, so a file cannot be moved from `/private/tmp` into the home without being copied.
+- **What the machine knows of a file** (its attributes, its owner, that it is a named pipe) is three tables, which a clone copies and a removal clears one by one.
 - **An int that is no descriptor** (the command of `fcntl`, the operation of `flock`) is still read with whatever is above it in the register, where it is not narrowed by hand.
 - **How wide an integer sysctl is** still follows the room it is asked into where its kind is not in the table, and the kinds in the table carry flags measured on one release.
 - The directories of the data volume are all mode 755, where a Mac's `/private/tmp` is 1777, for the image's directories are read without their modes.

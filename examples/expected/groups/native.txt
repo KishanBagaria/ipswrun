@@ -1,7 +1,8 @@
 started as the first of a group: 1
+its session: its own by its pid 1, its parent's 1, not its own group 1; launchd's: 1; of no process: -1 (No such process)
 its own group, by number: 0; as no pid: 0; a group there is not: -1 (No such process); a signal there is not: -1 (Invalid argument)
 a child in its parent's group: its group is the parent's 1; as a group of its own: -1 (No such process)
-a child in a group of its own: its group is its own 1; as a group: 0
+a child in a group of its own: its group is its own 1, its session this one's 1; as a group: 0
 SIGTERM to the child's group: 0; the child ended by signal 15; its group then: -1 (No such process)
 a child that has ended and is not yet waited for, as a group: -1 (Operation not permitted); it ended by signal 9
 a child's child that has ended, while the child has not: 0; the child exited with 0; its child then: -1 (No such process)

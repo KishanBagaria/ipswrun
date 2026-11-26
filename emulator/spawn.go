@@ -480,7 +480,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 // Mac's kernel was measured to hand them on (examples/inherit.c). The policies of single
 // threads go with them only to a copy, which has the thread.
 func (p *Process) handOn(to *Process, threads bool) {
-	to.uid, to.gid, to.stdio = p.uid, p.gid, p.stdio
+	to.uid, to.gid, to.stdio, to.session = p.uid, p.gid, p.stdio, p.sessionOf()
 	to.cmask, to.cmaskSet, to.nice = p.cmask, p.cmaskSet, p.nice
 	to.rlimits = maps.Clone(p.rlimits)
 	to.iopolicies = maps.Clone(p.iopolicies)
@@ -509,6 +509,31 @@ func (p *Process) group() uint32 {
 }
 
 func sysGetpgrp(p *Process, a []uint64) int64 { return int64(p.group()) }
+
+// sessionOf is the session p is in: its own, as one launchd started is (setsid tells it so),
+// or that of the process it came of.
+func (p *Process) sessionOf() uint32 {
+	if p.session != 0 {
+		return p.session
+	}
+	return p.pid
+}
+
+// sysGetsid is the session of a process, by its pid, or with 0 of the caller. launchd's is its
+// own.
+func sysGetsid(p *Process, a []uint64) int64 {
+	pid := uint32(a[0])
+	if pid == 0 {
+		return int64(p.sessionOf())
+	}
+	if pid == launchdPID {
+		return launchdPID
+	}
+	if q := p.m.process(pid); q != nil {
+		return int64(q.sessionOf())
+	}
+	return -eSRCH
+}
 
 // sysGetpgid is the group of a process, by its pid, or with 0 of the caller.
 func sysGetpgid(p *Process, a []uint64) int64 {

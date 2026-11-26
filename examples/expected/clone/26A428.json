@@ -1,0 +1,7 @@
+{
+  "build": "26A428",
+  "cache_uuid": "EA2C265E-297C-39C2-8646-7D8A2DFF648A",
+  "exit_code": 0,
+  "output": "the file: \"first\", mode 754, 1 links, modified 2000, its note \"kept\"\nclonefile: 0; the copy: \"first\", mode 754, 1 links, modified 2000, its note \"kept\"; a file of its own: 1\nthe copy written to: \"other\", mode 754, 1 links, modified 2000, its note \"kept\"; the file still: \"first\", mode 754, 1 links, modified 2000, its note \"kept\"\nover a file that is there: -1 (File exists); of nothing: -1 (No such file or directory); into no directory: -1 (No such file or directory)\nclonefileat, from one directory into another: 0; the copy: \"first\", mode 754, 1 links, modified 2000, its note \"kept\"\nfrom no directory: -1 (Bad file descriptor); into none: -1 (Bad file descriptor); with a flag there is not: -1 (Invalid argument)\nof a link: 0; the copy: \"first\", mode 754, 1 links, modified 2000, its note \"kept\"; told not to follow it: 0; the copy: a link to \"file\"\nas ditto asks (not following, with the access list): 0; the copy: \"first\", mode 754, 1 links, modified 2000, its note \"kept\"\nfclonefileat, of an open file: 0; the copy: \"first\", mode 754, 1 links, modified 2000, its note \"kept\"; of one that is not open: -1 (Bad file descriptor)\ntidied: 0\n",
+  "version": "27.0"
+}

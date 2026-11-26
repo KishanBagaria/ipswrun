@@ -316,6 +316,7 @@ type Process struct {
 	// standard output and error it writes to: itself, or the one it was started under.
 	parent  *Process
 	pgroup  uint32 // the group it is in, if not one of its own
+	session uint32 // the session it is in, if not one of its own
 	ppid    uint32
 	reaped  bool
 	stdio   *Process

@@ -1,0 +1,10 @@
+the file: "first", mode 754, 1 links, modified 2000, its note "kept"
+clonefile: 0; the copy: "first", mode 754, 1 links, modified 2000, its note "kept"; a file of its own: 1
+the copy written to: "other", mode 754, 1 links, modified 2000, its note "kept"; the file still: "first", mode 754, 1 links, modified 2000, its note "kept"
+over a file that is there: -1 (File exists); of nothing: -1 (No such file or directory); into no directory: -1 (No such file or directory)
+clonefileat, from one directory into another: 0; the copy: "first", mode 754, 1 links, modified 2000, its note "kept"
+from no directory: -1 (Bad file descriptor); into none: -1 (Bad file descriptor); with a flag there is not: -1 (Invalid argument)
+of a link: 0; the copy: "first", mode 754, 1 links, modified 2000, its note "kept"; told not to follow it: 0; the copy: a link to "file"
+as ditto asks (not following, with the access list): 0; the copy: "first", mode 754, 1 links, modified 2000, its note "kept"
+fclonefileat, of an open file: 0; the copy: "first", mode 754, 1 links, modified 2000, its note "kept"; of one that is not open: -1 (Bad file descriptor)
+tidied: 0

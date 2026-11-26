@@ -76,12 +76,18 @@ int main(int argc, char **argv) {
 	pid_t group = getpgrp();
 	printf("started as the first of a group: %d\n", group == getpid());
 
+	// A session is the groups that came of one process: this one's is its parent's, though its
+	// group is its own.
+	pid_t session = getsid(0);
+	printf("its session: its own by its pid %d, its parent's %d, not its own group %d; launchd's: %s; of no process: %s\n", getsid(getpid()) == session, getsid(getppid()) == session,
+	       session != group, said(getsid(1)), said(getsid(99999)));
+
 	// Asked only whether there is anyone to signal (0).
 	printf("its own group, by number: %s; as no pid: %s; a group there is not: %s; a signal there is not: %s\n", said(kill(-group, 0)), said(kill(0, 0)), said(kill(-99999, 0)),
 	       said(kill(-group, 99)));
 	pid_t inside = started(self, "wait", 0), apart = started(self, "wait", 1);
 	printf("a child in its parent's group: its group is the parent's %d; as a group of its own: %s\n", getpgid(inside) == group, said(kill(-inside, 0)));
-	printf("a child in a group of its own: its group is its own %d; as a group: %s\n", getpgid(apart) == apart, said(kill(-apart, 0)));
+	printf("a child in a group of its own: its group is its own %d, its session this one's %d; as a group: %s\n", getpgid(apart) == apart, getsid(apart) == session, said(kill(-apart, 0)));
 
 	// A signal to a group is one to each process in it.
 	printf("SIGTERM to the child's group: %s; the child %s", said(kill(-apart, SIGTERM)), ended(apart));
