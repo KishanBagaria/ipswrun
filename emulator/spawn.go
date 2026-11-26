@@ -687,7 +687,7 @@ func (p *Process) fork() *Process {
 	child.parent, child.ppid, child.pgroup = p, p.pid, p.group()
 	child.cwd, child.brk = p.workingDirectory(), p.brk
 	child.identity, child.entitlements, child.entitlementsDER = p.identity, p.entitlements, p.entitlementsDER
-	child.argv, child.env = p.argv, p.env // a copy was started with what its parent was
+	child.started, child.argc = p.started, p.argc // a copy has its parent's stack
 	p.handOn(child, true)
 	child.sigactions = p.sigactions
 	child.threadStart, child.wqThread, child.pthreadSize, child.tsdOffset, child.portOffset = p.threadStart, p.wqThread, p.pthreadSize, p.tsdOffset, p.portOffset

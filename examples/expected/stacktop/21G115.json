@@ -1,0 +1,7 @@
+{
+  "build": "21G115",
+  "cache_uuid": "049B583E-D4DC-3B2B-88DA-E52D6E18313D",
+  "exit_code": 0,
+  "output": "what the kernel says the process was started with: 4 arguments, and then the top of its stack as it is 1\nit starts with the program's path, which the first of the kernel's strings names 1 (\"executable_path=\"); the arguments start a multiple of 8 after that string 1, with fewer than 8 zeros between 1\nthe arguments one after another 1; the environment after them 1; the rest of the kernel's strings after that, a multiple of 8 above the first 1; they end fewer than 8 bytes below the top 1, which is a multiple of 8 above where they start 1\nthe pointers to them are below them all: the arguments' 1, the environment's above those 1, the kernel's above those 1\nan argument written over (\"First\"): what the kernel then says of it: \"First\"\ninto 5 bytes: as much, the count 4, and zeros for all the rest 1, with nothing after 1\ninto 20: as much, the count 4, and zeros for all the rest 1, with nothing after 1\ninto one less than it all: as much, the count 4, and zeros for all the rest 1, with nothing after 1\ninto none: -1; into 4: -1\n",
+  "version": "12.6"
+}

@@ -329,12 +329,14 @@ type Process struct {
 	// to it.
 	taskRead *port
 	task     *port // the task's own port, while the process has a right to it (see kernelports.go)
-	// What it was started with, as the kernel keeps it for whoever asks (kern.procargs2).
-	argv, env []string
-	ppid      uint32
-	reaped    bool
-	stdio     *Process
-	cloexec   map[uint64]bool // the descriptors a program it starts is not to have
+	// Where what it was started with begins, which is the top of its stack from the program's path
+	// up, and how many arguments, as the kernel keeps them for whoever asks (kern.procargs2).
+	started uint64
+	argc    uint32
+	ppid    uint32
+	reaped  bool
+	stdio   *Process
+	cloexec map[uint64]bool // the descriptors a program it starts is not to have
 
 	cacheDir   string
 	cachePaths map[string]dyldcache.File
@@ -1105,7 +1107,6 @@ func (p *Process) loadMachO(data []byte, name string, base uint64) (f *macho.Fil
 // kernel leaves a new process: at dyld's entry point, with its arguments and environment on the
 // stack.
 func (p *Process) load(argv, env []string) error {
-	p.argv, p.env = argv, env
 	// A guest built for this is arm64. What Apple ships has only arm64e, which runs the same
 	// here: the keys are off, as dyld is told below.
 	exe, err := thin(p.exe, 0, cpuSubtypeARM64E)
@@ -1129,26 +1130,38 @@ func (p *Process) load(argv, env []string) error {
 		}
 		p.entitlements, p.entitlementsDER = signed.Entitlements, signed.EntitlementsDER
 	}
-	apple := []string{"executable_path=" + p.path, "", "", "", "ptr_munge=0x7a3c5e9b1d2f4a68",
+	// The kernel's own strings, in a Mac's order where it has them: those the libraries erase
+	// once read (the guard, the entropy, and the first thread's port) before others that stay.
+	apple := []string{"executable_path=" + p.path, "", "", "", "stack_guard=0x5a17c0de5a17c000", "malloc_entropy=0x1122334455667788,0x8877665544332211", "ptr_munge=0x7a3c5e9b1d2f4a68",
 		fmt.Sprintf("main_stack=%#x,%#x,%#x,%#x", uint64(stackTop), uint64(stackSize), uint64(stackTop), uint64(stackSize)),
 		fmt.Sprintf("executable_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(exeInode)),
-		fmt.Sprintf("dyld_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(dyldInode)),
-		"executable_boothash=" + strings.Repeat("22", 20), "arm64e_abi=os", fmt.Sprintf("th_port=%#x", mainThreadPort),
-		"ptrauth_disabled=1", "dyld_flags=0x0", "stack_guard=0x5a17c0de5a17c000", "malloc_entropy=0x1122334455667788,0x8877665544332211"}
+		fmt.Sprintf("dyld_file=%#x,%#x", uint64(fsTypeAPFS<<32|deviceID), uint64(dyldInode))}
 	if cdhash != "" { // an executable with no code signature has none
 		apple = append(apple, "executable_cdhash="+cdhash)
 	}
+	apple = append(apple, "executable_boothash="+strings.Repeat("22", 20), fmt.Sprintf("th_port=%#x", mainThreadPort), "arm64e_abi=os", "ptrauth_disabled=1", "dyld_flags=0x0")
+	// The strings are at the top of the stack, as a Mac's kernel lays them (examples/stacktop.c):
+	// the first of its own, which names the program, the arguments, the environment and the
+	// rest of its own, each run of them starting a multiple of 8 above the first and the last
+	// ending at the top. Below them are the pointers to them.
 	var text []byte
-	var offsets [][]uint64
-	for _, group := range [][]string{argv, env, apple} {
-		var o []uint64
-		for _, s := range group {
-			o = append(o, uint64(len(text)))
+	offsets := make([][]uint64, 3) // of the arguments, the environment and the kernel's strings
+	add := func(to int, strings ...string) {
+		for _, s := range strings {
+			offsets[to] = append(offsets[to], uint64(len(text)))
 			text = append(append(text, s...), 0)
 		}
-		offsets = append(offsets, o)
 	}
-	sbase := stackTop - align(uint64(len(text))+64, 16)
+	pad := func() { text = append(text, make([]byte, -len(text)&7)...) }
+	add(2, apple[0])
+	pad()
+	add(0, argv...)
+	add(1, env...)
+	pad()
+	add(2, apple[1:]...)
+	pad()
+	sbase := stackTop - uint64(len(text))
+	p.started, p.argc = sbase+uint64(len(apple[0])-len(p.path)), uint32(len(argv)) // from the path in the first string up
 	words := []uint64{exeBase, uint64(len(argv))}
 	for _, o := range offsets {
 		for _, i := range o {

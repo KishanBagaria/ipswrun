@@ -2,7 +2,6 @@ package emulator
 
 import (
 	"fmt"
-	"slices"
 	"time"
 )
 
@@ -151,13 +150,11 @@ func (p *Process) sysctlProcs(mib []int32, oldp, oldlenp uint64, a []uint64) int
 }
 
 // sysctlProcArgs answers kern.procargs2, {CTL_KERN, KERN_PROCARGS2, pid}: what a process of the
-// caller's user was started with, as ps shows it. It is how many arguments, the program's path
-// and zeros after it to a multiple of 8, the arguments, each with its closing zero, and the
-// environment, and a zero. A Mac's goes on with what else the kernel put on the new process's
-// stack, which is its own and is left out; and a Mac's is the stack as it is now, where this is
-// what the process was started with, so one that has written over its arguments is not seen to. Of another user's process, of one that has ended, of
-// none and into four bytes or fewer it is EINVAL, as measured; into room for less than all of it
-// a Mac answers with a part, which is not done here.
+// caller's user was started with, as ps shows it. It is how many arguments, and then the top of
+// the process's stack as it is now (examples/stacktop.c): the program's path and zeros after it
+// to a multiple of 8, the arguments, the environment, and the kernel's own strings. Of another
+// user's process, of one that has ended, of none and into four bytes or fewer it is EINVAL, as
+// measured; into room for less than all of it, it is the count and zeros.
 func (p *Process) sysctlProcArgs(mib []int32, oldp, oldlenp uint64, a []uint64) int64 {
 	if len(mib) != 1 || oldlenp == 0 {
 		return -eINVAL
@@ -170,20 +167,14 @@ func (p *Process) sysctlProcArgs(mib []int32, oldp, oldlenp uint64, a []uint64) 
 	if about == nil || p.uid != 0 && about.uid != p.uid {
 		return -eINVAL
 	}
-	block := append(le32(uint32(len(about.argv))), about.path...)
-	block = append(block, make([]byte, 8-len(about.path)%8)...)
-	for _, s := range slices.Concat(about.argv, about.env) {
-		block = append(append(block, s...), 0)
-	}
-	block = append(block, 0)
+	block := append(le32(about.argc), about.read(about.started, stackTop-about.started)...)
 	if oldp != 0 {
 		room := p.u64(oldlenp)
 		if room <= 4 {
 			return -eINVAL
 		}
-		if room < uint64(len(block)) {
-			p.unimplemented("sysctl kern.procargs2 into room for less than a process's arguments", a)
-			return -eNOSYS
+		if room < uint64(len(block)) { // the count, and zeros for the rest
+			block = append(block[:4], make([]byte, room-4)...)
 		}
 		p.write(oldp, block)
 	}
