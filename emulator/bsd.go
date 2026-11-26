@@ -68,7 +68,7 @@ func init() {
 		"setrlimit": {2, sysSetrlimit}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
-		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getsid": {1, sysGetsid}, "setsid": {0, sysSetsid}, "setpgid": {2, sysSetpgid}, "clonefileat": {5, sysClonefileat}, "fclonefileat": {4, sysFclonefileat}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "__pthread_canceled": {1, sysPthreadCanceled}, "sigpending": {1, sysSigpending}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
+		"ulock_wake": {3, sysUlockWake}, "proc_info": {6, sysProcInfo}, "getpgrp": {0, sysGetpgrp}, "getsid": {1, sysGetsid}, "reboot": {2, sysReboot}, "setsid": {0, sysSetsid}, "setpgid": {2, sysSetpgid}, "clonefileat": {5, sysClonefileat}, "fclonefileat": {4, sysFclonefileat}, "getpgid": {1, sysGetpgid}, "sigreturn": {3, sysSigreturn}, "__pthread_canceled": {1, sysPthreadCanceled}, "sigpending": {1, sysSigpending}, "gethostuuid": {2, sysGethostuuid}, "sysctl": {6, sysSysctl}, "sysctlbyname": {6, sysSysctlbyname},
 	}
 	for name, v := range trivial {
 		bsdHandlers[name] = handler{4, constant(v)}
@@ -892,6 +892,28 @@ func fixed(s string, n int) []byte {
 	out := make([]byte, n)
 	copy(out[:n-1], s)
 	return out
+}
+
+// sysReboot is reboot(how, message). Nothing here restarts the machine, so it stops the run as
+// unimplemented. A daemon that gives up asks the kernel to panic (RB_PANIC) and says why, which is
+// said with the stop: a message that cannot be read is no reason not to stop.
+func sysReboot(p *Process, a []uint64) int64 {
+	const panics = 0x800 // RB_PANIC
+	what := "reboot"
+	if a[0]&panics != 0 {
+		func() {
+			defer func() {
+				if _, bad := recover().(fault); bad {
+					what += ", asked to panic with a message that cannot be read"
+				}
+			}()
+			if why := p.reason(a[1]); why != "" {
+				what += fmt.Sprintf(", asked to panic: %q", why)
+			}
+		}()
+	}
+	p.unimplemented(what, a)
+	return -eNOSYS
 }
 
 func (p *Process) reason(addr uint64) string {

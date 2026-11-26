@@ -451,3 +451,24 @@ func TestAMXStops(t *testing.T) {
 		}
 	}
 }
+
+func TestRebootSaysWhy(t *testing.T) {
+	// A daemon that gives up asks the kernel to panic and says why; the stop says it too, and a
+	// message that cannot be read still stops the run.
+	for _, c := range []struct {
+		how, message uint64
+		stop         string
+	}{
+		{0xc00, dataAddr, `reboot, asked to panic: "no node configuration"`},
+		{0xc00, 0x10, "reboot, asked to panic with a message that cannot be read"},
+		{0, 0, "reboot("},
+	} {
+		p := newProcess(t)
+		onMain(func() {
+			p.write(dataAddr, []byte("no node configuration\x00"))
+			if _, _, stopped := p.trap(number(t, "reboot"), c.how, c.message); !strings.Contains(stopped, c.stop) {
+				t.Errorf("reboot(%#x, %#x) stopped with %q, want %q", c.how, c.message, stopped, c.stop)
+			}
+		})
+	}
+}
