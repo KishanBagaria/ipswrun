@@ -66,6 +66,7 @@ func (p *Process) clone(from, to string, flags uint64, a []uint64) int64 {
 		return hostErrno(err)
 	}
 	// The copying is the host's work, which a Mac's file system does not have: not the guest's time.
+	p.m.beforeRead(int(in.Fd())) // what was written through a mapping of it is the file's
 	made, err := away(p.m.clock, func() (syscall.Stat_t, error) { return copyFile(in, out, &st) })
 	if err == nil {
 		err = t2.root.Chtimes(t2.rel, time.Time{}, time.Unix(mtimeSeconds(&st), 0))

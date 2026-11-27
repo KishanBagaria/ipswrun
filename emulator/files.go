@@ -109,6 +109,7 @@ func (f *fd) bytes() []byte {
 func (p *Process) pread(f *fd, off, n uint64) ([]byte, int64) {
 	switch f.kind {
 	case hostFD:
+		p.m.beforeRead(f.host)
 		data := hostBuffer(n)
 		got, err := syscall.Pread(f.host, data, int64(off))
 		if err != nil {
@@ -710,6 +711,9 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 		if t.path == GuestExe && flags&(3|0x200|0x400) != 0 { // the user's file: not written, created or truncated
 			return -eACCES
 		}
+		if mf := p.m.mappedAt(t); mf != nil && flags&0x400 != 0 { // O_TRUNC of a file that is mapped
+			defer p.m.reload(mf)
+		}
 		hostFlags := int(flags & 3)
 		for _, m := range []struct {
 			guest uint64
@@ -983,6 +987,7 @@ func sysRead(p *Process, a []uint64) int64 {
 	case f.kind == ttyFD:
 		return p.terminalRead(f, []stretch{{a[1], a[2]}})
 	case f.kind == hostFD || (f.kind == stdioFD && f.host == 0): // the host keeps the position
+		p.m.beforeRead(f.host)
 		data = hostBuffer(a[2])
 		n, err := syscall.Read(f.host, data)
 		if err != nil {
@@ -1078,7 +1083,9 @@ func sysWrite(p *Process, a []uint64) int64 {
 		return -eBADF
 	}
 	data := p.read(a[1], a[2])
+	p.m.beforeRead(f.host)
 	n, err := syscall.Write(f.host, data)
+	p.m.afterWrite(f.host)
 	if err != nil {
 		return hostErrno(err)
 	}
@@ -1160,7 +1167,9 @@ func sysPwrite(p *Process, a []uint64) int64 {
 	if f == nil || f.kind != hostFD {
 		return -eBADF
 	}
+	p.m.beforeRead(f.host)
 	n, err := syscall.Pwrite(f.host, p.read(a[1], a[2]), int64(a[3]))
+	p.m.afterWrite(f.host)
 	if err != nil {
 		return hostErrno(err)
 	}
@@ -1214,7 +1223,9 @@ func sysFtruncate(p *Process, a []uint64) int64 {
 	if f == nil || f.kind != hostFD {
 		return -eBADF
 	}
+	p.m.beforeRead(f.host)
 	r := hostCall(syscall.Ftruncate(f.host, int64(a[1])))
+	p.m.afterWrite(f.host)
 	if r == 0 {
 		f.wrote()
 	}
@@ -1540,6 +1551,10 @@ func sysTruncate(p *Process, a []uint64) int64 {
 		return hostErrno(err)
 	}
 	defer f.Close()
+	if mf := p.m.mappedAt(t); mf != nil {
+		mf.store(false)
+		defer p.m.reload(mf)
+	}
 	return hostCall(f.Truncate(int64(a[1])))
 }
 

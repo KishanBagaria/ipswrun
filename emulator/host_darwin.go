@@ -55,3 +55,8 @@ func mtimeSeconds(st *syscall.Stat_t) int64 { return st.Mtimespec.Sec }
 
 // utimeOmit is UTIME_OMIT: a date utimensat leaves as it is.
 const utimeOmit = -2
+
+// hostTimes are a host file's times of access and change, in nanoseconds.
+func hostTimes(st *syscall.Stat_t) (access, change int64) {
+	return st.Atimespec.Nano(), st.Mtimespec.Nano()
+}

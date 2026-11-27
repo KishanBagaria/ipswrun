@@ -120,6 +120,9 @@ func machVMProtect(p *Process, a []uint64) int64 {
 			prot &= r.prot()
 		}
 	}
+	if prot&2 != 0 && slices.ContainsFunc(p.overlaps(start, end), func(r *region) bool { return r.readOnly }) {
+		return 2 // KERN_PROTECTION_FAILURE: what was opened to read only is not made writable, as measured
+	}
 	if !p.protect(start, end, prot) {
 		return kernInvalidAddress
 	}

@@ -43,11 +43,11 @@ func init() {
 		"listxattr": {4, sysListxattr}, "flistxattr": {4, sysFlistxattr}, "removexattr": {3, sysRemovexattr}, "fremovexattr": {3, sysFremovexattr},
 		"ioctl": {3, sysIoctl}, "pipe": {0, sysPipe}, "poll": {3, sysPoll}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
 		"getattrlist": {5, sysGetattrlist}, "getattrlistat": {6, sysGetattrlistat}, "fgetattrlist": {5, sysFgetattrlist},
-		"getattrlistbulk": {5, sysGetattrlistbulk}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen}, "shm_unlink": {1, sysShmUnlink},
+		"getattrlistbulk": {5, sysGetattrlistbulk}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen}, "shm_unlink": {1, sysShmUnlink}, "msync": {3, sysMsync},
 		"sem_open": {4, sysSemOpen}, "sem_close": {1, sysSemClose}, "sem_unlink": {1, sysSemUnlink}, "sem_wait": {1, sysSemWait}, "sem_trywait": {1, sysSemTrywait}, "sem_post": {1, sysSemPost},
 		"getfsstat64": {3, sysGetfsstat64}, "pathconf": {2, sysPathconf}, "fpathconf": {2, sysPathconf}, "getdirentries64": {4, sysGetdirentries64},
 		// memory
-		"mmap": {6, sysMmap}, "munmap": {2, sysMunmap}, "mprotect": {3, sysMprotect}, "madvise": {3, constant(0)},
+		"mmap": {6, sysMmap}, "munmap": {2, sysMunmap}, "mprotect": {3, sysMprotect}, "madvise": {3, sysMadvise},
 		"mremap_encrypted": {0, constant(0)}, "shared_region_check_np": {1, sysSharedRegionCheck},
 		"shared_region_map_and_slide_2_np": {4, sysSharedRegionMap}, "map_with_linking_np": {4, constant(-eNOTSUP)},
 		// process
@@ -164,7 +164,19 @@ func sysMmap(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	if f.kind == dirFD {
+	// What is no file cannot be mapped (EINVAL; of a device ENODEV), and nor can a file opened
+	// to write only (EACCES), nor one of the system's be mapped to be shared and written: as
+	// measured.
+	switch {
+	case (f.kind == dirFD || f.kind == hostFD && f.isDirectory()) && flags&mapShared != 0: // of a directory under the home, as measured
+		return -eNODEV
+	case f.kind == dirFD, f.kind == pipeFD, f.kind == socketFD, f.kind == ttyFD, f.kind == hostFD && f.isDirectory():
+		return -eINVAL
+	case f.kind == hostFD && f.input() == inputNothing:
+		return -eNODEV
+	case f.kind == hostFD && f.accessMode() == 1:
+		return -eACCES
+	case (f.kind == cacheFD || f.kind == dataFD && f.shared == nil) && flags&mapShared != 0 && deny&2 == 0:
 		return -eACCES
 	}
 	if f.kind == semFD || f.kind == dataFD && f.shared != nil && flags&mapShared == 0 { // a semaphore, and shared memory mapped for oneself: as measured
@@ -176,6 +188,25 @@ func sysMmap(p *Process, a []uint64) int64 {
 		}
 		r := p.mapShared(f.shared, addr, length, off, fixed, deny)
 		if r > 0 && f.kind == dataFD && f.flags&3 == 0 {
+			p.findRegion(uint64(r)).readOnly = true
+		}
+		return r
+	}
+	if f.kind == hostFD && flags&mapShared != 0 {
+		// A file mapped to be shared (see mappedfiles.go). One opened to read only is not
+		// mapped to be written (EACCES), and is never made writable after: as measured.
+		readOnly := f.accessMode() == 0
+		if readOnly && deny&2 == 0 {
+			return -eACCES
+		}
+		mf, errno := p.mappedFor(f)
+		if errno != 0 {
+			return errno
+		}
+		p.m.beforeRead(f.host)
+		p.m.afterWrite(f.host)
+		r := p.mapFile(mf, addr, length, off, fixed, deny)
+		if r > 0 && readOnly {
 			p.findRegion(uint64(r)).readOnly = true
 		}
 		return r
@@ -218,7 +249,11 @@ func sysMprotect(p *Process, a []uint64) int64 {
 }
 
 func sysMunmap(p *Process, a []uint64) int64 {
+	if a[0]%pageSize != 0 || a[1] == 0 { // as measured
+		return -eINVAL
+	}
 	p.unmap(a[0]&^(pageSize-1), align(a[0]+a[1], pageSize))
+	p.m.deferred = append(p.m.deferred, p.m.settleMapped) // once the engine no longer maps it
 	return 0
 }
 
@@ -1590,6 +1625,16 @@ func (p *Process) sysctlOut(name string, oldp, oldlenp uint64) int64 {
 	}
 	if oldlenp != 0 {
 		p.write(oldlenp, le64(uint64(len(data))))
+	}
+	return 0
+}
+
+// sysMadvise is madvise(address, length, advice): advice the emulator has no use for, taken of
+// memory that is mapped and of the kinds a Mac's kernel knows (the source's list, 0 to 11); any
+// other advice, and memory that is not mapped, is EINVAL, as measured of one of each.
+func sysMadvise(p *Process, a []uint64) int64 {
+	if a[2] > 11 || p.findRegion(a[0]&tbiMask) == nil {
+		return -eINVAL
 	}
 	return 0
 }

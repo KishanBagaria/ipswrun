@@ -45,6 +45,7 @@ type Machine struct {
 	fifos            map[hostFile]bool          // the named pipes guests have made under the home and mounts (see sysMkfifo)
 	sockets          map[hostFile]*socket       // the sockets guests have bound to names there (see sysBind)
 	fifoPipes        map[hostFile]*pipe         // the named pipes that are open, by the file that names each (see fifos.go)
+	mappedFiles      map[hostFile]*mappedFile   // the files that are mapped to be shared (see mappedfiles.go)
 	semaphores       map[string]*namedSemaphore // the semaphores that have a name (see semaphores.go)
 	sessionTerminals map[uint32]*terminal       // the terminal each session has for its own, by the session's number
 	terminals        []*terminal                // the terminals there have been, by the number in each one's name (see terminals.go)
@@ -215,6 +216,7 @@ func (m *Machine) exit(p *Process, how string) {
 	}
 	p.leaveSession()
 	m.orphanedStops(p)
+	m.settleMapped()
 	if parent := p.parent; parent != nil && !parent.exited { // told before it is given the child to wait for
 		told := pendingSignal{sig: sigChild, code: codeChildExited, status: int32(p.exitCode), pid: p.pid, uid: p.uid}
 		if p.endSignal != 0 {

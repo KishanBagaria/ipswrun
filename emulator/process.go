@@ -301,6 +301,7 @@ type Process struct {
 	// been told by wait4, and that SIGCONT was sent it and its parent not told.
 	stopped, stopTold, continued bool
 	stopSignal                   uint64
+	pastEnd                      bool // the fault being taken is of a page past the end of a mapped file
 	controlt                     bool // its session's terminal is its own to use (see terminals.go): since it took one, or by coming of one that had
 	detached                     bool // it had launchd move it to the background's session (see routineSession)
 	demanded                     bool // launchd started it when a service of its was first looked up (see onDemand)
@@ -753,6 +754,19 @@ func (p *Process) materialize(addr uint64) bool {
 	}
 	b0 := r.start + (addr-r.start)/blockSize*blockSize
 	b1 := min(b0+blockSize, r.end)
+	if r.kind == sharedRegion {
+		// Of a mapped file, only the pages the file has: one past its last faults (see
+		// mappedfiles.go). And no further than the memory there is.
+		limit := uint64(len(r.shared.data))
+		if mf := p.m.mappedOwner(r.shared); mf != nil {
+			limit = mf.valid()
+		}
+		if r.off+(addr&^(pageSize-1)-r.start) >= limit {
+			p.pastEnd = true
+			return false
+		}
+		b1 = min(b1, r.start+(limit-r.off))
+	}
 	// A fault, if it brings anything in: a major one if that is read from a file of the build.
 	before, read := len(p.mapped), false
 	defer func() {
@@ -813,7 +827,12 @@ func (p *Process) unmapped(addr uint64, size int) (ok bool) {
 	if !ok {
 		p.fault = fmt.Sprintf("unmapped access %#x size %d", addr, size)
 		p.guestFault = &pendingSignal{sig: sigSegv, code: codeNotMapped, addr: addr, fault: true}
+		if p.pastEnd { // a page past the end of a mapped file: SIGBUS, as measured
+			p.fault = fmt.Sprintf("access past the end of a mapped file %#x size %d", addr, size)
+			p.guestFault = &pendingSignal{sig: sigBus, code: codeNoAccess, addr: addr, fault: true}
+		}
 	}
+	p.pastEnd = false
 	return ok
 }
 
