@@ -18,6 +18,10 @@ ASYNC_TARGET = arm64-apple-macos12.0
 BIN = bin
 endif
 GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service client prefs adi files registry portstatus pipes pipeevents usage spawn portsets shell kqueue signals handlers faults poll fork socketpair notify owners boot datavolume oslog links script semaphore copied everyday groups inherit clone sessions devfd volumes profiles procs procinfo procargs taskport taskinfo machports stacktop unique devfdpaths spawngroup fileflags rangelocks openfds workloops procctl vmcopy registered threadinfo taskpolicy daemonasks bsdflags sockleast procwatch acls power kernevents detach listpids taskname localsock passfd localdgram proclocks fifo pty ctty
+# What the iOS SDK has not the headers or the calls for; matrix.sh does not run them on iOS.
+ifeq ($(PLATFORM),ios)
+GUESTS := $(filter-out shell procinfo power,$(GUESTS))
+endif
 # What a guest is run beside, and not by itself.
 DAEMONS = server
 
