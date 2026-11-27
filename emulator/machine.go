@@ -60,6 +60,8 @@ type Machine struct {
 	host, clocks     *port                      // the host's port and its clock's, while any process has a right to them (see kernelports.go)
 	seen             map[fileID]string          // where each file a guest has looked at is, by its number (see saw)
 	ranges           map[hostFile][]rangeLock   // the locks open files hold on parts of files (see rangelocks.go)
+	lockNames        map[string]uint64          // the files of the system volume that were locked whole, by name
+	lockSeq          uint64                     // the last place given in a line of those that wait for such a lock
 	uniques          uint64                     // how many processes were given a number of their own, after launchd's
 	versions         uint32                     // how many versions were given, after launchd's (see lineage)
 	launchdUUID      *[16]byte                  // the UUID of the release's launchd, once a process has asked for it

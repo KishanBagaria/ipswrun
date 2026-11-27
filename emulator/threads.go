@@ -35,7 +35,6 @@ const (
 	waitSignal
 	waitRWLock
 	waitPort
-	waitLock
 	waitPipe
 	waitSelect
 	waitChild

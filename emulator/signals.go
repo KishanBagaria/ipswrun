@@ -445,7 +445,7 @@ func (p *Process) interrupt4(t *thread, sig uint64) bool {
 			t.answer = &result{x0: uint64(t.pipeOp.done)}
 			again = false
 		}
-	case waitChild, waitLock, waitResolver, waitRange: // a lock on part of a file as measured (EINTR); // the last from the source (the worker sleeps so that a signal ends it), not measured
+	case waitChild, waitResolver, waitRange: // a lock on part of a file as measured (EINTR); // the last from the source (the worker sleeps so that a signal ends it), not measured
 	case waitSelect, waitKevent, waitSleep, waitNamed:
 		again = false
 	case waitSemaphore:
@@ -469,7 +469,11 @@ func (p *Process) interrupt4(t *thread, sig uint64) bool {
 			p.dropFD(file)
 		}
 	}
+	waited := t.rangeWait != nil
 	t.pipeOp, t.selecting, t.polling, t.kevent, t.waiting4, t.rangeWait = nil, nil, nil, nil, nil, nil
+	if waited { // those put behind it to wait for a lock look for themselves now
+		p.m.retryRanges()
+	}
 	switch {
 	case again:
 		// As it was before the call: its first argument back where the answer went, and the

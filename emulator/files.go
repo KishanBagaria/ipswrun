@@ -955,7 +955,9 @@ func (p *Process) keeps(id hostFile) bool {
 func (p *Process) dropFD(f *fd) {
 	if f.kind == hostFD {
 		p.hostClose(f)
-		p.m.retryLocks() // its locks went with it, if it was the last descriptor of its file
+	}
+	if f.kind != hostFD && f.state != nil {
+		p.m.unlockRanges(f.state) // a lock on the whole of it goes with its last descriptor
 	}
 	if f.shared != nil {
 		f.shared.release()

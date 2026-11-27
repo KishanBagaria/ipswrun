@@ -26,8 +26,9 @@ import (
 // lockOwner is who holds a lock: an open file, or a process by its number, which the program a
 // process becomes keeps.
 type lockOwner struct {
-	file *status
-	pid  uint32
+	file  *status
+	pid   uint32
+	whole bool // an open file's lock on the whole file (flock), which is not the holder its locks on parts are
 }
 
 type rangeLock struct {
@@ -42,6 +43,12 @@ type rangeWait struct {
 	owner    lockOwner
 	from, to uint64
 	write    bool
+	// Whose lock it waits behind and since when among those that do, or the waiter it was put
+	// behind when that one alone was woken; and that it has been woken to look again.
+	on      lockOwner
+	seq     uint64
+	follows *rangeWait
+	woken   bool
 }
 
 const (
@@ -138,7 +145,8 @@ func (p *Process) setRange(f *fd, arg uint64, wait, ofProcess bool, a []uint64) 
 			if ofProcess && m.waitsFor(held.owner, p.pid) {
 				return -eDEADLK
 			}
-			p.current.rangeWait = &rangeWait{id, owner, from, to, kind == lockWrite}
+			p.current.rangeWait = &rangeWait{id: id, owner: owner, from: from, to: to, write: kind == lockWrite}
+			m.queue(p.current.rangeWait, held.owner)
 			p.wait(waitRange, 0, time.Time{}, result{})
 			return 0
 		}
@@ -175,11 +183,18 @@ func (m *Machine) waitsFor(holder lockOwner, pid uint32) bool {
 // side by side or over one another of one kind is one lock.
 func (m *Machine) takeRange(id hostFile, owner lockOwner, from, to uint64, kind int16) {
 	var kept []rangeLock
+	touched := false
+	defer func() {
+		if touched { // those that waited behind what was changed look again
+			m.wakeBehind(id, owner, kind != lockNone)
+		}
+	}()
 	for _, l := range m.ranges[id] {
 		if l.owner != owner || l.to <= from || to <= l.from {
 			kept = append(kept, l)
 			continue
 		}
+		touched = true
 		if l.from < from {
 			kept = append(kept, rangeLock{owner, l.from, from, l.write})
 		}
@@ -222,9 +237,17 @@ func (m *Machine) takeRange(id hostFile, owner lockOwner, from, to uint64, kind 
 	}
 }
 
-// retryRanges gives the threads that wait for a lock those that nothing stands against any
-// more, the longest waiting first.
-func (m *Machine) retryRanges() {
+// queue puts a waiter behind a holder's lock, last of those there unless it was there already.
+func (m *Machine) queue(w *rangeWait, on lockOwner) {
+	if w.seq == 0 || w.on != on || w.follows != nil {
+		m.lockSeq++
+		w.seq = m.lockSeq
+	}
+	w.on, w.follows, w.woken = on, nil, false
+}
+
+// rangeWaiters is the threads that wait for a lock, in the order they came to wait where they do.
+func (m *Machine) rangeWaiters() []*thread {
 	var held []*thread
 	for _, q := range m.procs {
 		if q.exited {
@@ -236,27 +259,88 @@ func (m *Machine) retryRanges() {
 			}
 		}
 	}
-	slices.SortFunc(held, func(a, b *thread) int { return int(a.order) - int(b.order) })
-	for granted := true; granted; { // one given its lock may have given up another on the way
-		granted = false
+	slices.SortFunc(held, func(a, b *thread) int { return cmp.Compare(a.rangeWait.seq, b.rangeWait.seq) })
+	return held
+}
+
+// wakeBehind has those that wait behind a holder's lock on a file look again. When a lock on
+// the whole file is given up and only such locks wait behind it, the first alone is woken and
+// the rest are put behind that one, to wait until it has had the lock and given it up, even
+// those that could share it with it: as the source has it (F_WAKE1_SAFE) and as measured, of
+// two that waited to share a file and got it one after the other. Behind a lock that is
+// changed and not given up, everyone is woken.
+func (m *Machine) wakeBehind(id hostFile, owner lockOwner, all bool) {
+	var group []*rangeWait
+	one := !all && owner.whole
+	for _, t := range m.rangeWaiters() {
+		if w := t.rangeWait; w.id == id && w.follows == nil && w.on == owner {
+			group = append(group, w)
+			one = one && w.owner.whole
+		}
+	}
+	for i, w := range group {
+		if one && i > 0 {
+			w.follows = group[0]
+		} else {
+			w.woken = true
+		}
+	}
+}
+
+// retryRanges has the waiters that were woken look again, the longest waiting first: one that
+// nothing stands against any more is given its lock, and those put behind it wait behind that
+// lock now; one that something stands against waits behind that, and those put behind it with
+// it. Those behind one that waits no more (a signal ended it) are woken.
+func (m *Machine) retryRanges() {
+	for {
+		held := m.rangeWaiters()
+		waits := map[*rangeWait]bool{}
+		for _, t := range held {
+			waits[t.rangeWait] = true
+		}
+		var next *thread
 		for _, t := range held {
 			w := t.rangeWait
-			if w == nil || m.against(w.id, w.owner, w.from, w.to, w.write) != nil {
-				continue
+			if w.follows != nil && !waits[w.follows] {
+				w.follows, w.woken = nil, true
 			}
-			kind := int16(lockRead)
-			if w.write {
-				kind = lockWrite
+			if w.woken && next == nil {
+				next = t
 			}
-			m.takeRange(w.id, w.owner, w.from, w.to, kind)
-			t.rangeWait, t.answer, granted = nil, &result{}, true
-			t.wake()
 		}
+		if next == nil {
+			break
+		}
+		w := next.rangeWait
+		var behind []*rangeWait
+		for _, t := range held {
+			if t.rangeWait.follows == w {
+				behind = append(behind, t.rangeWait)
+			}
+		}
+		if at := m.against(w.id, w.owner, w.from, w.to, w.write); at != nil {
+			on := at.owner
+			m.queue(w, on)
+			for _, b := range behind {
+				m.queue(b, on)
+			}
+			continue
+		}
+		kind := int16(lockRead)
+		if w.write {
+			kind = lockWrite
+		}
+		m.takeRange(w.id, w.owner, w.from, w.to, kind)
+		for _, b := range behind {
+			m.queue(b, w.owner)
+		}
+		next.rangeWait, next.answer = nil, &result{}
+		next.wake()
 	}
 	// One that still waits looks again at whom it waits for, as the source has it do each time
 	// it is woken: it may be one that now waits for it.
-	for _, t := range held {
-		if w := t.rangeWait; w != nil && w.owner.file == nil {
+	for _, t := range m.rangeWaiters() {
+		if w := t.rangeWait; w.owner.file == nil {
 			if at := m.against(w.id, w.owner, w.from, w.to, w.write); at != nil && m.waitsFor(at.owner, w.owner.pid) {
 				t.rangeWait, t.answer = nil, &result{x0: eDEADLK, carry: true}
 				t.wake()
@@ -275,7 +359,10 @@ func (m *Machine) unlockProcess(pid uint32) {
 		} else {
 			m.ranges[id] = locks
 		}
-		changed = changed || len(locks) != before
+		if len(locks) != before {
+			changed = true
+			m.wakeBehind(id, lockOwner{pid: pid}, false)
+		}
 	}
 	if changed {
 		m.retryRanges()
@@ -329,10 +416,15 @@ func (m *Machine) unlockOwner(id hostFile, owner lockOwner) {
 // unlockRanges gives up every lock of an open file, when its last descriptor is closed.
 func (m *Machine) unlockRanges(owner *status) {
 	for id, locks := range m.ranges {
+		before := len(locks)
 		if locks = slices.DeleteFunc(locks, func(l rangeLock) bool { return l.owner.file == owner }); len(locks) == 0 {
 			delete(m.ranges, id)
 		} else {
 			m.ranges[id] = locks
+		}
+		if len(locks) != before {
+			m.wakeBehind(id, lockOwner{file: owner}, false)
+			m.wakeBehind(id, lockOwner{file: owner, whole: true}, false)
 		}
 	}
 	m.retryRanges()
@@ -371,4 +463,79 @@ func (r descriptorReader) ReadAt(b []byte, at int64) (int, error) {
 		return n, io.EOF
 	}
 	return n, nil
+}
+
+// sysFlock is flock(descriptor, how): a lock on the whole file that is the open file's, kept in
+// the one list with the locks on parts. It stands against a process's own locks and every
+// other open file's, and against the locks on parts of its own open file too, which are another
+// holder's: unlocking the whole leaves those, and unlocking those leaves it. Asked both to
+// share and to write it is to write; asked neither it is EBADF. One that shares the file and
+// waits to write it gives up its share before it waits, and one that does not wait keeps it.
+// As measured on macOS 27.2.1 (examples/locklist.c). A file of the host's can be locked, a
+// directory and a device among them, a file or directory of the system volume, and either end
+// of a terminal; of what is no file (a pipe, a socket, a kqueue, memory with a name) it is not
+// supported; of the rest it is not there.
+func sysFlock(p *Process, a []uint64) int64 {
+	f, how := p.fds[a[0]], int32(a[1])
+	switch {
+	case f == nil:
+		return -eBADF
+	}
+	var id hostFile
+	switch {
+	case f.kind == hostFD:
+		var st syscall.Stat_t
+		if err := syscall.Fstat(f.host, &st); err != nil {
+			return hostErrno(err)
+		}
+		id = hostFileOf(&st)
+	case f.kind == ttyFD && !f.own: // each end of a terminal is a file of its own, as measured
+		id = hostFile{dev: ^uint64(0), ino: f.tty.id<<1 | uint64(truth(f.first))}
+	case f.streams(), f.shared != nil, f.kq != nil, f.kind == stdioFD: // as measured of a pipe, a socket, a kqueue and named memory
+		return -eNOTSUP
+	case (f.kind == dirFD || f.kind == cacheFD || f.kind == dataFD) && f.path != "":
+		// A file or directory of the system volume, which is the one its name says, as measured
+		// of /bin/ls and /usr/share.
+		if p.m.lockNames == nil {
+			p.m.lockNames = map[string]uint64{}
+		}
+		if _, ok := p.m.lockNames[f.path]; !ok {
+			p.m.lockNames[f.path] = uint64(len(p.m.lockNames))
+		}
+		id = hostFile{dev: ^uint64(0) - 1, ino: p.m.lockNames[f.path]}
+	default:
+		p.unimplemented("a lock on the whole of what is no file, no directory and no terminal", a)
+		return -eNOSYS
+	}
+	m, owner := p.m, lockOwner{file: f.status(), whole: true}
+	kind := int16(lockNone)
+	switch {
+	case how&lockUnlock != 0:
+		m.takeRange(id, owner, 0, toTheEnd, lockNone)
+		m.retryRanges()
+		return 0
+	case how&lockExclusive != 0:
+		kind = lockWrite
+	case how&lockShared != 0:
+		kind = lockRead
+	default:
+		return -eBADF
+	}
+	if held := m.against(id, owner, 0, toTheEnd, kind == lockWrite); held != nil {
+		if how&lockNonblock != 0 {
+			return -eAGAIN
+		}
+		on := held.owner
+		if kind == lockWrite {
+			m.takeRange(id, owner, 0, toTheEnd, lockNone)
+		}
+		p.current.rangeWait = &rangeWait{id: id, owner: owner, to: toTheEnd, write: kind == lockWrite}
+		m.queue(p.current.rangeWait, on)
+		m.retryRanges()
+		p.wait(waitRange, 0, time.Time{}, result{})
+		return 0
+	}
+	m.takeRange(id, owner, 0, toTheEnd, kind)
+	m.retryRanges()
+	return 0
 }
