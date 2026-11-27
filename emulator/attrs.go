@@ -52,6 +52,9 @@ func (p *Process) describe(kind fdKind, path string, size int64, inode *Inode, h
 		if owner, ok := p.m.owners[id]; ok {
 			info.owner = &owner
 		}
+		if kind == hostFD && st.Mode&syscall.S_IFMT == syscall.S_IFCHR && under(path, "/dev") && p.madeUp(0) != nil {
+			info.owner = &Owner{} // a device is root's, as measured of a Mac's /dev/null, zero, random and urandom
+		}
 		info.flags = p.m.flags[id]
 		info.acl = p.m.acls[id] != nil
 		if mode, ok := p.m.said[id]; ok {

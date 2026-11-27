@@ -439,9 +439,9 @@ func (p *Process) lookupThrough(path string, links int) (target, bool) {
 	case path == guestDyld:
 		return target{kind: dataFD, data: p.dyld}, true
 	case path == passwdFile:
-		return target{kind: dataFD, data: []byte(passwd(p.m.user, false))}, true
+		return target{kind: dataFD, data: []byte(passwd(p.m.user, false)), inode: p.madeUp(0o644)}, true
 	case path == masterPasswdFile:
-		return target{kind: dataFD, data: []byte(passwd(p.m.user, true))}, true
+		return target{kind: dataFD, data: []byte(passwd(p.m.user, true)), inode: p.madeUp(0o600)}, true
 	}
 	if f, ok := p.cachePaths[path]; ok {
 		return target{kind: cacheFD, cache: f}, true
@@ -470,7 +470,9 @@ func (p *Process) lookupThrough(path string, links int) (target, bool) {
 		return target{kind: dirFD, inode: p.systemInode(path)}, true
 	}
 	switch path {
-	case "/", devFDs, "/System/Volumes", dataMount, "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/private/etc", "/var", "/var/root", "/private/var/root", "/tmp", "/private/tmp", "/emu":
+	case devFDs: // a directory of root's that nobody writes, as measured
+		return target{kind: dirFD, inode: p.madeUp(0o555)}, true
+	case "/", "/System/Volumes", dataMount, "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/private/etc", "/var", "/var/root", "/private/var/root", "/tmp", "/private/tmp", "/emu":
 		return target{kind: dirFD, inode: p.systemInode(path)}, true
 	}
 	switch f := p.systemFile(path); {
@@ -502,6 +504,16 @@ func (p *Process) systemFile(path string) SystemFile {
 		stopf("%v", err)
 	}
 	return f
+}
+
+// madeUp is the owner and permissions of a file that is made up here and that a Mac was
+// measured to have as root's, with that mode (macOS 27.2.1). What an iPhone has is not known,
+// and left out there: the file is the guest's own.
+func (p *Process) madeUp(mode uint16) *Inode {
+	if p.cache.Platform == dyldcache.IOS {
+		return nil
+	}
+	return &Inode{Mode: mode}
 }
 
 // systemInode is the owner and permissions the system volume has for a path that is answered
@@ -720,8 +732,23 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 		t, ok = p.followed(t, ok)
 	}
 	if !ok {
+		if flags&0x200 != 0 { // to be made, where nothing is made: in a directory of the system volume, or of the devices
+			if dir, there := p.followed(p.resolve(pathpkg.Dir(p.absolute(path)))); there {
+				switch {
+				case dir.path == "/":
+					return -eROFS
+				case p.onSystem(dir), under(dir.path, "/dev"):
+					return -ePERM
+				}
+			}
+		}
 		p.note("  ENOENT open %s", path)
 		return -eNOENT
+	}
+	if t.kind != hostFD {
+		if errno := p.mayOpen(t, flags); errno != 0 {
+			return errno
+		}
 	}
 	opened := t.fd()
 	switch t.kind {
@@ -752,6 +779,23 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 			created := flags&0x200 != 0 && missing
 			if flags&0x100 != 0 && !missing && st.Mode&syscall.S_IFMT == syscall.S_IFLNK {
 				return -eLOOP // told not to follow, and it is a link
+			}
+			if !missing {
+				// What its mode, as the guest sees it, does not let who asks do is refused: the
+				// host's own mode is not the guest's for a file that is another's here.
+				want := [4]uint16{4, 2, 6, 6}[flags&3]
+				if flags&0x400 != 0 {
+					want |= 2
+				}
+				info, errno := p.describe(hostFD, t.path, 0, nil, func(is *syscall.Stat_t) error {
+					return statInRoot(t.root, t.rel, flags&(noFollow|symlink) == 0, is)
+				})
+				if errno == 0 && info.mode&syscall.S_IFMT != syscall.S_IFDIR && info.mode&syscall.S_IFMT != syscall.S_IFLNK && !p.permits(info, want) {
+					return -eACCES
+				}
+				if errno == 0 && info.mode&syscall.S_IFMT == syscall.S_IFDIR && flags&3 == 0 && !p.permits(info, 4) {
+					return -eACCES
+				}
 			}
 			if len(p.m.fifos)+len(p.m.sockets) != 0 && !missing {
 				is := st // what is opened: the file a link leads to, if there is one
@@ -1304,12 +1348,32 @@ func (p *Process) accessFor(path string, mode uint64, follow bool) int64 {
 	case want == 0, info.mode&syscall.S_IFMT == syscall.S_IFLNK:
 		return 0
 	}
-	if want&2 != 0 && !isDescriptor && t.root == nil && (t.kind == cacheFD || t.inode != nil) && t.path != dataMount && !under("/dev", t.path) && p.volumeAt(t.path).mount == "/" {
+	if want&2 != 0 && !isDescriptor && p.onSystem(t) {
 		if t.path == "/" {
 			return -eROFS
 		}
 		return -ePERM
 	}
+	if !p.permits(info, want) {
+		if info.acl {
+			p.unimplemented("access of a file with an access control list that its mode refuses", []uint64{mode})
+			return -eNOSYS
+		}
+		return -eACCES
+	}
+	return 0
+}
+
+// onSystem says whether what a path names is of the system volume, which nobody writes.
+func (p *Process) onSystem(t target) bool {
+	return t.root == nil && (t.kind == cacheFD || t.inode != nil) && t.path != dataMount && !under(t.path, "/dev") && p.volumeAt(t.path).mount == "/"
+}
+
+// permits says whether a file's mode lets who asks read (4), write (2) or run (1) it, every one
+// of those asked: its owner by the owner's bits alone, its group by the group's, the rest by
+// the others', as measured. From the source and not measured: root may read and write
+// anything, and run what anyone may run and any directory.
+func (p *Process) permits(info fileInfo, want uint16) bool {
 	uid, gid := p.m.user.uid, p.m.user.gid
 	if info.owner != nil {
 		uid, gid = info.owner.UID, info.owner.GID
@@ -1326,11 +1390,31 @@ func (p *Process) accessFor(path string, mode uint64, follow bool) int64 {
 	case p.gid == gid:
 		bits = info.mode >> 3 & 7
 	}
-	if bits&want != want {
-		if info.acl {
-			p.unimplemented("access of a file with an access control list that its mode refuses", []uint64{mode})
-			return -eNOSYS
-		}
+	return bits&want == want
+}
+
+// mayOpen is why a file or directory that is not the host's (one of the system volume, or one
+// made up here) is not opened as asked, if it is not. As measured on macOS 27.2.1, by hand: to
+// be made and only if it is not there, it is there (EEXIST); a directory is not written
+// (EISDIR); nothing of the system volume is written, emptied or added to (EPERM); and what its
+// mode does not let who asks read is not read (EACCES).
+func (p *Process) mayOpen(t target, flags uint64) int64 {
+	info, errno := p.describe(t.kind, t.path, t.fd().size(), t.inode, nil)
+	if errno != 0 {
+		return errno
+	}
+	how := flags & 3
+	switch directory := info.mode&syscall.S_IFMT == syscall.S_IFDIR; {
+	case flags&0xA00 == 0xA00:
+		return -eEXIST
+	case directory && how != 0:
+		return -eISDIR
+	case (how != 0 || flags&0x400 != 0) && p.onSystem(t):
+		return -ePERM
+	case how != 0 || flags&0x400 != 0:
+		p.unimplemented("open to write of a file that is made up here", []uint64{flags})
+		return -eNOSYS
+	case !p.permits(info, 4):
 		return -eACCES
 	}
 	return 0
