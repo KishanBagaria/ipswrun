@@ -247,6 +247,10 @@ func (p *Process) registryRequest(id uint32, body []byte) (migReply, bool) {
 		if r.failed {
 			return migCode(migBadArguments), true
 		}
+		if path == powerPath || path == powerServicePath { // the kernel's own service for power (power.go)
+			p.note("  I/O Registry entry at %s: found true", path)
+			return powerRoot{}.found(p), true
+		}
 		e := p.fromPath(root, path)
 		p.note("  I/O Registry entry at %s: found %t", path, e != nil)
 		return p.migEntry(e), true

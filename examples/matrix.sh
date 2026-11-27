@@ -127,6 +127,8 @@ for guest in ${guests//,/ }; do
 	[ "$platform" != ios ] || [ "$guest" != taskpolicy ] || continue
 	# procwatch has its child become /bin/sleep, which an iPhone does not have.
 	[ "$platform" != ios ] || [ "$guest" != procwatch ] || continue
+	# power registers for the system's power by a library an iPhone's SDK does not give, and none was there to measure.
+	[ "$platform" != ios ] || [ "$guest" != power ] || continue
 	if [ "$(uname)" = Darwin ]; then
 		make -s -C examples PLATFORM=$platform "${bin#examples/}/$guest" || exit
 	elif [ ! -x "$bin/$guest" ]; then

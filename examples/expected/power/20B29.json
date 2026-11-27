@@ -1,0 +1,7 @@
+{
+  "build": "20B29",
+  "cache_uuid": "5B214DF8-6286-3F23-9467-D8050EA7AF75",
+  "exit_code": 0,
+  "output": "the power root by its path: found 1\nits name: 0 \"IOPMrootDomain\"; its class: 0 \"IOPMrootDomain\"\nit is a service 1, an entry of the registry 1, a connection 0\nits path among the services: 0 \"IOService:/AppleARMPE/IOPMrootDomain\"\nits path in the plane of power: 0 \"IOPower:/IOPowerConnection/IOPMrootDomain\"\nin the plane of services 1, of power 1, of the device tree 0\nfound by its class: 1, and it is the same entry 1\nopened: 0, a connection 1\nregistered for the system's power: a connection 1, a port 1, a notifier 1\nthat taken back: 0\ninterest IOGeneralInterest: 0, an object 1, let go: 0\ninterest IOBusyInterest: 0, an object 1, let go: 0\ninterest IOAppPowerStateInterest: 0, an object 1, let go: 0\ninterest IOPriorityPowerStateInterest: 0, an object 1, let go: 0\ninterest IONoSuchInterest: 0xe00002c7, an object 0, let go: 0\nclosed: 0 0\n",
+  "version": "11.0.1"
+}

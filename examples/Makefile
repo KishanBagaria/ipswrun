@@ -17,7 +17,7 @@ SWIFT_TARGET = arm64-apple-macos11.0
 ASYNC_TARGET = arm64-apple-macos12.0
 BIN = bin
 endif
-GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service client prefs adi files registry portstatus pipes pipeevents usage spawn portsets shell kqueue signals handlers faults poll fork socketpair notify owners boot datavolume oslog links script semaphore copied everyday groups inherit clone sessions devfd volumes profiles procs procinfo procargs taskport taskinfo machports stacktop unique devfdpaths spawngroup fileflags rangelocks openfds workloops procctl vmcopy registered threadinfo taskpolicy daemonasks bsdflags sockleast procwatch acls
+GUESTS = guest foundation objcinfo crypto swiftrt threads swiftasync ipc service client prefs adi files registry portstatus pipes pipeevents usage spawn portsets shell kqueue signals handlers faults poll fork socketpair notify owners boot datavolume oslog links script semaphore copied everyday groups inherit clone sessions devfd volumes profiles procs procinfo procargs taskport taskinfo machports stacktop unique devfdpaths spawngroup fileflags rangelocks openfds workloops procctl vmcopy registered threadinfo taskpolicy daemonasks bsdflags sockleast procwatch acls power
 # What a guest is run beside, and not by itself.
 DAEMONS = server
 
@@ -28,6 +28,7 @@ $(BIN)/crypto: LIBS = -framework Security
 $(BIN)/ipc: LIBS = -framework CoreFoundation
 $(BIN)/prefs: LIBS = -framework CoreFoundation
 $(BIN)/registry: LIBS = -framework CoreFoundation -framework IOKit
+$(BIN)/power: LIBS = -framework CoreFoundation -framework IOKit
 $(BIN)/client $(BIN)/service $(BIN)/ipc $(BIN)/adi: xpc_request.h
 $(BIN)/client $(BIN)/service $(BIN)/ipc $(BIN)/adi $(BIN)/server: darwin.h
 $(BIN)/server $(BIN)/client: service.h

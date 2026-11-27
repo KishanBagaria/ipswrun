@@ -156,6 +156,9 @@ func (m *Machine) matching(p *Process, description []byte) []ioFound {
 			found = append(found, device)
 		}
 	}
+	if class == powerClass {
+		found = append(found, powerRoot{})
+	}
 	for _, driver := range m.cfg.Drivers {
 		if driver.Class() == class {
 			found = append(found, ioService{driver})

@@ -27,6 +27,7 @@ type Machine struct {
 	named    map[string]*sharedMemory       // those shm_open knows by a name
 	xattrs   map[hostFile]map[string][]byte // the extended attributes of the home's and mounts' files (see metadata.go)
 	ioMain   *port                          // what IOKit's searches are sent to, once a process has asked for it
+	ioPower  *port                          // the port of the kernel's service for the system's power, once a process has it (power.go)
 	stepping bool                           // a thread of the running process is on the CPU now, and not between two turns
 	asked    map[string]bool                // the services that were looked for among the build's own, once each
 	replaced []*Process                     // processes that are no longer among procs, to be closed with them
