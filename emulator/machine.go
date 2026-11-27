@@ -92,9 +92,10 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, said: map[hostFile]uint16{}, flags: map[hostFile]uint32{}, acls: map[hostFile]*acl{}, caches: [2]uint32{500, 250}, fifos: map[hostFile]bool{}, clock: newClock()}
+	m := &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, said: map[hostFile]uint16{}, flags: map[hostFile]uint32{}, acls: map[hostFile]*acl{}, caches: [2]uint32{100, 100}, fifos: map[hostFile]bool{}, clock: newClock()}
 	for i := range m.mounts {
 		m.claim(&m.mounts[i])
+		m.boot(&m.mounts[i])
 	}
 	return m, nil
 }

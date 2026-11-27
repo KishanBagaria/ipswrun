@@ -214,8 +214,9 @@ func sysMemorystatusControl(p *Process, a []uint64) int64 {
 // the source has it and as measured of a user and of root. With the entitlement, as measured of
 // a probe signed with it in a virtual machine (macOS 27.2, 26B123, with SIP off there): a user is
 // refused everything; root registers (0, and again); anything else is for root's process that
-// registered and no other (EPERM); it is told how many answers the kernel keeps (500 of groups'
-// members and 250 of users, in that order), may set them (EINVAL above the 10,000 the source has; not measured between)
+// registered and no other (EPERM); it is told how many answers the kernel keeps (of groups'
+// members and of users, in that order: 500 and 250 once a Mac's opendirectoryd has set them,
+// from the 100 of each its log says it found), may set them (EINVAL above the 10,000 the source has; not measured between)
 // or have them forgotten, and deregisters, after which it is refused as any other. An opcode that
 // names nothing is taken and does nothing. A worker waits for a question of the kernel's, and
 // none comes here: nothing in this kernel asks who a user is by anything but a number, so the

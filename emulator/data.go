@@ -230,3 +230,41 @@ func (mt *mounted) openRecord(path string) error {
 	mt.record = f
 	return nil
 }
+
+// rootFolders are the per-user folders of root, which every Mac that has started has (measured
+// on macOS 27.2.1 and on 27.2 in a virtual machine, where they were made in the first second of
+// the first start, and are root's and wheel's): the folder itself, named as Libc names it from
+// the user's number and identifier, which for root is the same on every Mac, and in it what is
+// kept for the user, its caches, its temporary files and one more. A release's template has
+// /private/var/folders empty, as a Mac's is before it has first started.
+var rootFolders = []struct {
+	rel  string
+	mode uint16
+}{
+	{"var/folders/zz", 0o755}, {"var/folders/zz/zyxvpxvq6csfxvn_n0000000000000", 0o755},
+	{"var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/0", 0o755}, {"var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/C", 0o700},
+	{"var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T", 0o700}, {"var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/X", 0o755},
+}
+
+// boot gives a data volume what a Mac that has started has and its template has not: root's
+// per-user folders. launchd is no program here to have made them, and a daemon that finds them
+// missing asks dirhelper for them, which asks opendirectoryd who root is: opendirectoryd, asking
+// for its own, would wait on itself.
+func (m *Machine) boot(mt *mounted) {
+	if mt.template == nil || mt.guest != "/private" {
+		return
+	}
+	m.populate(mt, "var/folders")
+	if st, err := mt.root.Lstat("var/folders"); err != nil || !st.IsDir() {
+		return // a release whose template has no such directory
+	}
+	for _, f := range rootFolders {
+		if _, err := mt.root.Lstat(f.rel); err == nil {
+			continue
+		}
+		if err := mt.root.Mkdir(f.rel, 0o755); err != nil {
+			stopf("the data volume: making %s: %v", pathpkg.Join(mt.guest, f.rel), err)
+		}
+		m.inherit(mt, f.rel, &Inode{Mode: f.mode})
+	}
+}
