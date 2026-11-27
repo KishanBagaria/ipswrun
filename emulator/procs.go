@@ -295,3 +295,51 @@ func (p *Process) listFDs(about *Process, buf, size uint64, a []uint64) int64 {
 	p.write(buf, out)
 	return int64(len(out))
 }
+
+// listPIDs is proc_info's first call (PROC_INFO_CALL_LISTPIDS, which proc_listpids makes): the
+// numbers of the processes of a kind, the newest first, as the kernel's source has it
+// (proc_listpids in bsd/kern/proc_info.c) and as measured on macOS 27.2.1
+// (examples/listpids.c). All of them, those of a group, of a user, of a user as it really is
+// (a process here has one user) and of a parent; a kind there is not has none. With no buffer
+// it says how much room they need, which a Mac says is for nineteen more than it then lists
+// (the source has twenty more than there are); with room for less than one number it is
+// ENOMEM, and with room for some it gives those. Not measured, and stopping: those of a
+// terminal, and those the kernel's tracing is on for. From the source and not as it has it
+// here: a process that has become another program is the newest on a Mac, and of those that
+// have ended the last to end comes first; here each keeps the place it began in.
+func (p *Process) listPIDs(kind, of uint32, buffer, size uint64, a []uint64) int64 {
+	const all, group, terminal, user, realUser, parent, kdebug, spare = 1, 2, 3, 4, 5, 6, 7, 19
+	size = uint64(uint32(size)) // an int, to the kernel
+	records := p.m.procRecords()
+	if buffer == 0 {
+		return int64(len(records)+spare) * 4
+	}
+	if size < 4 {
+		return -eNOMEM
+	}
+	if kind == terminal || kind == kdebug {
+		p.unimplemented(fmt.Sprintf("proc_info call 1 (the processes there are) of kind %d", kind), a)
+		return -eNOSYS
+	}
+	// Those that have ended and are still to be waited for come after all that run.
+	slices.SortStableFunc(records, func(a, b procRecord) int { return int(a.state) - int(b.state) })
+	var found []byte
+	for _, r := range records {
+		wanted := false
+		switch kind {
+		case all:
+			wanted = true
+		case group:
+			wanted = r.group == of
+		case user, realUser:
+			wanted = r.uid == of
+		case parent:
+			wanted = r.parent == of
+		}
+		if wanted && uint64(len(found))+4 <= min(size, uint64(len(records)+spare+1)*4) {
+			found = append(found, le32(r.pid)...)
+		}
+	}
+	p.write(buffer, found)
+	return int64(len(found))
+}

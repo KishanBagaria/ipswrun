@@ -1,0 +1,7 @@
+{
+  "build": "22A3354",
+  "cache_uuid": "4D95BD3E-6831-3A99-A66C-B4DDB316E2E0",
+  "exit_code": 0,
+  "output": "all: this one among them 1, its child 1, launchd 1; the child, begun later, comes first 1; room is said for 19 more\nof this parent: 1, the child 1\nof the child's group: 1, the child 1, this one 0\nof this user: this one 1, the child 1, launchd 0\nof this user as it really is: this one 1, the child 1\nof a parent there is not: 0; of a kind there is not: 0\nwith room for half a number: 0 (Cannot allocate memory); for one: 4, and it is the newest 1\nthe child ended and waited for: of this parent 0\n",
+  "version": "18.0"
+}

@@ -1,0 +1,8 @@
+all: this one among them 1, its child 1, launchd 1; the child, begun later, comes first 1; room is said for 19 more
+of this parent: 1, the child 1
+of the child's group: 1, the child 1, this one 0
+of this user: this one 1, the child 1, launchd 0
+of this user as it really is: this one 1, the child 1
+of a parent there is not: 0; of a kind there is not: 0
+with room for half a number: 0 (Cannot allocate memory); for one: 4, and it is the newest 1
+the child ended and waited for: of this parent 0

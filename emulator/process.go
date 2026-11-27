@@ -294,6 +294,7 @@ type Process struct {
 
 	exited     bool
 	early      bool // it exited while the guest the run is for was still running
+	detached   bool // it had launchd move it to the background's session (see routineSession)
 	demanded   bool // launchd started it when a service of its was first looked up (see onDemand)
 	exitCode   int
 	endSignal  int             // the signal that ended it, if one did (see signals.go)

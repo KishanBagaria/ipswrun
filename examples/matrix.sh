@@ -129,6 +129,8 @@ for guest in ${guests//,/ }; do
 	[ "$platform" != ios ] || [ "$guest" != procwatch ] || continue
 	# power registers for the system's power by a library an iPhone's SDK does not give, and none was there to measure.
 	[ "$platform" != ios ] || [ "$guest" != power ] || continue
+	# detach asks launchd to leave the console's session, which was measured on a Mac only.
+	[ "$platform" != ios ] || [ "$guest" != detach ] || continue
 	if [ "$(uname)" = Darwin ]; then
 		make -s -C examples PLATFORM=$platform "${bin#examples/}/$guest" || exit
 	elif [ ! -x "$bin/$guest" ]; then

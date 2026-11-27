@@ -987,6 +987,8 @@ func sysProcInfo(p *Process, a []uint64) int64 {
 	// work in hand (8, see procctl.go) are answered: any other call stops and names itself,
 	// whatever its second argument is, which is not always a pid.
 	switch callnum {
+	case 1:
+		return p.listPIDs(uint32(a[1]), uint32(a[2]), buf, size, a)
 	case 2: // answered below
 	case 5:
 		return p.procSetControl(uint32(a[1]), flavor, buf, size, a)
@@ -1097,36 +1099,69 @@ func (r procRecord) shortInfo(flags uint32) []byte {
 const launchdPath = "/sbin/launchd"
 
 // launchdInfo is proc_pidinfo of launchd, as a Mac's answers a user (examples/procinfo.c): the
-// short record, the unique one and the path of its program; the full record, with or without the unique one,
-// and its architecture are EPERM. What it answers root, and the other flavours, were not measured.
+// short record, the unique one and the path of its program; the full record, with or without
+// the unique one, and its architecture are EPERM. Root is given those too, as measured in a
+// virtual machine (macOS 27.2, 26B123): the full record says it leads its session and has the
+// flags below, no parent and no terminal. How many files it has open is not known here, launchd
+// being no process of the machine's, and is said as none (a Mac's had 128). The other flavours
+// were not measured.
 func (p *Process) launchdInfo(flavor, buf, size uint64, a []uint64) int64 {
-	switch {
-	case flavor == pidShortBSDInfo && size >= 64:
-		p.write(buf, p.m.launchdRecord().shortInfo(p.m.launchdRecord().infoFlags())) // a Mac's has more flags set, which are not known
-		return 64
-	case flavor == pidPathInfo:
-		return p.pathInfo(launchdPath, buf, size)
-	case flavor == pidUniqueInfo && size >= 56:
+	// What a Mac's launchd has set beside being a 64-bit program that was started as one: how
+	// the system treats it, in bits the kernel's public headers do not name.
+	const flags, leader = 0xd0000000, 0x20
+	record := p.m.launchdRecord()
+	full := func() []byte {
+		info := record.bsdInfo()
+		le.PutUint32(info, record.infoFlags()|flags|leader)
+		return info
+	}
+	unique := func() ([]byte, bool) {
 		// The first of the machine's processes, with the UUID of the release's own launchd.
 		if p.m.launchdUUID == nil {
 			program, errno := p.fileToRun(launchdPath)
 			if errno != 0 {
 				p.unimplemented("proc_pidinfo of launchd's UUID, with no launchd in the release to read it from", a)
-				return -eNOSYS
+				return nil, false
 			}
 			uuid, err := uuidOf(program)
 			if err != nil {
 				p.unimplemented("proc_pidinfo of launchd's UUID, which its file does not give: "+err.Error(), a)
-				return -eNOSYS
+				return nil, false
 			}
 			p.m.launchdUUID = &uuid
 		}
 		of := launchdLineage
 		of.uuid = *p.m.launchdUUID
-		p.write(buf, of.uniqueInfo())
+		return of.uniqueInfo(), true
+	}
+	switch {
+	case flavor == pidShortBSDInfo && size >= 64:
+		p.write(buf, record.shortInfo(record.infoFlags()|flags))
+		return 64
+	case flavor == pidPathInfo:
+		return p.pathInfo(launchdPath, buf, size)
+	case flavor == pidUniqueInfo && size >= 56:
+		info, ok := unique()
+		if !ok {
+			return -eNOSYS
+		}
+		p.write(buf, info)
 		return 56
 	case (flavor == pidBSDInfo || flavor == pidBSDInfoUnique || flavor == pidArchInfo || flavor == pidListFDs) && p.uid != 0:
 		return -ePERM
+	case flavor == pidBSDInfo && size >= 136:
+		p.write(buf, full())
+		return 136
+	case flavor == pidBSDInfoUnique && size >= 192:
+		info, ok := unique()
+		if !ok {
+			return -eNOSYS
+		}
+		p.write(buf, append(full(), info...))
+		return 192
+	case flavor == pidArchInfo && size >= 8:
+		p.write(buf, le32(cpuARM64, cpuSubtypeARM64E))
+		return 8
 	}
 	p.unimplemented(fmt.Sprintf("proc_pidinfo of launchd, flavor %d", flavor), a)
 	return -eNOSYS

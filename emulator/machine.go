@@ -24,6 +24,9 @@ type Machine struct {
 	// diagnostic, once a program has set it, is the word in every process's commpage that says
 	// what to log for diagnosticd (see migHostSetDiagnosticFlag). Until then it is the host's.
 	diagnostic *uint32
+	// exceptions is the port launchd gives a process it moves to another session, to send
+	// what goes wrong in it to.
+	exceptions *port
 	running    *Process                       // the process whose thread has, or last had, the turn
 	services   map[string]*service            // what launchd knows (see launchd.go)
 	shared     []*sharedMemory                // every memory of the host's that mappings share (see shared.go)

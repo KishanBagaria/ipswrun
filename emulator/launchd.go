@@ -36,6 +36,7 @@ const (
 	routineJobValue     = 301 // a process asking for one of the values launchd keeps about its job, by number
 	routineStarted      = 802 // libxpc of iOS 14 to 16.0 telling launchd of the process as it starts: its environment, where it is from
 	routineUncork       = 803 // and then that launchd may start the services the process declares (_xpc_uncork_domain)
+	routineSession      = 824 // a process asking to be moved to another of launchd's sessions, as nohup does to leave the console's (_vprocmgr_detach_from_console)
 	routineImages       = 800 // and, as it loads more (dlopen), the paths of those images, as 802 gives those it started with
 
 	// The values a process asks for.
@@ -118,6 +119,31 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 			p.note("  to launchd, routine %d: %v", routine, request)
 			return false
 		}
+	case routine == routineSession:
+		// As measured on macOS 27.2.1 and 27.2 (26B123, in a virtual machine, as a user and as
+		// root, from the console's session and from a background one): asked for the session
+		// of what runs in the background, launchd answers with a right to send to a port of
+		// its own, named for exceptions, and a second time refuses (37, already done); for
+		// any other session's name it refuses (125). What it then does for the process was
+		// not seen from outside it: nothing is sent to that port here. The other kinds of
+		// request this routine takes, and another name after the move, stop being answered.
+		const already, noSession = 37, 125
+		background := request.string("session") == "Background"
+		switch {
+		case request.uint("type") != 7 || request.uint("handle") != 0 || p.detached && !background:
+			p.note("  to launchd, routine %d: %v", routine, request)
+			return false
+		case !background:
+			reply.set("error", int64(noSession))
+		case p.detached:
+			reply.set("error", int64(already))
+		default:
+			if m.exceptions == nil {
+				m.exceptions = &port{m: m}
+			}
+			p.detached = true
+			reply.set("exc-port", xpcPort{xpcSend, p.sendRight(m.exceptions)})
+		}
 	case !checkIn && routine != routineLookUp && routine != routineLookUpLegacy:
 		p.note("  to launchd, routine %d: %v", routine, request)
 		return false
@@ -130,7 +156,10 @@ func (m *Machine) launchd(p *Process, msg message, raw []byte) bool {
 	}
 	// libxpc takes an answer only from launchd (root, pid 1, as the message's trailer says) and
 	// only if it names the process that asked and which of its executions.
-	reply.set("req_pid", uint64(p.pid)).set("rec_execcnt", uint64(p.version))
+	// The answer to a move between sessions was measured to hold neither, and is taken without.
+	if routine != routineSession {
+		reply.set("req_pid", uint64(p.pid)).set("rec_execcnt", uint64(p.version))
+	}
 	p.note("  to launchd, routine %d: %v, answered %v", routine, request, reply)
 	body, rights := xpcEncode(reply)
 	if len(rights) > 0 {
