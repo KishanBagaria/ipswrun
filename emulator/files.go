@@ -464,7 +464,7 @@ func (p *Process) lookupThrough(path string, links int) (target, bool) {
 		}
 	}
 	switch {
-	case path == "/dev/null" || path == "/dev/urandom" || path == "/dev/random":
+	case path == "/dev/null" || path == "/dev/zero" || path == "/dev/urandom" || path == "/dev/random":
 		return target{kind: hostFD, host: path}, true
 	case under(p.cacheDir, path):
 		return target{kind: dirFD, inode: p.systemInode(path)}, true

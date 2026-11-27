@@ -23,16 +23,21 @@ const (
 	inputPipe
 )
 
-var nullDevice = sync.OnceValue(func() uint64 {
-	var st syscall.Stat_t
-	if syscall.Stat("/dev/null", &st) != nil {
-		return ^uint64(0)
+// nothingDevices are the host's /dev/null and /dev/zero, which poll, select and mmap were
+// measured to answer alike.
+var nothingDevices = sync.OnceValue(func() map[uint64]bool {
+	are := map[uint64]bool{}
+	for _, name := range []string{"/dev/null", "/dev/zero"} {
+		var st syscall.Stat_t
+		if syscall.Stat(name, &st) == nil {
+			are[uint64(st.Rdev)] = true
+		}
 	}
-	return uint64(st.Rdev)
+	return are
 })
 
 // input says what kind of thing the run's own standard input is, for a descriptor of it; and
-// that a descriptor is of /dev/null, however it was come by.
+// that a descriptor is of /dev/null or /dev/zero, however it was come by.
 func (f *fd) input() hostInput {
 	if f.kind != hostFD && (f.kind != stdioFD || f.host != 0) {
 		return inputOther
@@ -47,7 +52,7 @@ func (f *fd) input() hostInput {
 			return inputFile
 		}
 	case syscall.S_IFCHR:
-		if uint64(st.Rdev) == nullDevice() {
+		if nothingDevices()[uint64(st.Rdev)] {
 			return inputNothing
 		}
 	case syscall.S_IFIFO:
