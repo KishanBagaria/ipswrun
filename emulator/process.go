@@ -33,17 +33,20 @@ import (
 )
 
 const (
-	pageSize   = dyldcache.PageSize
-	blockSize  = 16 * pageSize
-	commPage   = 0xFFFFFC000
-	commPageRO = 0xFFFFF4000
-	pageTables = 0x0F0000000000
-	vaLimit    = 1 << 44 // the emulated core's physical address size; identity mapped
-	tbiMask    = 1<<56 - 1
-	stackTop   = 0x170000000
-	stackSize  = 8 << 20
-	exeBase    = 0x100000000
-	dyldBase   = 0x120000000
+	pageSize  = dyldcache.PageSize
+	blockSize = 16 * pageSize
+	commPage  = 0xFFFFFC000
+	// commPageDiagnostic is where in the commpage the word is that says what programs log for
+	// diagnosticd (_COMM_PAGE_ATM_DIAGNOSTIC_CONFIG).
+	commPageDiagnostic = 0x104
+	commPageRO         = 0xFFFFF4000
+	pageTables         = 0x0F0000000000
+	vaLimit            = 1 << 44 // the emulated core's physical address size; identity mapped
+	tbiMask            = 1<<56 - 1
+	stackTop           = 0x170000000
+	stackSize          = 8 << 20
+	exeBase            = 0x100000000
+	dyldBase           = 0x120000000
 	// Anonymous mappings grow up from here, clear of anything the guest places itself: from 2 TB
 	// on macOS, and on iOS from 16 GB, above the largest shared region, as iOS's Objective-C
 	// runtime keeps a class's data pointer in 39 bits.
@@ -291,6 +294,7 @@ type Process struct {
 
 	exited     bool
 	early      bool // it exited while the guest the run is for was still running
+	demanded   bool // launchd started it when a service of its was first looked up (see onDemand)
 	exitCode   int
 	endSignal  int             // the signal that ended it, if one did (see signals.go)
 	pending    []pendingSignal // the signals no thread has taken yet
@@ -558,6 +562,10 @@ func (p *Process) ExitCode() (code int, ok bool) {
 // LeftEarly reports whether a guest that was started beside the main one exited before it did:
 // not when it was asked to, at the end, but while it may still have been needed.
 func (p *Process) LeftEarly() bool { return p.early }
+
+// OnDemand reports whether the process is a daemon or an agent of the release's that launchd
+// started when a service of its was first looked up, and not one the run was given.
+func (p *Process) OnDemand() bool { return p.demanded }
 
 // Stdout is everything the guest wrote to file descriptor 1.
 func (p *Process) Stdout() string { return p.output().stdout.String() }
@@ -962,10 +970,13 @@ func (p *Process) setupCommpage() {
 			clear(page[0x88:0x90]) // TIMEBASE_OFFSET
 			clear(page[0x98:0xB0]) // CONT_TIMEBASE, BOOTTIME_USEC, CONT_HW_TIMEBASE
 			le.PutUint64(page[0xA0:], uint64(p.m.clock.boot.UnixMicro()))
-			clear(page[0xC0:0xD0]) // APPROX_TIME and whether it is supported
-			page[0x90] = 0         // USER_TIMEBASE_NONE: mach_absolute_time is a trap, not the counter
-			page[0x91] = 0         // nor does the counter keep mach_continuous_time
-			page[0x10C] = 0        // no TPRO: dyld falls back to mprotect
+			clear(page[0xC0:0xD0])                   // APPROX_TIME and whether it is supported
+			page[0x90] = 0                           // USER_TIMEBASE_NONE: mach_absolute_time is a trap, not the counter
+			page[0x91] = 0                           // nor does the counter keep mach_continuous_time
+			page[0x10C] = 0                          // no TPRO: dyld falls back to mprotect
+			if flag := p.m.diagnostic; flag != nil { // as the machine's diagnosticd last set it
+				le.PutUint32(page[commPageDiagnostic:], *flag)
+			}
 			// Hide CPU features the emulated core lacks (DIT, SHA3, SHA512, SPECRES) and report one CPU,
 			// in one cluster: malloc sizes its per-cluster tables by _COMM_PAGE_CPU_CLUSTERS, and the
 			// host's count with one CPU makes them overlap (cfprefsd faulted in xzone malloc on 26B131).

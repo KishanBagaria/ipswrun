@@ -173,9 +173,11 @@ func (m *Machine) onDemand(p *Process, name string) {
 	}
 	p.note("  launchd starts %s for %s", g.Executable, name)
 	m.deferred = append(m.deferred, func() {
-		if _, err := m.start(*g); err != nil {
+		started, err := m.start(*g)
+		if err != nil {
 			stopf("starting %s for the service %s: %v", g.Executable, name, err)
 		}
+		started.demanded = true
 	})
 }
 

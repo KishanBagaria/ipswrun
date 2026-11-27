@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -409,6 +410,7 @@ func init() {
 		216:  migHostStatistics,
 		217:  ok, // host_request_notification: of the calendar changing, which it does not
 		219:  migHostStatistics64,
+		225:  migHostSetDiagnosticFlag,
 		206:  func(p *Process, _ []byte) migReply { return migPort(p.kernelSelf(&p.m.clocks, kindClock)) }, // host_get_clock_service: the one clock there is, whichever is asked for
 		1000: migClockGetTime,
 		3403: migPortsRegister,
@@ -708,4 +710,25 @@ func migTaskInfo(p *Process, body []byte) migReply {
 // timeValue is a time_value_t: seconds and microseconds.
 func timeValue(d time.Duration) []byte {
 	return le32(uint32(d/time.Second), uint32(d%time.Second/time.Microsecond))
+}
+
+// migHostSetDiagnosticFlag is host_set_atm_diagnostic_flag, by which diagnosticd says what the
+// system's programs are to log for it: a word every process reads in the commpage. As measured
+// (macOS 27.2, and with the entitlement in a virtual machine, 26B123): a program without the
+// entitlement for it is refused (KERN_NO_ACCESS); one with it, root or not, is answered 0, and
+// the word is then what it gave, in every process.
+func migHostSetDiagnosticFlag(p *Process, body []byte) migReply {
+	const noAccess = 8
+	if len(body) < 36 {
+		return migCode(migBadArguments)
+	}
+	if !strings.Contains(p.entitlements, "<key>com.apple.private.set-atm-diagnostic-flag</key>") {
+		return migCode(noAccess)
+	}
+	flag := le.Uint32(body[32:])
+	p.m.diagnostic = &flag
+	for _, each := range p.m.live() {
+		each.uc.memWrite(commPage+commPageDiagnostic, le32(flag))
+	}
+	return migCode(0)
 }

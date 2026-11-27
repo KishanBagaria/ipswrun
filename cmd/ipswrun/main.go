@@ -501,7 +501,11 @@ func (o *options) runOne(r release, label string) (out outcome) {
 					stderr += fmt.Sprintf("ipswrun: %s exited with status %d while the guest was running\n", who, code)
 				}
 			}
-			if !o.Trace { // tracing already echoed it
+			// A daemon launchd started for a service that was looked up writes to nowhere, as
+			// on a Mac, where launchd gives a job no terminal unless its plist names a file,
+			// and comes and goes as it will: what it wrote and that it ended are a trace's to
+			// show.
+			if !o.Trace && !(i > 0 && process.OnDemand()) { // tracing already echoed it
 				out.stderr += stderr
 			}
 			if o.Missing {

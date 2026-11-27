@@ -16,22 +16,25 @@ import (
 // are there to serve it, as the daemons of a real system are, and the run ends when the first
 // exits.
 type Machine struct {
-	cfg      Config
-	user     user      // whom the guests run as, and who owns the home: the platform's (see userOf)
-	dyld     []byte    // the build's dyld, as the emulated CPU runs it
-	mounts   []mounted // the home among them; longest guest path first
-	procs    []*Process
-	running  *Process                       // the process whose thread has, or last had, the turn
-	services map[string]*service            // what launchd knows (see launchd.go)
-	shared   []*sharedMemory                // every memory of the host's that mappings share (see shared.go)
-	named    map[string]*sharedMemory       // those shm_open knows by a name
-	xattrs   map[hostFile]map[string][]byte // the extended attributes of the home's and mounts' files (see metadata.go)
-	ioMain   *port                          // what IOKit's searches are sent to, once a process has asked for it
-	ioPower  *port                          // the port of the kernel's service for the system's power, once a process has it (power.go)
-	stepping bool                           // a thread of the running process is on the CPU now, and not between two turns
-	asked    map[string]bool                // the services that were looked for among the build's own, once each
-	replaced []*Process                     // processes that are no longer among procs, to be closed with them
-	deferred []func()                       // what a system call left to be done between stretches of emulation (see spawn.go)
+	cfg    Config
+	user   user      // whom the guests run as, and who owns the home: the platform's (see userOf)
+	dyld   []byte    // the build's dyld, as the emulated CPU runs it
+	mounts []mounted // the home among them; longest guest path first
+	procs  []*Process
+	// diagnostic, once a program has set it, is the word in every process's commpage that says
+	// what to log for diagnosticd (see migHostSetDiagnosticFlag). Until then it is the host's.
+	diagnostic *uint32
+	running    *Process                       // the process whose thread has, or last had, the turn
+	services   map[string]*service            // what launchd knows (see launchd.go)
+	shared     []*sharedMemory                // every memory of the host's that mappings share (see shared.go)
+	named      map[string]*sharedMemory       // those shm_open knows by a name
+	xattrs     map[hostFile]map[string][]byte // the extended attributes of the home's and mounts' files (see metadata.go)
+	ioMain     *port                          // what IOKit's searches are sent to, once a process has asked for it
+	ioPower    *port                          // the port of the kernel's service for the system's power, once a process has it (power.go)
+	stepping   bool                           // a thread of the running process is on the CPU now, and not between two turns
+	asked      map[string]bool                // the services that were looked for among the build's own, once each
+	replaced   []*Process                     // processes that are no longer among procs, to be closed with them
+	deferred   []func()                       // what a system call left to be done between stretches of emulation (see spawn.go)
 	// The sandbox profiles the kernel has by name, once its kernelcache has been read for them
 	// (see kernelprofiles.go), or why they could not be.
 	profiles     []string
