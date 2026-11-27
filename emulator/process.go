@@ -293,9 +293,10 @@ type Process struct {
 	nextPort uint32
 
 	exited     bool
-	early      bool // it exited while the guest the run is for was still running
-	detached   bool // it had launchd move it to the background's session (see routineSession)
-	demanded   bool // launchd started it when a service of its was first looked up (see onDemand)
+	early      bool  // it exited while the guest the run is for was still running
+	taskName   *port // its task as those who may only name it have it (see machTaskNameForPid)
+	detached   bool  // it had launchd move it to the background's session (see routineSession)
+	demanded   bool  // launchd started it when a service of its was first looked up (see onDemand)
 	exitCode   int
 	endSignal  int             // the signal that ended it, if one did (see signals.go)
 	pending    []pendingSignal // the signals no thread has taken yet

@@ -1,0 +1,7 @@
+{
+  "build": "19H117",
+  "cache_uuid": "375B6D72-3337-3608-BE0C-E434918EB3A3",
+  "exit_code": 0,
+  "output": "of itself: 0, a name 1, the same name again 1 (0), a right of type 0x10000, the task's own name 0\nthe pid it is of: 0, this one's 1\ntask_info through it: 0\nof no process: 0x5, name 0\nof launchd: 0x5, a name 0\nfor a task that is none: 0x5, name 0\nof its child: 0, a name 1\n",
+  "version": "15.7.1"
+}

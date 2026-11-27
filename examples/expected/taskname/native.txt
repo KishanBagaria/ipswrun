@@ -1,0 +1,7 @@
+of itself: 0, a name 1, the same name again 1 (0), a right of type 0x10000, the task's own name 0
+the pid it is of: 0, this one's 1
+task_info through it: 0
+of no process: 0x5, name 0
+of launchd: 0x5, a name 0
+for a task that is none: 0x5, name 0
+of its child: 0, a name 1

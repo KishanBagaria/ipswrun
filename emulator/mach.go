@@ -14,7 +14,7 @@ var machNames = map[int64]string{
 	22: "port_insert_member", 23: "port_extract_member", 24: "port_construct", 25: "port_destruct", 26: "reply_port",
 	27: "thread_self", 28: "task_self", 29: "host_self", 31: "mach_msg", 32: "mach_msg_overwrite", 33: "semaphore_signal",
 	34: "semaphore_signal_all", 36: "semaphore_wait", 37: "semaphore_wait_signal", 38: "semaphore_timedwait", 40: "port_get_attributes", 41: "port_guard", 42: "port_unguard", 43: "generate_activity_id",
-	46: "pid_for_task", 47: "mach_msg2", 50: "thread_get_special_reply_port", 59: "swtch_pri", 60: "swtch", 61: "thread_switch",
+	44: "task_name_for_pid", 46: "pid_for_task", 47: "mach_msg2", 50: "thread_get_special_reply_port", 59: "swtch_pri", 60: "swtch", 61: "thread_switch",
 	70: "host_create_mach_voucher", 76: "port_type", 77: "port_request_notification", 88: "exclaves_ctl_trap", 89: "timebase_info", 90: "mach_wait_until",
 	91: "mk_timer_create", 92: "mk_timer_destroy", 93: "mk_timer_arm", 94: "mk_timer_cancel", 95: "mk_timer_arm_leeway",
 }
@@ -56,7 +56,7 @@ func init() {
 		"exclaves_ctl_trap": {8, machExclaves}, "mk_timer_create": {0, machNewReceive}, "mk_timer_destroy": {1, machTimerDestroy}, "mk_timer_arm": {2, machTimerArm},
 		"mk_timer_arm_leeway": {4, machTimerArmLeeway}, "mk_timer_cancel": {2, machTimerCancel}, "semaphore_signal": {1, machSemaphoreSignal},
 		"semaphore_signal_all": {1, machSemaphoreSignalAll}, "semaphore_wait": {1, machSemaphoreWait},
-		"semaphore_timedwait": {3, machSemaphoreTimedwait}, "semaphore_wait_signal": {2, machSemaphoreWaitSignal}, "pid_for_task": {2, machPidForTask},
+		"semaphore_timedwait": {3, machSemaphoreTimedwait}, "semaphore_wait_signal": {2, machSemaphoreWaitSignal}, "pid_for_task": {2, machPidForTask}, "task_name_for_pid": {3, machTaskNameForPid},
 		"mach_msg": {7, machMsg}, "mach_msg_overwrite": {8, machMsgOverwrite}, "mach_msg2": {8, machMsg2},
 	}
 }
@@ -176,12 +176,40 @@ func machGenerateActivityID(p *Process, a []uint64) int64 {
 // one it may be read by. Of anything else it fails, and the pid is -1, as measured.
 func machPidForTask(p *Process, a []uint64) int64 {
 	name := uint32(a[0])
+	if r := p.names[name]; r != nil { // a task named and no more says whose it is too, as measured
+		if k, ok := r.port.object.(kernelPort); ok && k.kind == kindTaskName && !k.of.exited {
+			p.write(a[1], le32(k.of.pid))
+			return 0
+		}
+	}
 	if r := p.names[name]; !p.isTask(name) && (r == nil || p.taskRead == nil || r.port != p.taskRead) {
 		p.write(a[1], le32(0xFFFFFFFF))
 		return kernFailure
 	}
 	p.write(a[1], le32(p.pid))
 	return 0
+}
+
+// machTaskNameForPid is task_name_for_pid(the caller's task, pid, &name): a right to send to a
+// process's task that only names it, the same right each time, as the kernel's source has it
+// (bsd/kern/kern_proc.c) and as measured on macOS 27.2.1: of the process itself, of another of
+// the same user and of any for root; of no process, of one that has ended, of another user's,
+// and when the first argument is no task of the caller's, it fails and the name is none.
+// launchd, which is no process of the machine's, is refused a user as measured, and asked by
+// root stops.
+func machTaskNameForPid(p *Process, a []uint64) int64 {
+	pid, out := uint32(a[1]), a[2]
+	about := p.m.process(pid)
+	switch {
+	case !p.isTask(uint32(a[0])):
+	case pid == launchdPID && p.uid == 0:
+		p.unimplemented("task_name_for_pid of launchd, by root", a)
+	case about != nil && (about == p || p.uid == 0 || about.uid == p.uid):
+		p.write(out, le32(p.kernelRightTo(&about.taskName, kernelPort{kind: kindTaskName, of: about})))
+		return 0
+	}
+	p.write(out, le32(0))
+	return kernFailure
 }
 
 // message is one mach_msg call in the form all three traps reduce to.

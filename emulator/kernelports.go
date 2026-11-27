@@ -20,6 +20,7 @@ const (
 	kindClock
 	kindThread
 	kindVoucher
+	kindTaskName // a task's port to those who may only name it (task_name_for_pid)
 )
 
 // kernelPort is what such a port stands for: its kind, whose it is, for a task's or a thread's,
@@ -50,6 +51,16 @@ func routineKind(id uint32) portKind {
 
 func (k kernelPort) request(p *Process, id uint32, body []byte) (migReply, bool) {
 	kind := routineKind(id)
+	if k.kind == kindTaskName {
+		// What a task says to one who may only name it: of the process's own, what it is in
+		// short (task_info's TASK_BASIC_INFO_64), as measured. Any other question, and any
+		// of another process, is not answered here.
+		const taskInfo, basic64 = 3405, 18 // on this kind of CPU the 64-bit record is TASK_BASIC_INFO_64_2
+		if k.of != p || id != taskInfo || len(body) < 36 || le.Uint32(body[32:]) != basic64 {
+			return migReply{}, false
+		}
+		return migRoutines[id](p, body), true
+	}
 	switch {
 	case kind == 0, kind == kindHostPriv && p.uid == 0, k.of != nil && k.of != p:
 		// What root's host port answers is not known, nor what another process's task does.

@@ -380,6 +380,15 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 
 	// program reads a program of the build for a guest to start.
 	program := func(path string) ([]byte, bool, error) {
+		// The directories on the way may be links too, as a framework's are: a daemon's program
+		// is named through them (coreservicesd's is a link into CarbonCore's framework).
+		through := func(path string) string {
+			if real, err := realDirectory(image, pathpkg.Dir(path)); err == nil && real != "" {
+				return real + "/" + pathpkg.Base(path)
+			}
+			return path
+		}
+		path = through(path)
 		entry, err := image.Stat(rangefs.FileSystem, path)
 		for links := 0; err == nil && entry.Kind == rangefs.Symlink && links < 16; links++ {
 			if strings.HasPrefix(entry.Target, "/") {
@@ -387,6 +396,7 @@ func RunBuild(image *rangefs.Image, run Run) (*Machine, *dyldcache.Cache, error)
 			} else {
 				path = pathpkg.Join(pathpkg.Dir(path), entry.Target)
 			}
+			path = through(path)
 			entry, err = image.Stat(rangefs.FileSystem, path)
 		}
 		switch {
