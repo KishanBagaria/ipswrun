@@ -266,7 +266,7 @@ func (p *Process) inherit(parent *Process, actions []byte, closeAll bool) int64 
 			if f, err = f.hostDup(); err != nil {
 				return hostErrno(err)
 			}
-		case f.streams():
+		case f.streams(), f.kind == ttyFD:
 			f.refs++
 		case f.shared != nil:
 			f.shared.retain()
@@ -810,7 +810,7 @@ func (p *Process) fork() *Process {
 			if f, err = f.hostDup(); err != nil {
 				stopf("fork: %v", err)
 			}
-		case f.streams():
+		case f.streams(), f.kind == ttyFD:
 			f.refs++
 		case f.shared != nil:
 			f.shared.retain()

@@ -75,6 +75,7 @@ type thread struct {
 	reply     uint32      // the port it waits on for the answer to a synchronous message, once it asked for one
 	receiving *message    // of a thread waiting for a Mach message: where it wants it
 	pipeOp    *pipeOp     // of a thread waiting on a pipe: what it is in the middle of
+	leaving   *int        // of a thread whose exit waits for a terminal (see terminals.go): the status to end with
 	rangeWait *rangeWait  // of one waiting for a lock on part of a file: which
 	selecting *selecting  // of a thread waiting in select: what it asked about
 	polling   *polling    // or in poll

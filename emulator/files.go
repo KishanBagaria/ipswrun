@@ -56,6 +56,7 @@ const (
 	cacheFD                // a file of the build read by range: of the dyld shared cache or the system volume
 	pipeFD                 // one end of a pipe (see pipes.go)
 	socketFD               // one of a pair of connected sockets (see sockets.go)
+	ttyFD                  // an end of a terminal (see terminals.go)
 )
 
 type fd struct {
@@ -81,6 +82,8 @@ type fd struct {
 	state     *status      // of what is no pipe and no socket: what fcntl reads and sets of it (see fileflags.go)
 	refs      int          // the descriptors it is, in every process: a duplicate and a child's are the same end
 	both      bool         // of a named pipe's: it was opened to read and to write
+	tty       *terminal    // of an end of a terminal: which, and
+	first     bool         // that it is the first end, the one that is typed at
 }
 
 func (f *fd) size() int64 {
@@ -544,6 +547,10 @@ func (p *Process) doStat(path string, buf uint64, follow bool) int64 {
 	if n, ok := p.descriptorAt(path); ok { // what the descriptor is, followed or not
 		return sysFstat64(p, []uint64{n, buf})
 	}
+	if t := p.terminalNamed(path); t != nil {
+		p.write(buf, p.terminalStat(t, false))
+		return 0
+	}
 	_, info, errno := p.describePath("stat", path, follow)
 	return p.putStat(buf, info, errno)
 }
@@ -621,6 +628,10 @@ func sysFstat64(p *Process, a []uint64) int64 {
 		p.write(a[1], p.pipeStat(f))
 		return 0
 	}
+	if f.kind == ttyFD {
+		p.write(a[1], p.terminalStat(f.tty, f.first))
+		return 0
+	}
 	if f.kind == socketFD {
 		p.write(a[1], p.socketStat(f))
 		return 0
@@ -646,6 +657,9 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 	}
 	if n, ok := p.descriptorAt(path); ok {
 		return p.openDescriptor(n, flags)
+	}
+	if n, ok := p.openTerminal(path, flags); ok {
+		return n
 	}
 	if p.absolute(path) == devFDs {
 		p.unimplemented("open of /dev/fd, to list a process's descriptors", []uint64{flags, mode})
@@ -899,9 +913,22 @@ func (p *Process) dropFD(f *fd) {
 	if f.kind == socketFD {
 		p.socketClosed(f)
 	}
+	if f.kind == ttyFD {
+		p.terminalClosed(f)
+	}
 }
 
-func sysClose(p *Process, a []uint64) int64 { return p.closeFD(a[0]) }
+func sysClose(p *Process, a []uint64) int64 {
+	f := p.fds[a[0]]
+	r := p.closeFD(a[0])
+	if f != nil && f.kind == ttyFD && f.refs == 0 && !f.first && !f.tty.until.IsZero() {
+		// The last close of a terminal's second end waits for what it wrote to be read, as
+		// long as the terminal keeps it (see terminals.go).
+		p.current.pipeOp = &pipeOp{f: f, closing: true}
+		p.wait(waitPipe, f.tty.id, f.tty.until, result{})
+	}
+	return r
+}
 
 // hostBuffer bounds a guest-supplied length before it becomes a host allocation.
 func hostBuffer(n uint64) []byte { return make([]byte, min(n, 1<<30)) }
@@ -920,6 +947,8 @@ func sysRead(p *Process, a []uint64) int64 {
 		return p.pipeRead(f, []stretch{{a[1], a[2]}})
 	case f.kind == socketFD:
 		return p.socketReceive(f, []stretch{{a[1], a[2]}}, 0)
+	case f.kind == ttyFD:
+		return p.terminalRead(f, []stretch{{a[1], a[2]}})
 	case f.kind == hostFD || (f.kind == stdioFD && f.host == 0): // the host keeps the position
 		data = hostBuffer(a[2])
 		n, err := syscall.Read(f.host, data)
@@ -973,6 +1002,9 @@ func sysWrite(p *Process, a []uint64) int64 {
 	}
 	if f.kind == socketFD {
 		return p.socketSend(f, p.read(a[1], a[2]), 0, true)
+	}
+	if f.kind == ttyFD {
+		return p.terminalWrite(f, p.read(a[1], a[2]))
 	}
 	if f.kind == stdioFD {
 		if f.host != 1 && f.host != 2 {
@@ -1509,6 +1541,9 @@ func (p *Process) list(f *fd) int64 {
 		return -eNOTDIR
 	}
 	f.names = append([]string{".", ".."}, names...)
+	if pathpkg.Clean(f.path) == "/dev" {
+		f.names = append(f.names, p.terminalNames()...)
+	}
 	return 0
 }
 
@@ -1561,7 +1596,9 @@ func sysGetdirentries64(p *Process, a []uint64) int64 {
 		}
 		kind := byte(syscall.DT_DIR)
 		child := pathpkg.Join(f.path, name)
-		if f.pos >= 2 {
+		if f.pos >= 2 && p.terminalNamed(child) != nil {
+			kind = syscall.DT_CHR
+		} else if f.pos >= 2 {
 			if t, ok := p.resolve(child); ok {
 				switch {
 				case t.root != nil:
@@ -1655,7 +1692,7 @@ func sysFcntl(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	if f.streams() {
+	if f.streams() || f.kind == ttyFD {
 		if r, ok := p.pipeFcntl(f, a[1], a[2]); ok {
 			return r
 		}

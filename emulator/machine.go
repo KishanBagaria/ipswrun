@@ -45,6 +45,7 @@ type Machine struct {
 	fifos        map[hostFile]bool        // the named pipes guests have made under the home and mounts (see sysMkfifo)
 	sockets      map[hostFile]*socket     // the sockets guests have bound to names there (see sysBind)
 	fifoPipes    map[hostFile]*pipe       // the named pipes that are open, by the file that names each (see fifos.go)
+	terminals    []*terminal              // the terminals there have been, by the number in each one's name (see terminals.go)
 	owners       map[hostFile]Owner       // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
 	said         map[hostFile]uint16      // the permissions the data volume's template has for a file, where the host's file has others (see data.go)
 	flags        map[hostFile]uint32      // the flags a file carries beside its mode, where it has any (see chflags)
@@ -181,7 +182,9 @@ func (m *Machine) Run(timeout time.Duration) (err error) {
 	m.running = m.procs[0]
 	for {
 		p := m.running
-		if !p.step() {
+		if t := p.current; t.leaving != nil && t.state == runnable { // its exit has waited long enough
+			p.exitCode, p.exited = *t.leaving, true
+		} else if !p.step() {
 			return nil
 		}
 		if p.exited {

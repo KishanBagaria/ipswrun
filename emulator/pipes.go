@@ -69,6 +69,9 @@ type pipeOp struct {
 	// descriptor it will be.
 	opening bool
 	number  uint64
+	trying  bool   // of a terminal's (see terminals.go): it is being served now
+	closing bool   // that it is the close of the second end, waiting for what was written to be read
+	setting []byte // and of settings that wait to be set: what they are (with which request, in flags)
 	// Of a message (sendmsg, recvmsg; see messages.go): the descriptors to go with what is
 	// sent; where the receiver's message is described, and what came beside the bytes.
 	// Of a datagram's receive (see datagrams.go): whom it was from, and how it was marked.
@@ -105,6 +108,10 @@ func (p *Process) put(op *pipeOp, data []byte) {
 // streams says whether a descriptor is an end of a pipe or a socket: what is read and written
 // in order, and waited for.
 func (f *fd) streams() bool { return f.kind == pipeFD || f.kind == socketFD }
+
+// watchable says whether a kqueue can be told when the descriptor can be read or written: of
+// those, and of an end of a terminal.
+func (f *fd) watchable() bool { return f.streams() || f.kind == ttyFD }
 
 // selecting is a select that waits: the descriptors it asked about, and where to say which are
 // ready.
@@ -286,6 +293,8 @@ func (m *Machine) streamChanged(id uint64) {
 			}
 			try := owner.tryRead
 			switch {
+			case op.f.kind == ttyFD:
+				try = owner.tryTerminal
 			case op.f.kind == socketFD && op.accepting:
 				try = owner.tryAccept
 			case op.f.kind == socketFD && op.sending:
@@ -414,6 +423,9 @@ func sysIoctl(p *Process, a []uint64) int64 {
 	if f.necp != nil {
 		return p.sessionOnly(a)
 	}
+	if f.kind == ttyFD {
+		return p.terminalIoctl(f, a)
+	}
 	if !f.streams() {
 		return -eNOTTY
 	}
@@ -455,7 +467,7 @@ func (p *Process) selectPipes(a []uint64, nanoseconds uint64) (int64, bool) {
 		}
 		s.asked[i] = p.read(set, size)
 		for n := range a[0] {
-			if f := p.fds[n]; s.asked[i][n/8]>>(n%8)&1 != 0 && f != nil && (f.streams() || f.isFile()) {
+			if f := p.fds[n]; s.asked[i][n/8]>>(n%8)&1 != 0 && f != nil && (f.streams() || f.isFile() || f.kind == ttyFD) {
 				found = true
 			}
 		}
@@ -491,7 +503,7 @@ func (p *Process) selected(s *selecting) int64 {
 		out[i] = make([]byte, len(asked))
 		for n := range uint64(len(asked) * 8) {
 			f := p.fds[n]
-			if asked[n/8]>>(n%8)&1 == 0 || f == nil || i == 2 || !(f.streams() && f.pipeReady(i == 1) || f.isFile()) {
+			if asked[n/8]>>(n%8)&1 == 0 || f == nil || i == 2 || !(f.streams() && f.pipeReady(i == 1) || f.isFile() || f.kind == ttyFD && f.terminalReady(i == 1)) {
 				continue
 			}
 			out[i][n/8] |= 1 << (n % 8)
@@ -529,7 +541,7 @@ func (p *Process) changePipe(q *kqueue, c kevent) bool {
 	case ok && c.flags&evAdd == 0 && c.flags&evDisable != 0:
 		w.flags |= evDisable
 		q.pipes[key] = w
-	case f == nil || !f.streams():
+	case f == nil || !f.watchable():
 		return ok
 	case c.flags&evAdd != 0:
 		q.pipes[key] = c
@@ -546,7 +558,7 @@ func (p *Process) watchedPipes(q *kqueue) {
 	for _, key := range keys {
 		w := q.pipes[key]
 		f := p.fds[key.ident]
-		if f == nil || !f.streams() { // closed since: what watched it went with it
+		if f == nil || !f.watchable() { // closed since: what watched it went with it
 			delete(q.pipes, key)
 			continue
 		}
@@ -628,6 +640,13 @@ func (f *fd) filtered(filter int16, asked kevent) (data int64, ended bool, least
 	if filter == filterRead && asked.fflags&noteLowWater != 0 {
 		least = max(asked.data, 1)
 	}
+	if f.kind == ttyFD { // it says for itself whether there is an event, whatever the count
+		data, ended, ready := f.terminalFiltered(filter)
+		if ready {
+			return data, ended, 0, true
+		}
+		return data, false, data + 1, true
+	}
 	switch {
 	case f.kind == socketFD && f.sock.datagram != nil && filter == filterRead: // the messages that wait and whom each is from, by the source
 		return int64(f.sock.datagram.bytes), false, least, true
@@ -656,8 +675,11 @@ func (f *fd) filtered(filter int16, asked kevent) (data int64, ended bool, least
 // changes is how often something has happened to the pipe or the pair of sockets a descriptor
 // is of.
 func (f *fd) changes() uint64 {
-	if f.kind == socketFD {
+	switch f.kind {
+	case socketFD:
 		return f.sock.pair.changes
+	case ttyFD:
+		return f.tty.changes
 	}
 	return f.pipe.changes
 }
@@ -675,6 +697,8 @@ func (p *Process) polled(n int32, events uint16) (uint16, bool) {
 		return events & (pollReading | pollWriting), true
 	case f.kind == socketFD:
 		return f.sock.polled(events), true
+	case f.kind == ttyFD:
+		return f.terminalPolled(events), true
 	case f.kind != pipeFD:
 		return 0, false
 	}

@@ -209,7 +209,7 @@ func (p *Process) newNote(n *knote) int64 {
 		}
 		// Of a descriptor that is no pipe's, or the end of one that is not the one read, or
 		// written, nothing here says when it can be.
-		n.never = !f.streams()
+		n.never = !f.watchable()
 		if !n.never {
 			if _, _, _, applies := f.filtered(c.filter, c); !applies {
 				n.never = true
@@ -281,7 +281,7 @@ func (p *Process) pollNotes(q *userKqueue, room int) []kevent {
 			}
 		case filterRead, filterWrite:
 			f := p.fds[n.event.ident]
-			if f == nil || !f.streams() { // closed since: what watched it went with it
+			if f == nil || !f.watchable() { // closed since: what watched it went with it
 				gone = true
 				break
 			}
