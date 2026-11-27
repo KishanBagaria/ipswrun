@@ -74,7 +74,7 @@ func (r procRecord) bytes() []byte {
 
 // record is what the kernel says of a process that is there.
 func (p *Process) record() procRecord {
-	r := procRecord{pid: p.pid, parent: p.parentPID(), group: p.group(), uid: p.uid, gid: p.gid, name: p.name, began: p.began, state: procRunning,
+	r := procRecord{pid: p.pid, parent: p.parentPID(), group: p.group(), uid: p.uid, gid: p.gid, name: p.name, began: p.began, state: procRunning + 2*uint8(truth(p.stopped)), // SSTOP is 4, as measured
 		execed: p.execed || p.parent == nil, nice: int8(p.nice), leads: p.sessionOf() == p.pid, files: len(p.fds)}
 	if p.exited {
 		r.state = procZombie

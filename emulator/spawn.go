@@ -24,7 +24,7 @@ const (
 	eNOEXEC       = 8
 	eBADARCH      = 86
 	waitNoHang    = 0x1
-	waitStopped   = 0x2  // WUNTRACED: of children that were stopped, which none here is
+	waitStopped   = 0x2  // WUNTRACED: of children that were stopped (see stops.go)
 	waitContinued = 0x10 // WCONTINUED: and of those that went on again
 
 	// What a child is to be started with, of its attributes' flags (POSIX_SPAWN_…).
@@ -42,6 +42,8 @@ const (
 type waiting4 struct {
 	pid            int32
 	status, rusage uint64
+	options        uint64
+	group          uint32 // of one that waits for the children of a group: which
 }
 
 // program is the executable at a path, and the name to run it under; or the error posix_spawn
@@ -345,22 +347,34 @@ func (p *Process) children() []*Process {
 // for one to, unless told not to.
 func sysWait4(p *Process, a []uint64) int64 {
 	pid := int32(a[0])
-	if pid < -1 {
-		p.unimplemented("wait4 for a process group", a)
-		return -eCHILD
-	}
 	if a[2]&^(waitNoHang|waitStopped|waitContinued) != 0 {
 		p.unimplemented(fmt.Sprintf("wait4 with the options %#x", a[2]), a)
 		return -eINVAL
 	}
-	w := &waiting4{pid: pid, status: a[1], rusage: a[3]}
+	// Any child (-1), one, those of the caller's group (0) or those of a group. Of several
+	// that have something to tell, the one started last is told first, as measured.
+	w := &waiting4{pid: pid, status: a[1], rusage: a[3], options: a[2]}
+	switch {
+	case pid == 0:
+		w.group = p.group()
+	case pid < -1:
+		w.group = uint32(-pid)
+	}
 	found := false
-	for _, child := range p.children() {
+	children := p.children()
+	slices.Reverse(children)
+	for _, child := range children {
 		if !w.wants(child) {
 			continue
 		}
 		if found = true; child.exited {
 			return p.reapChild(child, w)
+		}
+		if status, ok := w.changed(child); ok { // one that was stopped, or set going: what it has used is not said
+			if w.status != 0 {
+				p.write(w.status, le32(status))
+			}
+			return int64(child.pid)
 		}
 	}
 	switch {
@@ -374,7 +388,12 @@ func sysWait4(p *Process, a []uint64) int64 {
 	return 0
 }
 
-func (w *waiting4) wants(child *Process) bool { return w.pid <= 0 || uint32(w.pid) == child.pid }
+func (w *waiting4) wants(child *Process) bool {
+	if w.group != 0 {
+		return child.group() == w.group
+	}
+	return w.pid <= 0 || uint32(w.pid) == child.pid
+}
 
 // reapChild tells a parent how a child ended, which is the last that is heard of it.
 func (p *Process) reapChild(child *Process, w *waiting4) int64 {

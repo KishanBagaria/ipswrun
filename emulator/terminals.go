@@ -710,16 +710,10 @@ func (p *Process) terminalRead(f *fd, into []stretch) int64 {
 }
 
 // tryTerminal gives a read, a write or a setting that waits what it can have now, and says
-// whether that is the end of it. What it changes wakes whoever waits on the terminal, which
-// comes back here for this one too, if it waited: that finds it being served.
+// whether that is the end of it. What it changes wakes whoever waits on the terminal.
 func (p *Process) tryTerminal(op *pipeOp) (int64, bool) {
-	if op.trying {
-		return 0, false
-	}
-	op.trying = true
 	t := op.f.tty
 	defer func(was uint64, shown, typed, lines int) {
-		op.trying = false
 		if len(t.shown) != shown || len(t.typed) != typed || len(t.lines) != lines || t.changes != was {
 			p.terminalChanged(t)
 		}

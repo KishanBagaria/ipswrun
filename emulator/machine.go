@@ -213,6 +213,7 @@ func (m *Machine) exit(p *Process, how string) {
 		p.closeFD(n)
 	}
 	p.leaveSession()
+	m.orphanedStops(p)
 	if parent := p.parent; parent != nil && !parent.exited { // told before it is given the child to wait for
 		told := pendingSignal{sig: sigChild, code: codeChildExited, status: int32(p.exitCode), pid: p.pid, uid: p.uid}
 		if p.endSignal != 0 {
@@ -269,7 +270,7 @@ func (m *Machine) next() (*Process, *thread) {
 	at := slices.Index(m.procs, m.running)
 	for k := range m.procs {
 		p := m.procs[(at+k)%len(m.procs)]
-		if p.exited {
+		if p.exited || p.stopped {
 			continue
 		}
 		current := slices.Index(p.threads, p.current)
@@ -279,7 +280,7 @@ func (m *Machine) next() (*Process, *thread) {
 			}
 		}
 	}
-	if p := m.running; !p.exited && p.current.state == runnable {
+	if p := m.running; !p.exited && !p.stopped && p.current.state == runnable {
 		return p, p.current
 	}
 	return nil, nil
@@ -308,7 +309,7 @@ func (m *Machine) schedule() bool {
 			m.deferred = m.deferred[1:]
 			do()
 		}
-		if p := m.running; did && !p.exited && p.current.state == runnable {
+		if p := m.running; did && !p.exited && !p.stopped && p.current.state == runnable {
 			p.switchTo(p.current)
 			return true
 		}
@@ -358,6 +359,8 @@ func (m *Machine) schedule() bool {
 		switch {
 		case main.exited && (until.IsZero() || until.After(m.settling)):
 			return false
+		case until.IsZero() && m.anyStopped():
+			stopf("nothing left to run: what could run is stopped by a signal, and nothing will set it going")
 		case until.IsZero() && !stuck:
 			stopKind(StopIdle, "nothing left to run: every thread waits for a Mach message or for work, and nothing here will send one. A service waiting for a client ends this way")
 		case until.IsZero():

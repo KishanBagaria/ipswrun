@@ -292,22 +292,26 @@ type Process struct {
 	fds      map[uint64]*fd
 	nextPort uint32
 
-	exited     bool
-	early      bool  // it exited while the guest the run is for was still running
-	taskName   *port // its task as those who may only name it have it (see machTaskNameForPid)
-	becoming   bool  // it is becoming another program, and closing what that one is not to have
-	controlt   bool  // its session's terminal is its own to use (see terminals.go): since it took one, or by coming of one that had
-	detached   bool  // it had launchd move it to the background's session (see routineSession)
-	demanded   bool  // launchd started it when a service of its was first looked up (see onDemand)
-	exitCode   int
-	endSignal  int             // the signal that ended it, if one did (see signals.go)
-	pending    []pendingSignal // the signals no thread has taken yet
-	guestFault *pendingSignal  // the fault the thread that has the CPU just made, on its way out of the hook
-	crash      string          // of a process a fault ended: what it was, and where
-	itimer     intervalTimer   // the timer that sends it SIGALRM, if it set one
-	fault      string
-	faultKind  StopKind // of the stop that set fault, carried out of the hook it happened in
-	resume     bool
+	exited   bool
+	early    bool  // it exited while the guest the run is for was still running
+	taskName *port // its task as those who may only name it have it (see machTaskNameForPid)
+	becoming bool  // it is becoming another program, and closing what that one is not to have
+	// Stopped by a signal until SIGCONT comes (see stops.go): by which, whether its parent has
+	// been told by wait4, and that SIGCONT was sent it and its parent not told.
+	stopped, stopTold, continued bool
+	stopSignal                   uint64
+	controlt                     bool // its session's terminal is its own to use (see terminals.go): since it took one, or by coming of one that had
+	detached                     bool // it had launchd move it to the background's session (see routineSession)
+	demanded                     bool // launchd started it when a service of its was first looked up (see onDemand)
+	exitCode                     int
+	endSignal                    int             // the signal that ended it, if one did (see signals.go)
+	pending                      []pendingSignal // the signals no thread has taken yet
+	guestFault                   *pendingSignal  // the fault the thread that has the CPU just made, on its way out of the hook
+	crash                        string          // of a process a fault ended: what it was, and where
+	itimer                       intervalTimer   // the timer that sends it SIGALRM, if it set one
+	fault                        string
+	faultKind                    StopKind // of the stop that set fault, carried out of the hook it happened in
+	resume                       bool
 
 	// Threads: see threads.go.
 	threads     []*thread

@@ -1,0 +1,34 @@
+SIGSTOP sent: 0; waited for with WUNTRACED: stopped by 17 (0x117f); SIGCHLD 1, code 5, status 17
+asked again: nothing; without WUNTRACED: nothing
+stopped, it is sent nothing (0): 0, SIGUSR1: 0, SIGSTOP again: 0; then nothing, no SIGCHLD
+SIGCONT sent: 0; waited for with WCONTINUED: going again (0x137f); no SIGCHLD
+asked again: nothing; what came to it: SIGUSR1 1, SIGTSTP 0, SIGCONT 1
+SIGCONT sent to it going: 0; then with WCONTINUED: going again (0x137f); no SIGCHLD; what came to it: SIGUSR1 1, SIGTSTP 0, SIGCONT 2
+asked something while stopped: it answers nothing; set going, it answers: SIGUSR1 1, SIGTSTP 0, SIGCONT 3
+SIGTERM sent to it stopped: 0; then ended by 15; SIGKILL: -1; then -1 (No child processes); SIGCHLD 1, code 2, status 15
+SIGTSTP sent to one that takes it as it is: 0; stopped by 18 (0x127f); SIGCHLD 1, code 5, status 0
+SIGTTIN sent to it stopped: 0; then nothing; SIGCONT, which it takes as it is: 0; going again (0x137f); no SIGCHLD; what came to it: SIGUSR1 0, SIGTSTP 0, SIGCONT 0
+SIGTTIN: 0; stopped by 21 (0x157f); SIGTTOU: 0; stopped by 22 (0x167f)
+asked to end: ended with 0
+SIGTSTP sent to one that catches it: 0; nothing; no SIGCHLD; what came to it: SIGUSR1 0, SIGTSTP 1, SIGCONT 0
+asked to end: ended with 0
+to one that ignores it: 0; nothing; what came to it: SIGUSR1 0, SIGTSTP 0, SIGCONT 0
+asked to end: ended with 0
+SIGTSTP sent to one in a session of its own: 0; nothing; SIGTTIN: 0; nothing; SIGSTOP: 0; stopped by 17 (0x117f)
+asked to end: ended with 0
+with SA_NOCLDSTOP, SIGSTOP sent: 0; stopped by 17 (0x117f); no SIGCHLD; SIGCONT: 0; going again (0x137f); no SIGCHLD
+asked to end: ended with 0
+one that sends itself SIGSTOP: stopped by 17 (0x117f); set going: 0, and waited for: ended with 7
+a blocked SIGTSTP let through with nothing catching it: stopped by 18; then ended with 7
+SIGCONT sent to one going that blocks it: with WCONTINUED nothing
+in the child SIGCONT waits 1, came 0
+a sleep of a second, stopped and sent a caught signal at once, set going after 1.5: 0, SIGUSR1 came 1
+the same, set going after 0.3: -1 (interrupted)
+SIGCONT blocked then a caught SIGTSTP sent: SIGCONT came 0, SIGTSTP 1
+sent stopped USR1 USR1 USR2 then CONT: handlers ran 21c
+blocked, sent itself USR2 USR1 USR1, unblocked: handlers ran 21
+wait4 of 0 with the only child in another group: -1 (No child processes); of its group: ended with 0
+an older child ended and a newer stopped: wait4 of any gives the newer, stopped first
+an older child stopped and a newer ended: the newer, ended first
+stopped, and its parent ended: it goes on, having been sent ch
+kern.proc of one stopped: 0, p_stat 4; of itself 2

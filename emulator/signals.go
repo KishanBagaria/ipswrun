@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -353,12 +354,33 @@ func (p *Process) sendSignal(s pendingSignal) {
 	}
 	p.signalled(s.sig) // whoever watches for it with a kqueue is told, whatever it then does
 	handler := p.sigactions[s.sig].handler
+	if s.sig == sigCont {
+		// A stop that waited is let go. One that is stopped goes on, whatever it then does
+		// with the signal; one that is going is marked as sent it unless every thread
+		// blocks it. As measured.
+		p.pending = slices.DeleteFunc(p.pending, func(w pendingSignal) bool { return signalsStop[w.sig] })
+		if p.stopped || slices.ContainsFunc(p.threads, s.takes) {
+			p.goOn()
+		}
+	}
+	// A signal that stops, unless it is ignored or is one of a terminal's sent to a group
+	// with nobody to see to it, lets go a SIGCONT that waited, as measured.
+	stops := signalsStop[s.sig] && (handler == 0 || s.sig == sigStop)
+	left := stops && s.sig != sigStop && p.m.orphaned(p.group())
+	if signalsStop[s.sig] && handler != sigIgnore && !left {
+		p.pending = slices.DeleteFunc(p.pending, func(w pendingSignal) bool { return w.sig == sigCont })
+	}
 	switch {
 	case s.sig == sigKill:
 		p.endBySignal(sigKill)
 		return
-	case signalsStop[s.sig] && (handler == 0 || s.sig == sigStop):
-		p.unimplemented(fmt.Sprintf("signal %d, which stops a process until it is continued", s.sig), nil)
+	case left: // nobody would set it going again
+		return
+	case stops && (s.sig == sigStop || slices.ContainsFunc(p.threads, s.takes)):
+		p.stop(s.sig)
+		return
+	case stops: // every thread blocks it: it waits, and stops the process when one lets it through
+		p.pend(s)
 		return
 	case handler == sigIgnore, handler == 0 && signalsIgnored[s.sig]:
 		return
@@ -373,7 +395,30 @@ func (p *Process) sendSignal(s pendingSignal) {
 		p.endBySignal(int(s.sig))
 		return
 	}
-	p.pending = append(p.pending, s)
+	p.pend(s)
+	if p.stopped {
+		return // it is brought back from what it waits in when it is set going, if it still waits
+	}
+	p.nudge(s)
+}
+
+// pend has a signal wait to be taken. One of a kind waits at a time, as measured: what is sent
+// again while one waits is the one that waits.
+func (p *Process) pend(s pendingSignal) {
+	if !slices.ContainsFunc(p.pending, func(w pendingSignal) bool { return w.sig == s.sig && w.to == s.to }) {
+		p.pending = append(p.pending, s)
+	}
+}
+
+// nudge brings a thread that could take a signal that waits back from the call it waits in,
+// unless one that could is running anyway.
+func (p *Process) nudge(s pendingSignal) {
+	var takers []*thread
+	for _, t := range p.threads {
+		if s.takes(t) {
+			takers = append(takers, t)
+		}
+	}
 	if containsThread(takers, func(t *thread) bool { return t.state == runnable }) {
 		return // taken when that thread next comes back from the kernel
 	}
@@ -455,15 +500,16 @@ func containsThread(threads []*thread, f func(*thread) bool) bool {
 }
 
 // takeSignals has the thread that is coming back from the kernel take the signals that wait
-// for it: each ends the process, or has its handler run, the last one taken first.
+// for it: each ends or stops the process, or has its handler run. They are taken by their
+// numbers, the lowest first, and the last one taken runs first: so of handlers that do not
+// block each other the highest number's runs first, as measured.
 func (p *Process) takeSignals() {
 	t := p.current
-	for !p.exited && t.state == runnable {
+	for !p.exited && !p.stopped && t.state == runnable {
 		at := -1
 		for i, s := range p.pending {
-			if s.takes(t) {
+			if s.takes(t) && (at < 0 || s.sig < p.pending[at].sig) {
 				at = i
-				break
 			}
 		}
 		if at < 0 {
@@ -473,6 +519,10 @@ func (p *Process) takeSignals() {
 		p.pending = append(p.pending[:at:at], p.pending[at+1:]...)
 		switch handler := p.sigactions[s.sig].handler; {
 		case handler == sigIgnore, handler == 0 && signalsIgnored[s.sig]:
+		case handler == 0 && signalsStop[s.sig]: // one that waited blocked, let through
+			if s.sig == sigStop || !p.m.orphaned(p.group()) {
+				p.stop(s.sig)
+			}
 		case handler == 0:
 			p.endBySignal(int(s.sig))
 		default:

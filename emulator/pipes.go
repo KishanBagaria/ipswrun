@@ -69,7 +69,7 @@ type pipeOp struct {
 	// descriptor it will be.
 	opening bool
 	number  uint64
-	trying  bool   // of a terminal's (see terminals.go): it is being served now
+	trying  bool   // it waited and is being served now (see streamChanged)
 	closing bool   // that it is the close of the second end, waiting for what was written to be read
 	setting []byte // and of settings that wait to be set: what they are (with which request, in flags)
 	// Of a message (sendmsg, recvmsg; see messages.go): the descriptors to go with what is
@@ -288,7 +288,10 @@ func (m *Machine) streamChanged(id uint64) {
 		}
 		for _, t := range owner.waiters(waitPipe, id) {
 			op := t.pipeOp
-			if t.state != waiting || op == nil { // served meanwhile, by what an earlier one's turn set off
+			if t.state != waiting || op == nil || op.trying {
+				// Served meanwhile, by what an earlier one's turn set off; or being served
+				// now, what it took having brought the rest here again: it is given what
+				// it asked for once.
 				continue
 			}
 			try := owner.tryRead
@@ -306,7 +309,9 @@ func (m *Machine) streamChanged(id uint64) {
 			case op.sending:
 				try = owner.tryWrite
 			}
-			if r, ok := try(op); ok {
+			op.trying = true
+			r, ok := try(op)
+			if op.trying = false; ok {
 				t.pipeOp = nil
 				t.answer = &result{x0: uint64(max(r, -r)), carry: r < 0}
 				t.wake()
