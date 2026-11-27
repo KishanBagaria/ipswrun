@@ -42,31 +42,33 @@ func (l *acl) bytes() []byte {
 }
 
 // readFilesec reads the security a call gives for a file: nothing (0), that its list is to be
-// taken off (1, and a record that says it has none), or a record with a list. A record that does
-// not start as one does, or has more entries than a list may, is EINVAL.
-func (p *Process) readFilesec(addr uint64) (list *acl, remove bool, errno int64) {
+// taken off (1), or a record with a list. A record that does not start as one does, or has more
+// entries than a list may, is EINVAL. A record that says it has no list is taken, as measured
+// of a file that has none; what it does to a file that has one was not measured (none says
+// whether the list stays), so it is told apart for the caller to stop there.
+func (p *Process) readFilesec(addr uint64) (list *acl, remove, noList bool, errno int64) {
 	switch addr {
 	case 0:
-		return nil, false, 0
+		return nil, false, false, 0
 	case 1:
-		return nil, true, 0
+		return nil, true, false, 0
 	}
 	head := p.read(addr, filesecHeader)
 	count := le.Uint32(head[36:])
 	switch {
 	case le.Uint32(head) != filesecMagic:
-		return nil, false, -eINVAL
+		return nil, false, false, -eINVAL
 	case count == filesecNoACL:
-		return nil, true, 0
+		return nil, false, true, 0
 	case count > aclMost:
-		return nil, false, -eINVAL
+		return nil, false, false, -eINVAL
 	}
 	list = &acl{flags: le.Uint32(head[40:])}
 	entries := p.read(addr+filesecHeader, uint64(count)*aceSize)
 	for i := uint32(0); i < count; i++ {
 		list.entries = append(list.entries, entries[i*aceSize:(i+1)*aceSize])
 	}
-	return list, false, 0
+	return list, false, false, 0
 }
 
 // setACL gives a host file a list, or takes its list off: a list of no entries is none, as a
@@ -95,6 +97,9 @@ func (m *Machine) filesec(id hostFile, known bool) []byte {
 // be handed down again if they are a file's or limited to one step.
 func (p *Process) inheritACL(t target, st *syscall.Stat_t) {
 	var dir syscall.Stat_t
+	if st.Mode&syscall.S_IFMT == syscall.S_IFLNK { // from the source, not measured: a link is made without what is handed down
+		return
+	}
 	if statInRoot(t.root, filepath.Dir(t.rel), true, &dir) != nil {
 		return
 	}

@@ -400,7 +400,7 @@ func (p *Process) interrupt4(t *thread, sig uint64) bool {
 			t.answer = &result{x0: uint64(t.pipeOp.done)}
 			again = false
 		}
-	case waitChild, waitLock:
+	case waitChild, waitLock, waitResolver: // the last from the source (the worker sleeps so that a signal ends it), not measured
 	case waitSelect, waitKevent, waitSleep:
 		again = false
 	case waitSemaphore:

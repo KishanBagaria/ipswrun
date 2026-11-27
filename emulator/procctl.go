@@ -214,8 +214,8 @@ func sysMemorystatusControl(p *Process, a []uint64) int64 {
 // the source has it and as measured of a user and of root. With the entitlement, as measured of
 // a probe signed with it in a virtual machine (macOS 27.2, 26B123, with SIP off there): a user is
 // refused everything; root registers (0, and again); anything else is for root's process that
-// registered and no other (EPERM); it is told how many answers the kernel keeps (500 of users
-// and 250 of groups), may set them (EINVAL above the 10,000 the source has; not measured between)
+// registered and no other (EPERM); it is told how many answers the kernel keeps (500 of groups'
+// members and 250 of users, in that order), may set them (EINVAL above the 10,000 the source has; not measured between)
 // or have them forgotten, and deregisters, after which it is refused as any other. An opcode that
 // names nothing is taken and does nothing. A worker waits for a question of the kernel's, and
 // none comes here: nothing in this kernel asks who a user is by anything but a number, so the
@@ -241,11 +241,11 @@ func sysIdentitysvc(p *Process, a []uint64) int64 {
 		return 0
 	case opcode == setSizes:
 		sizes := p.read(a[1], 8)
-		users, groups := le.Uint32(sizes), le.Uint32(sizes[4:])
+		groups, users := le.Uint32(sizes), le.Uint32(sizes[4:])
 		if users > most || groups > most {
 			return -eINVAL
 		}
-		p.m.caches = [2]uint32{users, groups}
+		p.m.caches = [2]uint32{groups, users}
 		return 0
 	case opcode == clear:
 		return 0 // the kernel keeps no answers here, there being no questions

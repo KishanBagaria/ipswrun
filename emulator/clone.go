@@ -75,6 +75,11 @@ func (p *Process) clone(from, to string, flags uint64, a []uint64) int64 {
 		return hostErrno(err)
 	}
 	copied := hostFileOf(&made)
+	if p.m.acls[id] != nil {
+		// The copy's list is the original's entries and then what its directory hands down, by
+		// the kernel's source; it was not measured.
+		p.unimplemented("a copy of a file that has an access control list (clonefile)", a)
+	}
 	if attrs := p.m.xattrs[id]; len(attrs) != 0 {
 		p.m.xattrs[copied] = map[string][]byte{}
 		for name, value := range attrs {

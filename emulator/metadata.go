@@ -135,6 +135,8 @@ func (p *Process) changeableFD(n uint64) (*fd, hostFile, int64) {
 		return nil, hostFile{}, -eBADF
 	}
 	switch _, writable := p.writableTarget(f.path); {
+	case f.streams(): // a pipe or a socket is no file, as measured of fchmod and fchmod_extended
+		return f, hostFile{}, -eINVAL
 	case f.kind == hostFD && f.path != "" && writable:
 	case f.kind == hostFD || f.kind == stdioFD:
 		return f, hostFile{}, -ePERM
@@ -222,7 +224,7 @@ func sysFchmodat(p *Process, a []uint64) int64 {
 // the file they copied, and a library that sets a file's access control list (see acls.go) with
 // that alone.
 func sysFchmodExtended(p *Process, a []uint64) int64 {
-	list, remove, errno := p.readFilesec(a[4])
+	change, errno := p.readExtended(a)
 	if errno != 0 {
 		return errno
 	}
@@ -230,12 +232,12 @@ func sysFchmodExtended(p *Process, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
-	return p.chmodExtended(id, a, list, remove, func(mode uint32) int64 { return p.chmodFD(f.host, mode) })
+	return p.chmodExtended(id, a, change, func(mode uint32) int64 { return p.chmodFD(f.host, mode) })
 }
 
 // sysChmodExtended is chmod_extended(path, user, group, mode, security): the same of a path.
 func sysChmodExtended(p *Process, a []uint64) int64 {
-	list, remove, errno := p.readFilesec(a[4])
+	change, errno := p.readExtended(a)
 	if errno != 0 {
 		return errno
 	}
@@ -243,31 +245,56 @@ func sysChmodExtended(p *Process, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
-	return p.chmodExtended(id, a, list, remove, func(mode uint32) int64 { return p.chmodAt(t, fileMode(uint64(mode))) })
+	return p.chmodExtended(id, a, change, func(mode uint32) int64 { return p.chmodAt(t, fileMode(uint64(mode))) })
 }
 
-// chmodExtended sets what chmod_extended and fchmod_extended were given of a host file.
-func (p *Process) chmodExtended(id hostFile, a []uint64, list *acl, remove bool, chmod func(mode uint32) int64) int64 {
+// extended is the security chmod_extended and fchmod_extended were given.
+type extended struct {
+	list           *acl
+	remove, noList bool
+}
+
+func (p *Process) readExtended(a []uint64) (extended, int64) {
+	list, remove, noList, errno := p.readFilesec(a[4])
+	return extended{list, remove, noList}, errno
+}
+
+// chmodExtended sets what chmod_extended and fchmod_extended were given of a host file: all of
+// it or none, as the kernel asks leave for the whole before it changes anything. A user or
+// group of all ones is no "leave it" but a user, which a user may not give a file to (EPERM, as
+// measured). From the source and not measured: a list is its owner's and root's to set (EPERM).
+func (p *Process) chmodExtended(id hostFile, a []uint64, change extended, chmod func(mode uint32) int64) int64 {
 	const none = 0xFFFFFF9B
 	uid, gid, mode := uint32(a[1]), uint32(a[2]), uint32(a[3])
-	if uid != none || gid != none {
-		if uid == none {
-			uid = ^uint32(0)
-		}
-		if gid == none {
-			gid = ^uint32(0)
-		}
-		if errno := p.chown(id, uid, gid, a); errno != 0 {
-			return errno
-		}
+	owner := p.m.owned(id)
+	next := owner
+	if uid != none {
+		next.UID = uid
+	}
+	if gid != none {
+		next.GID = gid
+	}
+	lists := change.list != nil || change.remove || change.noList
+	switch {
+	case next != owner && p.uid != 0:
+		return -ePERM
+	case lists && p.uid != 0 && owner.UID != p.uid:
+		return -ePERM
+	case change.noList && p.m.acls[id] != nil:
+		p.unimplemented("a security record that says it has no list, given for a file that has one", a)
+		return -eNOSYS
+	case next != owner && (uid == ^uint32(0) || gid == ^uint32(0)):
+		p.unimplemented("root giving a file to the user or group that is all ones", a)
+		return -eNOSYS
 	}
 	if mode != ^uint32(0) {
 		if errno := chmod(mode & 0o7777); errno != 0 {
 			return errno
 		}
 	}
-	if list != nil || remove {
-		p.m.setACL(id, list)
+	p.m.own(id, next)
+	if change.list != nil || change.remove {
+		p.m.setACL(id, change.list)
 	}
 	return 0
 }

@@ -562,11 +562,11 @@ func sysFstatat64(p *Process, a []uint64) int64 {
 // takes none. The file is named by what the host calls it, if it is one of the host's.
 func (p *Process) statExtended(a []uint64, stat func() int64, vnode bool, file func() (hostFile, bool)) int64 {
 	security, size := a[2], a[3]
-	if security != 0 && size == 0 {
-		return -eFAULT
-	}
 	if errno := stat(); errno != 0 || security == 0 {
 		return errno
+	}
+	if size == 0 { // nowhere to say how much it takes: after the file is found, as measured
+		return -eFAULT
 	}
 	var record []byte
 	if vnode {
