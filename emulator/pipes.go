@@ -57,6 +57,13 @@ type pipeOp struct {
 	// Of an accept: that it is one, and where the address of who connected is wanted.
 	accepting       bool
 	address, length uint64
+	// Of a message (sendmsg, recvmsg; see messages.go): the descriptors to go with what is
+	// sent; where the receiver's message is described, and what came beside the bytes.
+	files      []*fd
+	besideSize int // how much room what is beside the bytes takes in the socket
+	message    uint64
+	beside     []byte
+	truncated  bool
 }
 
 // stretch is a piece of the guest's memory.

@@ -853,6 +853,13 @@ func (p *Process) closeFD(n uint64) int64 {
 	}
 	delete(p.fds, n)
 	delete(p.cloexec, n)
+	p.dropFD(f)
+	return 0
+}
+
+// dropFD lets go of what a descriptor was of, once it is in no table: closed, or sent over a
+// socket and never received.
+func (p *Process) dropFD(f *fd) {
 	if f.kind == hostFD {
 		p.hostClose(f)
 		p.m.retryLocks() // its locks went with it, if it was the last descriptor of its file
@@ -866,7 +873,6 @@ func (p *Process) closeFD(n uint64) int64 {
 	if f.kind == socketFD {
 		p.socketClosed(f)
 	}
-	return 0
 }
 
 func sysClose(p *Process, a []uint64) int64 { return p.closeFD(a[0]) }
@@ -1581,20 +1587,9 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 	if exact && oldfd == minFD {
 		return int64(minFD)
 	}
-	var dup *fd
-	switch {
-	case f.kind == hostFD:
-		var err error
-		if dup, err = f.hostDup(); err != nil {
-			return hostErrno(err)
-		}
-	case f.kind == stdioFD:
-		dup = &fd{kind: stdioFD, host: f.host, path: f.path, state: f.status()}
-	case f.shared != nil:
-		dup = &fd{kind: f.kind, shared: f.shared.retain(), path: f.path, pos: f.pos, flags: f.flags, state: f.status()}
-	default:
-		dup = f // shares the offset, like a real duplicate
-		dup.refs++
+	dup, err := f.duplicate()
+	if err != nil {
+		return hostErrno(err)
 	}
 	n := minFD
 	if exact {
@@ -1612,6 +1607,21 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 	p.holds(n)
 	delete(p.cloexec, n) // a duplicate is the child's too, whatever the original is
 	return int64(n)
+}
+
+// duplicate is one more descriptor for what a descriptor is of, to be put in a table or sent to
+// another process: it shares the open file, and its place in it, as a real duplicate does.
+func (f *fd) duplicate() (*fd, error) {
+	switch {
+	case f.kind == hostFD:
+		return f.hostDup()
+	case f.kind == stdioFD:
+		return &fd{kind: stdioFD, host: f.host, path: f.path, state: f.status()}, nil
+	case f.shared != nil:
+		return &fd{kind: f.kind, shared: f.shared.retain(), path: f.path, pos: f.pos, flags: f.flags, state: f.status()}, nil
+	}
+	f.refs++
+	return f, nil
 }
 
 func sysFcntl(p *Process, a []uint64) int64 {

@@ -1,0 +1,26 @@
+sent from three places: 7; received: 7 "one two", 0 beside (level -1 kind -1 length -1), 0 descriptors, marked 0
+received into two places: 7 "abc" "defg", marked 0
+a pipe's writing end sent beside one byte: 1; open descriptors 0 more than before
+received: 1 "x", 16 beside (level 65535 kind 1 length 16), 1 descriptors, marked 0; it is a new one 1, the lowest free 1, open descriptors 1 more
+written through it: 1; read from the pipe: 1 'p'; closed on a call of exec: 0
+two sent, received with room for both: 4 "both", 20 beside (level 65535 kind 1 length 20), 2 descriptors, marked 0; open 2 more
+with room for one: 4 "some", 16 beside (level 65535 kind 1 length 20), 2 descriptors, marked 0x20; open 2 more
+with room for a heading and no more: 4 "none", 12 beside (level 65535 kind 1 length 20), 2 descriptors, marked 0x20; open 3 more
+with nowhere for it: 3 "nil", 0 beside (level -1 kind -1 length -1), 0 descriptors, marked 0; open 5 more
+received by recv: 4 "recv"; open 7 more
+two messages with a descriptor each, the first received: 2 "ab", 16 beside (level 65535 kind 1 length 16), 1 descriptors, marked 0
+the second: 2 "cd", 16 beside (level 65535 kind 1 length 16), 1 descriptors, marked 0
+bytes sent alone and then some with a descriptor, received: 5 "plain", 0 beside (level -1 kind -1 length -1), 0 descriptors, marked 0
+and then: 4 "with", 16 beside (level 65535 kind 1 length 16), 1 descriptors, marked 0
+some with a descriptor and then bytes alone, received: 10 "firstafter", 16 beside (level 65535 kind 1 length 16), 1 descriptors, marked 0
+and then: -1 (Resource temporarily unavailable)
+of one with a descriptor, the first three bytes by recv: 3 "lon"; the rest: 3 "ger", 0 beside (level -1 kind -1 length -1), 0 descriptors, marked 0; open 8 more
+a descriptor that is not open sent: -1 (Bad file descriptor); something of a kind there is not: -1 (Invalid argument); of a level there is not: -1 (Invalid argument); a message of nothing: -1 (Message too long)
+something beside said to be of no length: -1 (Invalid argument); two lots of descriptors in one message: -1 (Invalid argument); descriptors with no place for bytes: -1 (Message too long); received into no place: -1 (Message too long)
+what is left to receive: -1 (Resource temporarily unavailable)
+received without waiting, with nowhere for what is beside or for a name: 5, marked 0x80, beside said to be 77, the name 55
+all a socket holds sent with a descriptor, not waiting: 8176; one byte more: -1 (Resource temporarily unavailable)
+received into no room: 0; open 9 more; then all of it: 8176; open 9 more
+another process is sent the pipe's end and writes to it: it ended with 0, and the pipe has 1 'c'
+sent, then the sender's own closed: received 4 "kept", 16 beside (level 65535 kind 1 length 16), 1 descriptors, marked 0; written through it: 1
+one sent and never received, the sockets closed: the pipe's reader is told 0

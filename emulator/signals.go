@@ -416,6 +416,11 @@ func (p *Process) interrupt4(t *thread, sig uint64) bool {
 	default:
 		return false
 	}
+	if t.pipeOp != nil { // descriptors that were to go with a message go nowhere now
+		for _, file := range t.pipeOp.files {
+			p.dropFD(file)
+		}
+	}
 	t.pipeOp, t.selecting, t.polling, t.kevent, t.waiting4 = nil, nil, nil, nil, nil
 	switch {
 	case again:

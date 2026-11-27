@@ -57,6 +57,9 @@ type socket struct {
 	// connected to no other yet, the address it was bound to as it was given, and, of one
 	// that listens, for how many and the ends made for those who connected and were not yet
 	// accepted.
+	// rights are the descriptors that came with what waits to be received, each where the
+	// message it came with starts (see messages.go).
+	rights    []*rights
 	lone      bool
 	name      []byte
 	bound     bool // the name is its own, and not that of the one that accepted it
@@ -74,7 +77,15 @@ func (s *socket) sendLeast() int {
 }
 
 // space is how much can be sent from a socket before the other has received any.
-func (s *socket) space() int { return socketSize - len(s.peer.data) }
+// What came beside the bytes takes room too until it is received, as measured: a descriptor
+// sent with all a socket holds leaves 16 bytes unsent.
+func (s *socket) space() int {
+	room := socketSize - len(s.peer.data)
+	for _, r := range s.peer.rights {
+		room -= r.size
+	}
+	return room
+}
 
 // eventFilter is which of the kernel's events a program wants: a vendor's, of a class and a
 // subclass, each any if 0 (and the vendor any if all ones, as it is at first).
@@ -203,6 +214,12 @@ func (p *Process) socketClosed(f *fd) {
 	}
 	s := f.sock
 	s.data = nil
+	for _, r := range s.rights { // what was sent to it and never received is nobody's now
+		for _, file := range r.files {
+			p.dropFD(file)
+		}
+	}
+	s.rights = nil
 	s.cantSend, s.cantReceive = true, true
 	s.peer.cantSend, s.peer.cantReceive = true, true
 	// Those who connected to one that listened and were never accepted have nobody now.
@@ -218,6 +235,12 @@ func (p *Process) socketClosed(f *fd) {
 // socketReceive reads from a socket: what is there, up to what was asked for. With nothing there it is
 // the end if no more can come, and otherwise a wait, or for one that does not wait an error.
 func (p *Process) socketReceive(f *fd, into []stretch, flags uint64) int64 {
+	return p.socketReceiveInto(f, &pipeOp{f: f, into: into, flags: flags})
+}
+
+// socketReceiveInto is socketReceive for an operation made already, which a recvmsg's is.
+func (p *Process) socketReceiveInto(f *fd, op *pipeOp) int64 {
+	flags := op.flags
 	waits := f.flags&flagNonblock == 0 && flags&messageDontWait == 0
 	switch {
 	case f.sock.lone: // connected to nobody, as measured
@@ -227,11 +250,26 @@ func (p *Process) socketReceive(f *fd, into []stretch, flags uint64) int64 {
 		p.unimplemented("a receive from a socket asked for in a way that was not measured", []uint64{flags})
 		return -eNOSYS
 	}
-	op := &pipeOp{f: f, into: into, flags: flags}
-	for _, s := range into {
+	return p.receiveOp(op, waits)
+}
+
+// receiveOp is socketReceive for an operation that may also say where what comes beside the
+// bytes is wanted (recvmsg).
+func (p *Process) receiveOp(op *pipeOp, waits bool) int64 {
+	f := op.f
+	for _, s := range op.into {
 		op.room += s.size
 	}
 	if op.room == 0 {
+		// Into no room nothing is received, but descriptors at the head of what waits are
+		// had all the same, as measured.
+		if s := f.sock; len(s.rights) > 0 && s.rights[0].at == 0 {
+			with := s.rights[0]
+			s.rights = s.rights[1:]
+			p.takeRights(op, with)
+			p.socketChanged(s)
+			return p.received(op)
+		}
 		return 0
 	}
 	if r, ok := p.tryReceive(op); ok {
@@ -247,18 +285,47 @@ func (p *Process) socketReceive(f *fd, into []stretch, flags uint64) int64 {
 
 func (p *Process) tryReceive(op *pipeOp) (int64, bool) {
 	s := op.f.sock
-	if n := min(uint64(len(s.data)), op.room-uint64(op.done)); n > 0 {
+	// What was sent with descriptors beside it starts a message of its own, as measured: a
+	// receive takes nothing from before it together with it, and the descriptors come with the
+	// first of its bytes. What was sent alone after it is part of it.
+	there, with := len(s.data), (*rights)(nil)
+	switch {
+	case len(s.rights) > 0 && op.flags&messageWaitAll != 0:
+		p.unimplemented("a receive that waits for all it asked for (MSG_WAITALL) where descriptors wait with the bytes", nil)
+		return -eNOSYS, true
+	case len(s.rights) > 0 && s.rights[0].at > 0:
+		there = s.rights[0].at
+	case len(s.rights) > 0:
+		if with = s.rights[0]; len(s.rights) > 1 {
+			there = s.rights[1].at
+		}
+	}
+	if n := min(uint64(there), op.room-uint64(op.done)); n > 0 {
+		if with != nil && op.flags&messagePeek != 0 {
+			p.unimplemented("a look at what a socket has to receive (MSG_PEEK) where descriptors came with it", nil)
+			return -eNOSYS, true
+		}
 		p.put(op, s.data[:n])
 		if op.flags&messagePeek != 0 {
 			return int64(n), true
 		}
 		s.data = s.data[n:]
+		if with != nil {
+			s.rights = s.rights[1:]
+			p.takeRights(op, with)
+		}
+		for _, r := range s.rights {
+			r.at -= int(n)
+		}
 		op.done += int64(n)
 		p.socketChanged(s)
+		if with != nil { // no more is waited for once descriptors have come
+			return p.received(op), true
+		}
 	}
 	switch {
 	case uint64(op.done) == op.room, op.done > 0 && op.flags&messageWaitAll == 0, s.cantReceive:
-		return op.done, true
+		return p.received(op), true
 	}
 	return 0, false
 }
@@ -279,7 +346,31 @@ func (p *Process) socketSend(f *fd, data []byte, flags uint64, written bool) int
 		p.unimplemented("a send of nothing to a socket", nil)
 		return -eNOSYS
 	}
-	op := &pipeOp{f: f, data: data, sending: true, flags: flags}
+	return p.sendOp(&pipeOp{f: f, data: data, sending: true, flags: flags}, written)
+}
+
+// sendOp is socketSend for an operation that may have descriptors to go with the bytes (sendmsg).
+func (p *Process) sendOp(op *pipeOp, written bool) int64 {
+	f, flags := op.f, op.flags
+	fail := func(errno int64) int64 {
+		for _, file := range op.files {
+			p.dropFD(file)
+		}
+		op.files = nil
+		return errno
+	}
+	switch {
+	case f.sock.events != nil:
+		return fail(-eOPNOTSUPP)
+	case f.sock.lone:
+		return fail(-eNOTCONN)
+	case flags&^(messageDontWait|messageNoSignal) != 0:
+		p.unimplemented("a send to a socket asked for in a way that was not measured", []uint64{flags})
+		return fail(-eNOSYS)
+	case len(op.data) == 0:
+		p.unimplemented("a send of nothing to a socket", nil)
+		return fail(-eNOSYS)
+	}
 	r, ok := p.trySend(op)
 	if written && op.done > 0 {
 		f.flags |= flagWritten
@@ -291,7 +382,7 @@ func (p *Process) socketSend(f *fd, data []byte, flags uint64, written bool) int
 		if op.done > 0 {
 			return op.done
 		}
-		return -eAGAIN
+		return fail(-eAGAIN)
 	}
 	p.current.pipeOp = op
 	p.wait(waitPipe, f.sock.pair.id, time.Time{}, result{})
@@ -303,7 +394,22 @@ func (p *Process) socketSend(f *fd, data []byte, flags uint64, written bool) int
 func (p *Process) trySend(op *pipeOp) (int64, bool) {
 	s := op.f.sock
 	if s.cantSend {
+		for _, file := range op.files { // they go nowhere
+			p.dropFD(file)
+		}
+		op.files = nil
 		return p.brokenPipe(op.f, op.flags&messageNoSignal != 0), true
+	}
+	if op.files != nil {
+		// What has descriptors beside it starts a message, and goes in when there is room for
+		// all of it, or for what is beside and for the least a socket takes (the source's
+		// sosend), the rest following as bytes alone do.
+		space := s.space()
+		if space < len(op.data)+op.besideSize && (space < s.sendLeast() || space < op.besideSize) {
+			return 0, false
+		}
+		s.peer.rights = append(s.peer.rights, &rights{at: len(s.peer.data), files: op.files, size: op.besideSize})
+		op.files = nil
 	}
 	for len(op.data) > 0 {
 		space := s.space()
