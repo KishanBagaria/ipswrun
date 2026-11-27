@@ -44,6 +44,7 @@ type Machine struct {
 	profilesErr  error
 	fifos        map[hostFile]bool        // the named pipes guests have made under the home and mounts (see sysMkfifo)
 	sockets      map[hostFile]*socket     // the sockets guests have bound to names there (see sysBind)
+	fifoPipes    map[hostFile]*pipe       // the named pipes that are open, by the file that names each (see fifos.go)
 	owners       map[hostFile]Owner       // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
 	said         map[hostFile]uint16      // the permissions the data volume's template has for a file, where the host's file has others (see data.go)
 	flags        map[hostFile]uint32      // the flags a file carries beside its mode, where it has any (see chflags)
@@ -99,7 +100,7 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, said: map[hostFile]uint16{}, flags: map[hostFile]uint32{}, acls: map[hostFile]*acl{}, caches: [2]uint32{100, 100}, fifos: map[hostFile]bool{}, sockets: map[hostFile]*socket{}, clock: newClock()}
+	m := &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, said: map[hostFile]uint16{}, flags: map[hostFile]uint32{}, acls: map[hostFile]*acl{}, caches: [2]uint32{100, 100}, fifos: map[hostFile]bool{}, sockets: map[hostFile]*socket{}, fifoPipes: map[hostFile]*pipe{}, clock: newClock()}
 	for i := range m.mounts {
 		m.claim(&m.mounts[i])
 		m.boot(&m.mounts[i])

@@ -80,6 +80,7 @@ type fd struct {
 	necp      *necpSession // of a session with the kernel's network policy (see necp.go)
 	state     *status      // of what is no pipe and no socket: what fcntl reads and sets of it (see fileflags.go)
 	refs      int          // the descriptors it is, in every process: a duplicate and a child's are the same end
+	both      bool         // of a named pipe's: it was opened to read and to write
 }
 
 func (f *fd) size() int64 {
@@ -613,6 +614,9 @@ func sysFstat64(p *Process, a []uint64) int64 {
 	if f.necp != nil {
 		return p.sessionOnly(a)
 	}
+	if q := f.pipe; f.kind == pipeFD && q.fifo && p.m.fifoPipes[q.named] == q {
+		return p.doStat(q.path, a[1], true) // a named pipe is its file, as measured, while it has the name
+	}
 	if f.kind == pipeFD {
 		p.write(a[1], p.pipeStat(f))
 		return 0
@@ -630,7 +634,7 @@ func sysFstat64(p *Process, a []uint64) int64 {
 func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 	const cloexec = 0x1000000 // O_CLOEXEC
 	n := p.openPath(path, flags, mode)
-	if n >= 0 && flags&cloexec != 0 {
+	if n >= 0 && flags&cloexec != 0 && p.current.state == runnable { // one that waits to open a named pipe has marked its own
 		p.cloexec[uint64(n)] = true
 	}
 	return n
@@ -687,8 +691,7 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 				is := st // what is opened: the file a link leads to, if there is one
 				if st.Mode&syscall.S_IFMT != syscall.S_IFLNK || statInRoot(t.root, t.rel, true, &is) == nil {
 					if p.m.fifos[hostFileOf(&is)] {
-						p.unimplemented("open of a named pipe", []uint64{flags, mode})
-						return -eNOSYS
+						return p.openFifo(hostFileOf(&is), uint16(is.Mode&0o7777), flags, p.absolute(path))
 					}
 					if p.m.sockets[hostFileOf(&is)] != nil { // a socket's name is connected to, not opened, as measured
 						if flags&0xA00 == 0xA00 { // to be made, and only if it is not there

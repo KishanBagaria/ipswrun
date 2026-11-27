@@ -1,0 +1,17 @@
+made: 0; made again: -1 (File exists); a named pipe 1, mode 644, size 0
+opened to write, not waiting, with no reader: -1 (Device not configured)
+opened to read, not waiting, with no writer: 1; read from: 0; poll says 0
+opened to write, not waiting, with a reader: 1; the reader's read then: -1 (Resource temporarily unavailable); poll says 0
+5 written: 5; poll says 0x1; the open end a named pipe 1, holding 0; read: 5 "hello"; moved in: -1 (Illegal seek)
+opened to read and write, waiting: 1; a second writer: 1
+written and every writer closed: read 4 "last"; again 0; poll says 0
+a writer come again: read 4 "more"
+the reader closed: written -1 (Broken pipe); another writer opened, not waiting: -1 (Device not configured)
+all closed with something written first, and opened to read again: read 0
+opened both ways, not waiting: its flags say 0x6; the same file as its name 1, with 1 names
+100000 written without waiting: 8192; said to be there to read: 0, 0; poll for both says 0x1; one byte more: -1 (Resource temporarily unavailable)
+192 read: 192; then 1000 written: -1 (Resource temporarily unavailable); 400 more read: 400; then 1000 written: 592; poll for both says 0x1
+made anew by its name, only if it is not there: -1 (File exists)
+another process opens to write and waits: it has opened 0; once this one opens to read, it has, and wrote 15 "from the writer", then the end 0
+another process that waited to read was given 13 "to the reader"
+the name removed with both ends open: 0; written and read: 5 "still"; opened again by the name: -1 (No such file or directory)

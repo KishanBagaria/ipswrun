@@ -42,6 +42,14 @@ type pipe struct {
 	made, written    time.Time // when; the first until it is written to
 	read             time.Time // when it was last read; zero until then
 	changes          uint64    // how often something has happened to it: written, read, or an end closed
+	// Of a named pipe (see fifos.go): the file that names it, and the file's mode.
+	fifo  bool
+	named hostFile
+	mode  uint16
+	path  string // as it was opened by
+	// ended is that its last writer has gone and nobody has been told so yet by a read or seen
+	// another come: select then says it can be read (from the source, not measured).
+	ended bool
 }
 
 // pipeOp is what a thread that waits on a pipe is in the middle of.
@@ -57,6 +65,10 @@ type pipeOp struct {
 	// Of an accept: that it is one, and where the address of who connected is wanted.
 	accepting       bool
 	address, length uint64
+	// Of a named pipe being opened (see fifos.go): that it waits for the other end, and the
+	// descriptor it will be.
+	opening bool
+	number  uint64
 	// Of a message (sendmsg, recvmsg; see messages.go): the descriptors to go with what is
 	// sent; where the receiver's message is described, and what came beside the bytes.
 	// Of a datagram's receive (see datagrams.go): whom it was from, and how it was marked.
@@ -117,16 +129,32 @@ func sysPipe(p *Process, a []uint64) int64 {
 
 func (f *fd) writing() bool { return f.flags&flagWriteOnly != 0 }
 
+// reads and writes say what a pipe's descriptor is for: one or the other, or for a named pipe
+// opened so, both.
+func (f *fd) reads() bool  { return f.both || !f.writing() }
+func (f *fd) writes() bool { return f.both || f.writing() }
+
 // pipeClosed is the last descriptor of one end of a pipe closing, which those who wait on the
 // other are told.
 func (p *Process) pipeClosed(f *fd) {
 	if f.refs--; f.refs > 0 {
 		return // a duplicate is still open, or another process's
 	}
-	if f.writing() {
-		f.pipe.writers--
-	} else {
+	if f.writes() {
+		if f.pipe.writers--; f.pipe.writers == 0 {
+			f.pipe.ended = true
+		}
+	}
+	if f.reads() {
 		f.pipe.readers--
+	}
+	if q := f.pipe; q.fifo && q.readers == 0 && q.writers == 0 {
+		// With nobody at either end a named pipe holds nothing, as measured: the next to open
+		// it finds it empty.
+		q.data = nil
+		if p.m.fifoPipes[q.named] == q {
+			delete(p.m.fifoPipes, q.named)
+		}
 	}
 	p.pipeChanged(f.pipe)
 }
@@ -135,7 +163,7 @@ func (p *Process) pipeClosed(f *fd) {
 // the end if no writer is left, and otherwise a wait, or for a descriptor that does not wait an
 // error.
 func (p *Process) pipeRead(f *fd, into []stretch) int64 {
-	if f.writing() {
+	if !f.reads() {
 		return -eBADF
 	}
 	op := &pipeOp{f: f, into: into}
@@ -167,6 +195,7 @@ func (p *Process) tryRead(op *pipeOp) (int64, bool) {
 		p.pipeChanged(q)
 		return int64(n), true
 	case q.writers == 0:
+		q.ended = false // the end has been told
 		return 0, true
 	}
 	return 0, false
@@ -176,10 +205,10 @@ func (p *Process) tryRead(op *pipeOp) (int64, bool) {
 // descriptor that does not wait as much as there is room for. With no reader left it is an
 // error, and a signal.
 func (p *Process) pipeWrite(f *fd, data []byte) int64 {
-	if !f.writing() {
+	if !f.writes() {
 		return -eBADF
 	}
-	op := &pipeOp{f: f, data: data}
+	op := &pipeOp{f: f, data: data, sending: true}
 	if r, ok := p.tryWrite(op); ok {
 		return r
 	}
@@ -203,7 +232,13 @@ func (p *Process) tryWrite(op *pipeOp) (int64, bool) {
 	if len(op.data) == 0 {
 		return op.done, true
 	}
-	if len(q.data)+len(op.data) > q.size {
+	if q.fifo {
+		// A named pipe holds what it holds and no more, and takes part of what is written
+		// only where there is room for 512 bytes, as measured.
+		if space := q.size - len(q.data); space == 0 || space < len(op.data) && space < pipeBuf {
+			return 0, false
+		}
+	} else if len(q.data)+len(op.data) > q.size {
 		q.size = pipeSizeBig
 	}
 	n := min(q.size-len(q.data), len(op.data))
@@ -257,7 +292,9 @@ func (m *Machine) streamChanged(id uint64) {
 				try = owner.trySend
 			case op.f.kind == socketFD:
 				try = owner.tryReceive
-			case op.f.writing():
+			case op.opening:
+				try = owner.tryOpenFifo
+			case op.sending:
 				try = owner.tryWrite
 			}
 			if r, ok := try(op); ok {
@@ -295,12 +332,18 @@ func (f *fd) pipeReady(writing bool) bool {
 		return f.sock.ready(writing)
 	}
 	q := f.pipe
+	if q.fifo { // a named pipe answers for itself, whichever way the descriptor was opened: from the source
+		if writing {
+			return q.size-len(q.data) >= pipeBuf
+		}
+		return len(q.data) > 0 || q.ended
+	}
 	switch {
-	case !writing && !f.writing():
+	case !writing && f.reads():
 		return len(q.data) > 0 || q.writers == 0
 	case !writing:
 		return q.readers == 0
-	case !f.writing():
+	case !f.writes():
 		return true
 	}
 	return q.readers == 0 || q.size-len(q.data) >= pipeBuf
@@ -311,6 +354,11 @@ func (p *Process) pipeStat(f *fd) []byte {
 	q := f.pipe
 	b := make([]byte, 144)
 	le.PutUint16(b[4:], modePipe)
+	if q.fifo { // the file's own mode, and nothing said to be in it, as measured
+		le.PutUint16(b[4:], syscall.S_IFIFO|q.mode)
+		le.PutUint32(b[112:], uint32(q.size))
+		return b
+	}
 	// Its number is one the kernel makes up for each end, differently every time.
 	le.PutUint64(b[8:], 0x9E3779B97F4A7C15*(2*q.id+uint64(f.flags&flagWriteOnly)))
 	le.PutUint32(b[16:], p.uid)
@@ -335,6 +383,9 @@ func (p *Process) pipeFcntl(f *fd, cmd, arg uint64) (int64, bool) {
 	const getFlags, setFlags, setNoSigpipe, getNoSigpipe = 3, 4, 73, 74
 	switch cmd {
 	case getFlags:
+		if f.both { // opened to read and to write
+			return int64(f.flags | 2), true
+		}
 		return int64(f.flags), true
 	case setFlags:
 		if arg&flagAsync != 0 {
@@ -376,7 +427,7 @@ func sysIoctl(p *Process, a []uint64) int64 {
 			n = uint32(f.sock.datagram.bytes)
 		} else if f.kind == socketFD {
 			n = uint32(len(f.sock.data))
-		} else if !f.writing() {
+		} else if f.reads() && !(f.pipe.fifo && f.both) { // of a named pipe opened both ways: none, as measured
 			n = uint32(len(f.pipe.data))
 		}
 		p.write(a[2], le32(n))
@@ -590,9 +641,13 @@ func (f *fd) filtered(filter int16, asked kevent) (data int64, ended bool, least
 		return int64(len(f.sock.data)), f.sock.cantReceive, least, true
 	case f.kind == socketFD:
 		return int64(f.sock.space()), f.sock.cantSend, int64(f.sock.sendLeast()), true
-	case filter == filterRead && !f.writing():
+	case f.pipe != nil && f.pipe.fifo && filter == filterRead: // of a named pipe: never ended, by the source
+		return int64(len(f.pipe.data)), false, least, true
+	case f.pipe != nil && f.pipe.fifo && filter == filterWrite:
+		return int64(f.pipe.size - len(f.pipe.data)), false, 1, true
+	case filter == filterRead && f.reads():
 		return int64(len(f.pipe.data)), f.pipe.writers == 0, least, true
-	case filter == filterWrite && f.writing():
+	case filter == filterWrite && f.writes():
 		return int64(f.pipe.size - len(f.pipe.data)), f.pipe.readers == 0, pipeBuf, true
 	}
 	return 0, false, 0, false
@@ -627,7 +682,19 @@ func (p *Process) polled(n int32, events uint16) (uint16, bool) {
 	// one who asked about that.
 	q := f.pipe
 	switch {
-	case !f.writing() && events&pollReading != 0:
+	case q.fifo:
+		// A named pipe is said to be readable when something is in it and writable when there
+		// is room, whichever way it was opened, and never ended, as measured of one with no
+		// writer and of one that is full.
+		var answer uint16
+		if len(q.data) > 0 {
+			answer |= events & pollReading
+		}
+		if q.size > len(q.data) {
+			answer |= events & pollWriting
+		}
+		return answer, true
+	case f.reads() && events&pollReading != 0:
 		var answer uint16
 		if len(q.data) > 0 || q.writers == 0 {
 			answer = events & pollReading
@@ -636,7 +703,7 @@ func (p *Process) polled(n int32, events uint16) (uint16, bool) {
 			answer |= pollHangup
 		}
 		return answer, true
-	case f.writing() && events&pollWriting != 0:
+	case f.writes() && events&pollWriting != 0:
 		switch {
 		case q.readers == 0:
 			return pollHangup, true
