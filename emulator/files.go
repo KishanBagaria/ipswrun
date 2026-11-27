@@ -1279,18 +1279,69 @@ func (p *Process) doAccess(path string) int64 {
 	return 0
 }
 
-func sysAccess(p *Process, a []uint64) int64 { return p.accessFor(p.cstr(a[0]), a[1]) }
-
-// accessFor is access of a path for a purpose. A descriptor's name is not to be run (X_OK),
-// whatever it is of, as measured; otherwise the purpose is not looked at.
-func (p *Process) accessFor(path string, mode uint64) int64 {
+// accessFor is access of a path for a purpose: to be read (4), written (2) or run (1), by the
+// file's mode for who asks, its owner by the owner's bits alone, its group by the group's, and
+// the rest by the others'. Purposes and flags there are not are not minded; a link that is not
+// followed may be anything; a descriptor's name is not to be run, whatever it is of. To write
+// what is on the system volume is EPERM, and the root itself EROFS. As measured on macOS 27.2.1
+// (examples/accessfor.c). From the source and not measured: root may read and write anything,
+// and run what anyone may run and any directory.
+func (p *Process) accessFor(path string, mode uint64, follow bool) int64 {
 	if n, ok := p.descriptorAt(path); ok && p.fds[n] != nil && mode&1 != 0 {
 		return -eACCES
 	}
-	return p.doAccess(path)
+	_, isDescriptor := p.descriptorAt(path)
+	if isDescriptor {
+		if errno := p.doAccess(path); errno != 0 {
+			return errno
+		}
+	}
+	t, info, errno := p.describePath("access", path, follow)
+	want := uint16(mode & 7)
+	switch {
+	case errno != 0:
+		return errno
+	case want == 0, info.mode&syscall.S_IFMT == syscall.S_IFLNK:
+		return 0
+	}
+	if want&2 != 0 && !isDescriptor && t.root == nil && (t.kind == cacheFD || t.inode != nil) && t.path != dataMount && !under("/dev", t.path) && p.volumeAt(t.path).mount == "/" {
+		if t.path == "/" {
+			return -eROFS
+		}
+		return -ePERM
+	}
+	uid, gid := p.m.user.uid, p.m.user.gid
+	if info.owner != nil {
+		uid, gid = info.owner.UID, info.owner.GID
+	}
+	bits := info.mode & 7
+	switch {
+	case p.uid == 0:
+		bits = 6
+		if info.mode&0111 != 0 || info.mode&syscall.S_IFMT == syscall.S_IFDIR {
+			bits = 7
+		}
+	case p.uid == uid:
+		bits = info.mode >> 6 & 7
+	case p.gid == gid:
+		bits = info.mode >> 3 & 7
+	}
+	if bits&want != want {
+		if info.acl {
+			p.unimplemented("access of a file with an access control list that its mode refuses", []uint64{mode})
+			return -eNOSYS
+		}
+		return -eACCES
+	}
+	return 0
 }
+
+func sysAccess(p *Process, a []uint64) int64 { return p.accessFor(p.cstr(a[0]), a[1], true) }
+
+// sysFaccessat is faccessat(directory, path, purpose, flags): of the link itself if told so
+// (AT_SYMLINK_NOFOLLOW).
 func sysFaccessat(p *Process, a []uint64) int64 {
-	return p.atPath(a[0], a[1], func(path string) int64 { return p.accessFor(path, a[2]) })
+	return p.atPath(a[0], a[1], func(path string) int64 { return p.accessFor(path, a[2], a[3]&0x20 == 0) })
 }
 
 func sysChdir(p *Process, a []uint64) int64 { return p.changeDirectory(p.cstr(a[0])) }
