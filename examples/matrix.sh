@@ -147,9 +147,7 @@ for guest in ${guests//,/ }; do
 	# cfprefsd, in both of its roles.
 	[ "$guest" != client ] || options=(--agent com.example.ipswrun.echo,com.example.ipswrun.reverse=$bin/server)
 	# adi is run beside the release's adid, the daemon it asks.
-	# adid on a data volume finds the directory it keeps its files in and waits for a lock on one
-	# (F_SETLKW), which is not there yet (limits.md): it is run without one, as it was recorded.
-	[ "$guest" != adi ] || options=(--no-data --daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid)
+	[ "$guest" != adi ] || options=(--daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid)
 	# Two variables of ipswrun's keep CoreFoundation from asking for cfprefsd, and go. On macOS
 	# cfprefsd is started when it is first looked up, in both of its roles, as its launchd plists
 	# say; on iOS, where the agent has no plist of its own, both are started by hand. cfprefsd

@@ -853,8 +853,31 @@ func (p *Process) closeFD(n uint64) int64 {
 	}
 	delete(p.fds, n)
 	delete(p.cloexec, n)
+	if f.kind == hostFD && len(p.m.ranges) != 0 {
+		// The process's own locks on the file go with any descriptor of it that it closes.
+		var st syscall.Stat_t
+		if syscall.Fstat(f.host, &st) == nil && !p.keeps(hostFileOf(&st)) {
+			p.m.unlockOwner(hostFileOf(&st), lockOwner{pid: p.pid})
+		}
+	}
 	p.dropFD(f)
 	return 0
+}
+
+// keeps says whether a process that is becoming another program keeps a descriptor of a file:
+// its own locks on the file then stay, whatever else of it is closed for the new program, by
+// the kernel's source (not measured).
+func (p *Process) keeps(id hostFile) bool {
+	if !p.becoming {
+		return false
+	}
+	for n, f := range p.fds {
+		var st syscall.Stat_t
+		if f.kind == hostFD && !p.cloexec[n] && syscall.Fstat(f.host, &st) == nil && hostFileOf(&st) == id {
+			return true
+		}
+	}
+	return false
 }
 
 // dropFD lets go of what a descriptor was of, once it is in no table: closed, or sent over a
@@ -1664,18 +1687,10 @@ func sysFcntl(p *Process, a []uint64) int64 {
 		p.write(arg, p.read(arg+8, 8))
 	case 105: // F_GETSIGSINFO: files of the build are platform binaries, the guest's own are not
 		p.write(arg+12, le32(uint32(truth(f.kind != hostFD))))
-	case 92: // F_OFD_GETLK
-		return p.getRange(f, arg, a)
-	case 7: // F_GETLK: no process holds a lock of its own, there being none to take here (F_SETLK stops)
-		if id, _, _, _, errno := p.rangeAsked(f, arg, a); errno != 0 {
-			return errno
-		} else if len(p.m.ranges[id]) != 0 {
-			p.unimplemented("F_GETLK of a file that an open file holds a lock on part of", a)
-			return -eNOSYS
-		}
-		p.write(arg+20, le16(lockNone))
-	case 90, 91: // F_OFD_SETLK, F_OFD_SETLKW
-		return p.setRange(f, arg, cmd == 91, a)
+	case 92, 7: // F_OFD_GETLK, F_GETLK
+		return p.getRange(f, arg, cmd == 7, a)
+	case 90, 91, 8, 9: // F_OFD_SETLK, F_OFD_SETLKW, F_SETLK, F_SETLKW
+		return p.setRange(f, arg, cmd == 91 || cmd == 9, cmd == 8 || cmd == 9, a)
 	case 42: // F_PREALLOCATE
 		return p.preallocate(f, arg, a)
 	case 45, 48, 51, 85: // F_RDAHEAD, F_NOCACHE, F_FULLFSYNC, F_BARRIERFSYNC

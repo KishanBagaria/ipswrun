@@ -203,6 +203,7 @@ func (m *Machine) exit(p *Process, how string) {
 	p.exited = true
 	p.note("exited %s", how)
 	p.reap()
+	m.unlockProcess(p.pid)
 	for _, n := range slices.Sorted(maps.Keys(p.fds)) { // and its files, with the locks on them
 		p.closeFD(n)
 	}

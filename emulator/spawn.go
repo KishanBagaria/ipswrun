@@ -469,6 +469,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 	}
 	// From here it is the new program's: the descriptors that are to be kept, the children,
 	// the services. The old one's ports end, as a task's do, and its memory with its engine.
+	p.becoming = true
 	for _, n := range slices.Sorted(maps.Keys(p.cloexec)) {
 		p.closeFD(n)
 	}

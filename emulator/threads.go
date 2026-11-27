@@ -42,9 +42,10 @@ const (
 	waitSpawn
 	waitKevent
 	waitResolver
+	waitRange
 )
 
-var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message", "a file lock", "a pipe", "a descriptor to be ready", "a child to end", "a process it is starting", "an event of a kqueue", "the kernel to ask who a user is"}
+var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message", "a file lock", "a pipe", "a descriptor to be ready", "a child to end", "a process it is starting", "an event of a kqueue", "the kernel to ask who a user is", "a lock on part of a file"}
 
 // thread is one guest thread. Its registers are in ctx whenever it is not the one running.
 type thread struct {
@@ -74,6 +75,7 @@ type thread struct {
 	reply     uint32      // the port it waits on for the answer to a synchronous message, once it asked for one
 	receiving *message    // of a thread waiting for a Mach message: where it wants it
 	pipeOp    *pipeOp     // of a thread waiting on a pipe: what it is in the middle of
+	rangeWait *rangeWait  // of one waiting for a lock on part of a file: which
 	selecting *selecting  // of a thread waiting in select: what it asked about
 	polling   *polling    // or in poll
 	kevent    *keventWait // of a thread waiting in kevent: on which kqueue, and where its events go
