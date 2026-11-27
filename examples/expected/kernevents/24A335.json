@@ -1,0 +1,7 @@
+{
+  "build": "24A335",
+  "cache_uuid": "D997B0E9-E31B-35FE-B129-3171B279B087",
+  "exit_code": 0,
+  "output": "a socket for the kernel's events: 0\nits kind: 0, 3\nwhich events it wants, at first: 0, vendor 4294967295 class 0 subclass 0\nset to Apple's network events: 0; then: 0, vendor 1 class 1 subclass 0\na request there is not: -1 (Operation not supported)\nwith nothing happening: poll says 0; told by ioctl not to wait: 0, and its flags then say so 1; to wait again: 0, 0\na read that does not wait: -1 (Resource temporarily unavailable); a receive: -1 (Resource temporarily unavailable)\na kqueue watching it: 0, events 0\nsent to: -1 (Operation not supported on socket)\nroom for what is not yet read, at first: 0, 32768; set to 65536: 0, then 65536; set to 1: 0, then 1; set to 0: -1 (Invalid argument), then 1; set to -1: -1 (Invalid argument), then 1;\na second one: 0; of another kind (a stream): -1 (Protocol wrong type for socket); of a protocol there is not: -1 (Protocol not supported)\nclosed: 0 0\n",
+  "version": "15.0"
+}

@@ -347,6 +347,9 @@ func sysIoctl(p *Process, a []uint64) int64 {
 	if !f.streams() {
 		return -eNOTTY
 	}
+	if f.kind == socketFD && f.sock.events != nil {
+		return p.eventIoctl(f, a)
+	}
 	switch uint32(a[1]) {
 	case ioctlAvailable: // of its own end: nothing waits to be read from the end that is written
 		var n uint32

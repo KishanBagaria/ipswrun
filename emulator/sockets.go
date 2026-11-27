@@ -47,6 +47,9 @@ type socket struct {
 	// more than is there already, since the other said so or has gone.
 	cantSend, cantReceive bool
 	second                bool // of the two, the one made second
+	// events, of the socket the kernel tells a program of its events on, is which it wants
+	// (see sysSocket): such a socket has for its other end one that never sends and never goes.
+	events *eventFilter
 	// least is the room there has to be before part of what is sent is taken and before the
 	// socket is said to be one that can be written (SO_SNDLOWAT), where it was set.
 	least int
@@ -62,6 +65,93 @@ func (s *socket) sendLeast() int {
 
 // space is how much can be sent from a socket before the other has received any.
 func (s *socket) space() int { return socketSize - len(s.peer.data) }
+
+// eventFilter is which of the kernel's events a program wants: a vendor's, of a class and a
+// subclass, each any if 0 (and the vendor any if all ones, as it is at first).
+type eventFilter struct {
+	vendor, class, subclass uint32
+	room                    uint32 // how much it holds of what has not been read (SO_RCVBUF): 32768 at first, as measured
+}
+
+const (
+	domainSystem  = 32 // PF_SYSTEM
+	socketRaw     = 3
+	protocolEvent = 1 // SYSPROTO_EVENT
+
+	ePROTOTYPE      = 41
+	ePROTONOSUPPORT = 43
+
+	// What is asked of an event socket by ioctl ('e', with a 32-bit number or a filter of 12 bytes).
+	ioctlEventID     = 0x40046501 // SIOCGKEVID
+	ioctlEventFilter = 0x800c6502 // SIOCSKEVFILT
+	ioctlEventWanted = 0x400c6503 // SIOCGKEVFILT
+	ioctlEventVendor = 0xc0cc6504 // SIOCGKEVVENDOR
+	ioctlNonblocking = 0x8004667e // FIONBIO
+)
+
+// sysSocket is socket(domain, type, protocol). There is no network here, and a socket of the
+// network or of the local domain's names is refused (EACCES), which a program takes as a machine
+// that lets it reach nobody. The kernel's own socket is another matter: on one of the system's
+// domain, raw, of the events protocol, the kernel tells a program what happens to the machine (a
+// network interface coming up, a volume mounted), and configd, which opens one as it starts, has
+// no way on without it. It is given as measured on macOS 27.2.1 (examples/kernevents.c): a
+// program may say which events it wants and is told back, and nothing is ever there to read, as
+// nothing of the kind happens here. A stream of that protocol is EPROTOTYPE and a protocol there
+// is not EPROTONOSUPPORT, as measured; any other socket of the system's domain (a control
+// socket, by which a program talks to an extension of the kernel) stops the run.
+func sysSocket(p *Process, a []uint64) int64 {
+	domain, kind, protocol := a[0], a[1], a[2]
+	switch {
+	case domain != domainSystem:
+		return -eACCES
+	case kind == socketStream && protocol == protocolEvent:
+		return -ePROTOTYPE
+	case kind == socketRaw && protocol == 77:
+		return -ePROTONOSUPPORT
+	case kind != socketRaw || protocol != protocolEvent:
+		p.unimplemented("a socket of the system's domain other than the one for the kernel's events", a)
+		return -eNOSYS
+	case p.full():
+		return -eMFILE
+	}
+	p.m.pipes++
+	pair := &socketPair{id: p.m.pipes}
+	one, never := &socket{pair: pair, events: &eventFilter{vendor: ^uint32(0), room: 32768}}, &socket{pair: pair, second: true}
+	one.peer, never.peer = never, one
+	const readWrite = 2 // O_RDWR
+	return int64(p.newFD(&fd{kind: socketFD, sock: one, flags: readWrite, refs: 1}))
+}
+
+// eventIoctl is what is asked of an event socket by ioctl: the filter set and read back, as the
+// kernel's source has them and as measured, and ENOTSUP for an event request there is not. Stopping,
+// not having been measured: the number of the last event, and a vendor's number by its name.
+func (p *Process) eventIoctl(f *fd, a []uint64) int64 {
+	s := f.sock
+	switch uint32(a[1]) {
+	case ioctlNonblocking: // of any socket: whether it waits, as its flags then say
+		if p.u32(a[2]) != 0 {
+			f.flags |= flagNonblock
+		} else {
+			f.flags &^= flagNonblock
+		}
+		return 0
+	case ioctlEventFilter:
+		b := p.read(a[2], 12)
+		s.events.vendor, s.events.class, s.events.subclass = le.Uint32(b), le.Uint32(b[4:]), le.Uint32(b[8:])
+		return 0
+	case ioctlEventWanted:
+		p.write(a[2], le32(s.events.vendor, s.events.class, s.events.subclass))
+		return 0
+	case ioctlEventID, ioctlEventVendor:
+		p.unimplemented("ioctl of the kernel's event socket that was not measured", a)
+		return -eNOSYS
+	}
+	if uint32(a[1])>>8&0xFF != 'e' { // one of a socket's own, which the socket and not its protocol answers
+		p.unimplemented("ioctl of the kernel's event socket that was not measured", a)
+		return -eNOSYS
+	}
+	return -eNOTSUP // an event request there is not, as the source has it and as measured of one
+}
 
 // sysSocketpair is socketpair(domain, type, protocol, where the two descriptors go).
 func sysSocketpair(p *Process, a []uint64) int64 {
@@ -154,6 +244,8 @@ func (p *Process) tryReceive(op *pipeOp) (int64, bool) {
 // a signal. Written says that it came by write, which is remembered of the descriptor.
 func (p *Process) socketSend(f *fd, data []byte, flags uint64, written bool) int64 {
 	switch {
+	case f.sock.events != nil: // the kernel takes nothing on its event socket
+		return -eOPNOTSUPP
 	case flags&^(messageDontWait|messageNoSignal) != 0:
 		p.unimplemented("a send to a socket asked for in a way that was not measured", []uint64{flags})
 		return -eNOSYS
@@ -346,6 +438,13 @@ func sysGetsockopt(p *Process, a []uint64) int64 {
 	var value uint32
 	switch {
 	case a[1] != levelSocket || p.u32(a[4]) != 4:
+	case a[2] == optionType && f.sock.events != nil:
+		value = socketRaw
+	case a[2] == optionReceiveSize && f.sock.events != nil:
+		value = f.sock.events.room
+	case f.sock.events != nil:
+		p.unimplemented("getsockopt of the kernel's event socket other than its type and what it holds", a)
+		return -eNOSYS
 	case a[2] == optionSendSize, a[2] == optionReceiveSize:
 		value = socketSize
 	case a[2] == optionSendLeast:
@@ -380,6 +479,24 @@ func sysSetsockopt(p *Process, a []uint64) int64 {
 		return errno
 	case f.sock.cantSend && f.sock.cantReceive:
 		return -eINVAL
+	case f.sock.events != nil:
+		// Of the kernel's event socket, how much it holds of what has not been read, which
+		// configd sets: at least one byte (EINVAL), as measured. The most a socket may hold is
+		// the machine's own (8 MB on the Mac measured, where more is made that): more stops.
+		if a[1] != levelSocket || a[2] != optionReceiveSize || a[4] != 4 {
+			p.unimplemented("setsockopt of the kernel's event socket other than what it holds", a)
+			return -eNOSYS
+		}
+		switch room := int32(p.u32(a[3])); {
+		case room < 1:
+			return -eINVAL
+		case room > 8<<20:
+			p.unimplemented("more room for a socket than was measured to be the most", a)
+			return -eNOSYS
+		default:
+			f.sock.events.room = uint32(room)
+		}
+		return 0
 	case a[1] == levelSocket && a[2] == optionSendLeast:
 		// The least room it wants before it is written to, which rsync sets: as measured, no
 		// more than a socket holds, and at least one byte (EINVAL, as for a number of another
