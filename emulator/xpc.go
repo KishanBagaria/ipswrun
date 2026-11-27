@@ -83,7 +83,7 @@ func (d *xpcDictionary) String() string {
 			if len(v) <= 32 {
 				out = append(out, fmt.Sprintf("%s: %x", key, v))
 			} else {
-				out = append(out, fmt.Sprintf("%s: %d bytes", key, len(v)))
+				out = append(out, fmt.Sprintf("%s: %d bytes%s", key, len(v), logText(key, v)))
 			}
 		case xpcPort:
 			out = append(out, fmt.Sprintf("%s: port %#x", key, v.name))
@@ -240,4 +240,29 @@ func xpcAppend(out []byte, ports []xpcPort, value any) ([]byte, []xpcPort) {
 // message carrying it.
 func xpcEncode(d *xpcDictionary) ([]byte, []xpcPort) {
 	return xpcAppend(le32(xpcMagic, xpcVersion), nil, d)
+}
+
+// logText is what can be read of a message a process sends to be logged (the entryData of what
+// goes to logd and diagnosticd): the strings in it, which are the paths of the program and of
+// the library that logs, and then the message's format and the strings it was given. It is for
+// the trace alone: nothing a guest sees comes of it.
+func logText(key string, data []byte) string {
+	if key != "entryData" {
+		return ""
+	}
+	var found []string
+	for at := 0; at < len(data); {
+		end := at
+		for end < len(data) && data[end] >= 0x20 && data[end] < 0x7F {
+			end++
+		}
+		if end-at >= 4 && end < len(data) && data[end] == 0 {
+			found = append(found, string(data[at:end]))
+		}
+		at = end + 1
+	}
+	if len(found) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" %q", found)
 }
