@@ -1,0 +1,7 @@
+{
+  "build": "25A354",
+  "cache_uuid": "52E4EEC0-379E-31C7-AC62-BFED14D90F52",
+  "exit_code": 0,
+  "output": "standard input is a device; a terminal: 0\npoll finds 1, with 0x20; select finds 2, to read, to write\na read gives 0; then poll finds 1, with 0x20, and a read 0\n",
+  "version": "26.0"
+}

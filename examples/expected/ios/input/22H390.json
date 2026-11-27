@@ -1,0 +1,7 @@
+{
+  "build": "22H390",
+  "cache_uuid": "EF0E3993-EA01-3DB0-82D5-F671453A1235",
+  "exit_code": 0,
+  "output": "standard input is a device; a terminal: 0\npoll finds 1, with 0x20; select finds 2, to read, to write\na read gives 0; then poll finds 1, with 0x20, and a read 0\n",
+  "version": "18.7.12"
+}

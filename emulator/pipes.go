@@ -472,7 +472,7 @@ func (p *Process) selectPipes(a []uint64, nanoseconds uint64) (int64, bool) {
 		}
 		s.asked[i] = p.read(set, size)
 		for n := range a[0] {
-			if f := p.fds[n]; s.asked[i][n/8]>>(n%8)&1 != 0 && f != nil && (f.streams() || f.isFile() || f.kind == ttyFD && !f.own) {
+			if f := p.fds[n]; s.asked[i][n/8]>>(n%8)&1 != 0 && f != nil && (f.streams() || f.isFile() || f.kind == ttyFD && !f.own || f.input() != inputOther) {
 				found = true
 			}
 		}
@@ -508,7 +508,7 @@ func (p *Process) selected(s *selecting) int64 {
 		out[i] = make([]byte, len(asked))
 		for n := range uint64(len(asked) * 8) {
 			f := p.fds[n]
-			if asked[n/8]>>(n%8)&1 == 0 || f == nil || i == 2 || !(f.streams() && f.pipeReady(i == 1) || f.isFile() || f.kind == ttyFD && !f.own && f.terminalReady(i == 1)) {
+			if asked[n/8]>>(n%8)&1 == 0 || f == nil || i == 2 || !(f.streams() && f.pipeReady(i == 1) || f.isFile() || f.kind == ttyFD && !f.own && f.terminalReady(i == 1) || f.inputReady(i == 1)) {
 				continue
 			}
 			out[i][n/8] |= 1 << (n % 8)
@@ -702,6 +702,8 @@ func (p *Process) polled(n int32, events uint16) (uint16, bool) {
 		return events & (pollReading | pollWriting), true
 	case f.kind == socketFD:
 		return f.sock.polled(events), true
+	case f.input() != inputOther:
+		return f.inputPolled(events)
 	case f.kind == ttyFD && f.own: // /dev/tty is nothing poll can ask of, as measured
 		return pollInvalid, true
 	case f.kind == ttyFD:
