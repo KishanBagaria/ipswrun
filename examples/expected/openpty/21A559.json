@@ -1,0 +1,7 @@
+{
+  "build": "21A559",
+  "cache_uuid": "A6162D66-93E3-3251-93CC-B11F7C8C830E",
+  "exit_code": 0,
+  "output": "openpty: 0; both ends terminals: 1 1; its name is the second end's: 1, the user's: 1, mode 20620; its size 30 by 100; its settings read: 0\nno group is in front, asked at the first end: 0\nforkpty: a child 1, a name given 1; the first end reads: the child: its input, output and error are terminals 1 1 1, the same one 1; a session of its own 1; its group in front 1; /dev/tty opens 1; 30 by 100\\r\\n\nthe list of processes says of it: 0; its terminal is that device 1; the group in front is its own 1; marked as having a terminal 1, as leading its session 1\nand of one whose terminal it is not: its group in front 0\ntold to end, the first end having read x\\r\\n: 1, with 5\n",
+  "version": "12.0.1"
+}

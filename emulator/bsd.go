@@ -277,6 +277,12 @@ func sysSharedRegionMap(p *Process, a []uint64) int64 {
 
 func sysExit(p *Process, a []uint64) int64 {
 	code := int(a[0] & 0xFF)
+	if f := p.leaderDrains(); f != nil {
+		t := p.current
+		t.leaving, t.pipeOp = &code, &pipeOp{f: f, closing: true, flags: 1}
+		p.waitTerminal(f)
+		return 0
+	}
 	if f := p.leavesTerminal(); f != nil {
 		// What it wrote to a terminal that nobody else has open waits to be read before it
 		// is gone, and the process with it (see terminals.go).

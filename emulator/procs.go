@@ -41,6 +41,9 @@ type procRecord struct {
 	nice               int8
 	leads              bool // its session
 	files              int  // the descriptors it has open
+	// Its session's terminal, if it has one for its own: the device, and the group in front.
+	terminal        bool
+	device, inFront uint32
 }
 
 func (r procRecord) bytes() []byte {
@@ -66,6 +69,11 @@ func (r procRecord) bytes() []byte {
 	le.PutUint32(b[560:], r.parent)   // e_ppid
 	le.PutUint32(b[564:], r.group)    // e_pgid
 	le.PutUint32(b[572:], noTerminal) // e_tdev
+	if r.terminal {                   // by the source's fill_user64_eproc, and as measured of the three
+		le.PutUint32(b[32:], flags|0x2) // P_CONTROLT
+		le.PutUint32(b[572:], r.device)
+		le.PutUint32(b[576:], r.inFront) // e_tpgid
+	}
 	if r.leads {
 		le.PutUint32(b[612:], 2) // e_flag: EPROC_SLEADER
 	}
@@ -78,6 +86,9 @@ func (p *Process) record() procRecord {
 		execed: p.execed || p.parent == nil, nice: int8(p.nice), leads: p.sessionOf() == p.pid, files: len(p.fds)}
 	if p.exited {
 		r.state = procZombie
+	}
+	if t := p.ownTerminal(); t != nil {
+		r.terminal, r.device, r.inFront = true, 16<<24|uint32(t.number), t.front
 	}
 	return r
 }

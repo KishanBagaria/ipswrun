@@ -316,6 +316,20 @@ func (p *Process) terminalLastClose(t *terminal) {
 	}
 }
 
+// leaderDrains is a session's leader ending while one of the session has had /dev/tty open,
+// which keeps the terminal open: its end waits, for as long as it takes, for the first end to
+// read what was written to the terminal, or to close (the source's proc_exit waits so with the
+// time last set for it, which is none; measured of a leader that ended with its echo unread and
+// its parent waiting for it, neither going on). It gives a descriptor of the terminal to wait
+// on, or none.
+func (p *Process) leaderDrains() *fd {
+	t := p.m.sessionTerminals[p.pid]
+	if t == nil || p.sessionOf() != p.pid || !t.pinned || len(t.shown) == 0 || t.firsts == 0 {
+		return nil
+	}
+	return &fd{kind: ttyFD, tty: t}
+}
+
 // leavesTerminal closes, for a process that is ending, the descriptors of a terminal's second
 // end that are the last of it, where what was written there has not been read, and gives one
 // of them: the process's end waits for that as a close does. One that ends another way (a
@@ -728,6 +742,8 @@ func (p *Process) tryTerminal(op *pipeOp) (int64, bool) {
 		}
 	}(t.changes, len(t.shown), len(t.typed), len(t.lines))
 	switch {
+	case op.closing && op.flags != 0: // a session's leader ending: until it is read, or nobody is there to
+		return 0, len(t.shown) == 0 || t.firsts == 0
 	case op.closing: // a close that waits for what was written to be read, or for long enough
 		t.settle()
 		return 0, t.until.IsZero()
@@ -1122,3 +1138,6 @@ func (p *Process) terminalStat(t *terminal, first bool) []byte {
 	le.PutUint32(b[24:], kind<<24|uint32(t.number))
 	return b
 }
+
+// waitTerminal has the running thread wait on a terminal with no end to the wait.
+func (p *Process) waitTerminal(f *fd) { p.wait(waitPipe, f.tty.id, time.Time{}, result{}) }
