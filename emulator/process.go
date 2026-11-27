@@ -382,6 +382,7 @@ type Process struct {
 	reaped  bool
 	stdio   *Process
 	cloexec map[uint64]bool // the descriptors a program it starts is not to have
+	clofork map[uint64]bool // the descriptors a copy of it, and a program it starts, are not to have (O_CLOFORK; see noFork)
 
 	cacheDir   string
 	cachePaths map[string]dyldcache.File

@@ -261,8 +261,8 @@ func (p *Process) inherit(parent *Process, actions []byte, closeAll bool) int64 
 	p.fds = map[uint64]*fd{}
 	for n, f := range parent.fds {
 		switch {
-		case f.kq != nil:
-			continue // a kqueue is its process's alone
+		case f.kq != nil, parent.clofork[n]:
+			continue // a kqueue is its process's alone, and so is what is marked not to be handed on
 		case f.kind == hostFD:
 			var err error
 			if f, err = f.hostDup(); err != nil {
@@ -494,6 +494,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 		p.closeFD(n)
 	}
 	next.fds, p.fds = p.fds, map[uint64]*fd{}
+	next.clofork = p.clofork // the marks go with the descriptors (not measured: what F_GETFD says of one after)
 	next.inherits()
 	next.policy.role = p.policy.role // the kind of program it said it was goes with it, and not the tiers
 	for _, q := range m.procs {
@@ -827,7 +828,7 @@ func (p *Process) fork() *Process {
 	child.fds = map[uint64]*fd{}
 	for n, f := range p.fds {
 		switch {
-		case f.kq != nil, f.necp != nil: // nor is a session with the network's policy, by the source
+		case f.kq != nil, f.necp != nil, p.clofork[n]: // nor is a session with the network's policy, by the source, nor what is marked not to be a copy's
 			continue
 		case f.kind == hostFD:
 			var err error

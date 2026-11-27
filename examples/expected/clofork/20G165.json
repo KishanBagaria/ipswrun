@@ -1,0 +1,7 @@
+{
+  "build": "20G165",
+  "cache_uuid": "5F50D953-A228-3416-A982-9FDE102DB036",
+  "exit_code": 0,
+  "output": "opened with O_CLOFORK: its flags 2; a plain one's 0\nmarked afterwards (FD_CLOFORK): 0, its flags 2; with close-on-exec too: 0, 3; unmarked: 0, 0\na duplicate of the marked one has flags 0, one made by fcntl 0; opened with both marks: 3\nin a copy of the process the marked one is not there, the plain one there, the duplicate there; the marked one's number is free: 1\nand in the process itself it is still there\na program it starts: the one marked is not there, the plain one there\nthe program it becomes: the one marked is there, the plain one there\n",
+  "version": "11.6"
+}

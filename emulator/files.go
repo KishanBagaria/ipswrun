@@ -671,6 +671,21 @@ func sysFstat64(p *Process, a []uint64) (r int64) {
 	return p.putStat(a[1], info, errno)
 }
 
+// noFork marks a descriptor as one that a copy of the process (fork) and a program it starts
+// (posix_spawn) do not get, or takes the mark off. The program the process itself becomes
+// (execve) keeps it, and a duplicate is not marked. As measured on macOS 27.2.1
+// (examples/clofork.c); SQLite opens its files so.
+func (p *Process) noFork(n uint64, marked bool) {
+	if !marked {
+		delete(p.clofork, n)
+		return
+	}
+	if p.clofork == nil {
+		p.clofork = map[uint64]bool{}
+	}
+	p.clofork[n] = true
+}
+
 // doOpen opens a path, and marks the descriptor as one a program the process starts is not to
 // have, if the flags say so.
 func (p *Process) doOpen(path string, flags, mode uint64) int64 {
@@ -678,6 +693,9 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 	n := p.openPath(path, flags, mode)
 	if n >= 0 && flags&cloexec != 0 && p.current.state == runnable { // one that waits to open a named pipe has marked its own
 		p.cloexec[uint64(n)] = true
+	}
+	if n >= 0 && flags&0x8000000 != 0 && p.current.state == runnable { // O_CLOFORK
+		p.noFork(uint64(n), true)
 	}
 	return n
 }
@@ -904,6 +922,7 @@ func (p *Process) closeFD(n uint64) int64 {
 	}
 	delete(p.fds, n)
 	delete(p.cloexec, n)
+	delete(p.clofork, n)
 	if f.kind == hostFD && len(p.m.ranges) != 0 {
 		// The process's own locks on the file go with any descriptor of it that it closes.
 		var st syscall.Stat_t
@@ -1729,6 +1748,7 @@ func (p *Process) dupFD(oldfd, minFD uint64, exact bool) int64 {
 	p.fds[n] = dup
 	p.holds(n)
 	delete(p.cloexec, n) // a duplicate is the child's too, whatever the original is
+	delete(p.clofork, n)
 	return int64(n)
 }
 
@@ -1770,14 +1790,15 @@ func sysFcntl(p *Process, a []uint64) int64 {
 			p.cloexec[uint64(n)] = true
 		}
 		return n
-	case 1: // F_GETFD
-		return int64(truth(p.cloexec[a[0]]))
+	case 1: // F_GETFD: close-on-exec is 1 and close-on-fork 2, as measured
+		return int64(truth(p.cloexec[a[0]])) + 2*int64(truth(p.clofork[a[0]]))
 	case 2: // F_SETFD
 		if arg&fdCloexec != 0 {
 			p.cloexec[a[0]] = true
 		} else {
 			delete(p.cloexec, a[0])
 		}
+		p.noFork(a[0], arg&2 != 0)
 		return 0
 	case 3: // F_GETFL
 		return f.fileFlags()

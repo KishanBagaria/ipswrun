@@ -1,0 +1,7 @@
+opened with O_CLOFORK: its flags 2; a plain one's 0
+marked afterwards (FD_CLOFORK): 0, its flags 2; with close-on-exec too: 0, 3; unmarked: 0, 0
+a duplicate of the marked one has flags 0, one made by fcntl 0; opened with both marks: 3
+in a copy of the process the marked one is not there, the plain one there, the duplicate there; the marked one's number is free: 1
+and in the process itself it is still there
+a program it starts: the one marked is not there, the plain one there
+the program it becomes: the one marked is there, the plain one there
