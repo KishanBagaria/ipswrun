@@ -344,6 +344,9 @@ func sysIoctl(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
+	if f.necp != nil {
+		return p.sessionOnly(a)
+	}
 	if !f.streams() {
 		return -eNOTTY
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -201,6 +202,24 @@ func sysInitgroups(p *Process, a []uint64) int64 {
 func sysMemorystatusControl(p *Process, a []uint64) int64 {
 	const entitlement = "com.apple.private.memorystatus"
 	switch command := uint32(a[0]); {
+	case (command == 14 || command == 15) && p.uid == 0 && a[4] > 65536:
+		return -eINVAL // more than a buffer may be (MEMORYSTATUS_BUFFERSIZE_MAX): from the source, not measured
+	case (command == 14 || command == 15) && p.uid == 0:
+		// To be kept longer when idle and short of memory, and that taken back, which
+		// containermanagerd asks of itself. Memory is never short here, so nothing is kept or
+		// ended for it. As measured of root in a virtual machine (macOS 27.2): of itself 0, each
+		// time and whatever the flags; of pid 0 and of launchd EINVAL; of no process ESRCH.
+		// Of another process it was not measured, and stops.
+		switch pid := uint32(a[1]); {
+		case pid == 0 || pid == launchdPID:
+			return -eINVAL
+		case pid == p.pid:
+			return 0
+		case p.m.process(pid) == nil:
+			return -eSRCH
+		}
+		p.unimplemented(fmt.Sprintf("memorystatus_control command %d of another process", command), a)
+		return -eNOSYS
 	case command == 18 || command == 19 || command == 24, p.uid == 0, strings.Contains(p.entitlements, entitlement):
 		p.unimplemented(fmt.Sprintf("memorystatus_control command %d", command), a)
 		return -eNOSYS
@@ -294,7 +313,7 @@ func (p *Process) sandboxStorageClass(a []uint64, set bool) int64 {
 		return -eACCES
 	}
 	name := p.cstr(class)
-	if p.uid != 0 || set && !strings.Contains(p.entitlements, "com.apple.rootless.storage."+name) {
+	if p.uid != 0 || set && !strings.Contains(p.entitlements, "<key>com.apple.rootless.storage."+name+"</key>") {
 		p.unimplemented("a class of storage ("+name+") set by a program with no entitlement for it, or checked by a user", a)
 		return -eNOSYS
 	}
@@ -322,4 +341,10 @@ func (m *Machine) mark(id hostFile, class string) {
 		m.xattrs[id] = map[string][]byte{}
 	}
 	m.xattrs[id][rootlessAttribute] = []byte(class)
+}
+
+// isDirectory says whether an open host file is a directory.
+func (p *Process) isDirectory(f *fd) bool {
+	var st syscall.Stat_t
+	return syscall.Fstat(f.host, &st) == nil && st.Mode&syscall.S_IFMT == syscall.S_IFDIR
 }

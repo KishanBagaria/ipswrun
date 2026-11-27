@@ -76,9 +76,10 @@ type fd struct {
 	sock      *socket // of a socket: the socket, with the same flags
 	flags     uint32
 	noSigpipe bool
-	kq        *userKqueue // of a kqueue: what it watches (see kqueue.go)
-	state     *status     // of what is no pipe and no socket: what fcntl reads and sets of it (see fileflags.go)
-	refs      int         // the descriptors it is, in every process: a duplicate and a child's are the same end
+	kq        *userKqueue  // of a kqueue: what it watches (see kqueue.go)
+	necp      *necpSession // of a session with the kernel's network policy (see necp.go)
+	state     *status      // of what is no pipe and no socket: what fcntl reads and sets of it (see fileflags.go)
+	refs      int          // the descriptors it is, in every process: a duplicate and a child's are the same end
 }
 
 func (f *fd) size() int64 {
@@ -609,6 +610,9 @@ func sysFstat64(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
+	if f.necp != nil {
+		return p.sessionOnly(a)
+	}
 	if f.kind == pipeFD {
 		p.write(a[1], p.pipeStat(f))
 		return 0
@@ -869,6 +873,9 @@ func sysRead(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
+	if f.necp != nil {
+		return p.sessionOnly(a)
+	}
 	var data []byte
 	switch {
 	case f.kind == pipeFD:
@@ -919,6 +926,9 @@ func sysWrite(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
 	if f == nil {
 		return -eBADF
+	}
+	if f.necp != nil {
+		return p.sessionOnly(a)
 	}
 	if f.kind == pipeFD {
 		return p.pipeWrite(f, p.read(a[1], a[2]))
@@ -1055,6 +1065,9 @@ func sysLseek(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
 	if f == nil {
 		return -eBADF
+	}
+	if f.necp != nil {
+		return p.sessionOnly(a)
 	}
 	off := int64(a[1])
 	switch f.kind {
@@ -1646,6 +1659,8 @@ func sysFcntl(p *Process, a []uint64) int64 {
 		return p.preallocate(f, arg, a)
 	case 45, 48, 51, 85: // F_RDAHEAD, F_NOCACHE, F_FULLFSYNC, F_BARRIERFSYNC
 		return p.fcntlCaching(f, cmd, arg, a)
+	case 44: // F_RDADVISE
+		return p.readAdvise(f, arg, a)
 	case 63, 95, 96, 98, 101:
 		return p.fcntlMeasured(f, cmd, arg, a)
 	default:
@@ -1658,7 +1673,7 @@ func sysFcntl(p *Process, a []uint64) int64 {
 // plain is whether a descriptor is of a file and nothing else: one of the host's or of the
 // build, and no directory, pipe, socket, kqueue or shared memory.
 func (f *fd) plain() bool {
-	return f.kind == hostFD || f.kind == cacheFD || f.kind == dataFD && f.kq == nil && f.shared == nil
+	return f.kind == hostFD || f.kind == cacheFD || f.kind == dataFD && f.kq == nil && f.shared == nil && f.necp == nil
 }
 
 // fcntlCaching answers what is asked of how a file is read and written out, which a shell asks
@@ -1685,6 +1700,48 @@ func (p *Process) fcntlCaching(f *fd, cmd, arg uint64, a []uint64) int64 {
 		s.flags |= flag
 	} else {
 		s.flags &^= flag
+	}
+	return 0
+}
+
+// readAdvise is F_RDADVISE, by which a program says what part of a file it is about to read
+// ({from where, how much}), as measured (examples/fileflags.c): nothing is read ahead for it
+// here, and it is told what a Mac tells it. A part that starts at or past the file's end is
+// EFBIG, one from before its start or of less than nothing EINVAL, as is a directory; a pipe is
+// EBADF. Of a file that holds nothing it was not measured, and stops.
+func (p *Process) readAdvise(f *fd, arg uint64, a []uint64) int64 {
+	const eFBIG = 27
+	if f.streams() {
+		return -eBADF
+	}
+	// What is asked is read before the file is looked at, by the source: so nowhere to read it
+	// from is EFAULT and a part of less than nothing EINVAL whatever the file (not measured of
+	// a directory, which is EINVAL with a part that is right).
+	advice := p.read(arg, 16)
+	from, count := int64(le.Uint64(advice)), int32(le.Uint32(advice[8:]))
+	switch {
+	case from < 0 || count < 0:
+		return -eINVAL
+	case f.kind == dirFD || f.kind == hostFD && p.isDirectory(f):
+		return -eINVAL
+	case !f.plain():
+		p.unimplemented("fcntl request 44 of this kind of descriptor", a)
+		return -eINVAL
+	}
+	size := f.size()
+	if f.kind == hostFD {
+		var st syscall.Stat_t
+		if err := syscall.Fstat(f.host, &st); err != nil {
+			return hostErrno(err)
+		}
+		size = st.Size
+	}
+	switch {
+	case size == 0:
+		p.unimplemented("fcntl request 44 of a file that holds nothing", a)
+		return -eNOSYS
+	case from >= size:
+		return -eFBIG
 	}
 	return 0
 }

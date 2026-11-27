@@ -65,6 +65,9 @@ const (
 	noteThreadRequest = 0x1
 	noteSyncWait      = 0x4
 	noteSyncWake      = 0x8
+	noteEndOwnership  = 0x20
+	noteDiscoverOwner = 0x80
+	noteIgnoreStale   = 0x100
 
 	keventWorkq = 0x20 // KEVENT_FLAG_WORKQ: the changes are for the work queue's kqueue
 )
@@ -116,13 +119,17 @@ type kqueue struct {
 	request  *kevent
 	servicer *thread
 	woken    map[uint64]bool
-	made     bool // by name, with kqueue_workloop_ctl, and not by the first event asked of it
+	// The thread that has taken the workloop's work on itself without being started for it, as
+	// the queue's state says when an event asks the kernel to look: no thread is started for
+	// the workloop while one has.
+	owner *thread
+	made  bool // by name, with kqueue_workloop_ctl, and not by the first event asked of it
 }
 
 // idle is whether a kqueue holds nothing: no event to watch for, none that has happened or was
 // refused, and no thread asked for or given.
 func (q *kqueue) idle() bool {
-	return len(q.timers)+len(q.users)+len(q.signals)+len(q.ports)+len(q.pipes)+len(q.procs)+len(q.errors)+len(q.ready)+len(q.woken) == 0 && q.request == nil && q.servicer == nil
+	return len(q.timers)+len(q.users)+len(q.signals)+len(q.ports)+len(q.pipes)+len(q.procs)+len(q.errors)+len(q.ready)+len(q.woken) == 0 && q.request == nil && q.servicer == nil && q.owner == nil
 }
 
 type timer struct {
@@ -308,31 +315,100 @@ func (p *Process) timerDeadline(c kevent) time.Time {
 }
 
 func (p *Process) changeWorkloop(q *kqueue, c kevent) {
+	const eSTALE = 70
+	refuse := func(errno int64) { // as it was asked, with the error, for the caller to be told
+		c.flags, c.data = c.flags|evError, errno
+		q.errors = append(q.errors, c)
+	}
+	// What the kernel's source refuses before it looks at the queue's state (not measured): the
+	// owner looked for by an event that takes a registration away, a request for a thread
+	// that is not named for the workloop, and a wait or a wake that is.
+	sync := c.fflags&noteThreadRequest == 0 && c.fflags&(noteSyncWake|noteSyncWait) != 0
+	switch {
+	case c.fflags&noteDiscoverOwner != 0 && c.flags&evDelete != 0,
+		c.fflags&noteThreadRequest != 0 && c.ident != q.id,
+		sync && c.ident == q.id:
+		refuse(eINVAL)
+		return
+	}
+	stale := p.stale(c)
+	p.own(q, c)
+	if stale {
+		// The queue is no longer in the state the event was made in: nothing is asked for,
+		// taken away, waited for or woken by it. The caller is told so, with the state as it
+		// now is, unless the event says not to.
+		p.note("  the workloop's state has changed since: nothing done")
+		if c.fflags&noteIgnoreStale == 0 {
+			c.ext[3] = p.u64(c.ext[1])
+			refuse(eSTALE)
+		}
+		return
+	}
 	switch {
 	case c.fflags&noteThreadRequest != 0 && c.flags&evDelete != 0:
 		q.request = nil
-	case c.fflags&noteThreadRequest != 0 && p.stale(c):
-		// The queue is no longer in the state its owner asked for a thread in: another thread
-		// took the work meanwhile, and one started now would find a queue that is not its own.
-		p.note("  the workloop's state has changed since: no thread")
 	case c.fflags&noteThreadRequest != 0:
 		request := c
 		q.request = &request
+	case sync && c.flags&evDelete != 0:
+		// A thread's registration to wait taken away, as the thread that was woken does once
+		// it has the workloop: one still waiting on it and not woken is woken (the source's
+		// filt_wlupdate, of a drop), and nothing is left of it.
+		delete(q.woken, c.ident)
+		p.wakeWorkloop(q, c.ident)
 	case c.fflags&noteSyncWake != 0:
-		// The thread given the workloop may not have asked for it yet.
-		for _, t := range p.waiters(waitWorkloop, q.id) {
-			if uint64(t.port) == c.ident {
-				t.wake()
-				return
-			}
-		}
+		// The thread given the workloop may not have asked for it yet, and one that has may
+		// ask again: the registration stays woken until it is taken away.
 		q.woken[c.ident] = true
+		p.wakeWorkloop(q, c.ident)
 	case c.fflags&noteSyncWait != 0:
-		if q.woken[c.ident] {
-			delete(q.woken, c.ident)
-		} else {
+		if !q.woken[c.ident] {
 			p.wait(waitWorkloop, q.id, time.Time{}, result{})
 		}
+	}
+}
+
+// wakeWorkloop wakes the thread that waits for its turn on a workloop, by the port it is named
+// with, if it does.
+func (p *Process) wakeWorkloop(q *kqueue, ident uint64) {
+	for _, t := range p.waiters(waitWorkloop, q.id) {
+		if uint64(t.port) == ident {
+			t.wake()
+		}
+	}
+}
+
+// own keeps who owns a workloop, as the kernel's source has it (filt_wlupdate in
+// bsd/kern/kern_event.c; not measured, a kernel's record of it being out of a program's sight).
+// An event that is not out of date and asks for the owner to be found names it in the low half
+// of the queue's state, less two bits that are flags: no name leaves the owner as it was. An
+// event that ends ownership ends the calling thread's, out of date or not. The thread that
+// serves the workloop is not also its owner.
+func (p *Process) own(q *kqueue, c kevent) {
+	owner := q.owner
+	if addr := c.ext[1]; addr != 0 && !p.stale(c) && c.fflags&noteDiscoverOwner != 0 {
+		if name := uint32(p.u64(addr)) &^ 3; name != 0 {
+			at := slices.IndexFunc(p.threads, func(t *thread) bool { return t.state != dead && t.port|3 == name|3 })
+			if at < 0 {
+				p.unimplemented("a workloop whose state names an owner that is no thread of the process (EOWNERDEAD, by the source)", []uint64{q.id, uint64(name)})
+				return
+			}
+			owner = p.threads[at]
+		}
+	}
+	if c.fflags&noteEndOwnership != 0 && owner == p.current {
+		owner = nil
+	}
+	if owner != nil && owner == q.servicer {
+		owner = nil
+	}
+	if owner != q.owner {
+		if owner == nil {
+			p.note("  the workloop %#x has no owner now", q.id)
+		} else {
+			p.note("  the workloop %#x is owned by thread %d", q.id, owner.id)
+		}
+		q.owner = owner
 	}
 }
 
@@ -388,7 +464,7 @@ func (p *Process) serve(now time.Time) (next time.Time) {
 		}
 		p.watched(q)
 		p.watchedPipes(q)
-		if q.servicer != nil || q.request == nil && len(q.ready) == 0 {
+		if q.servicer != nil || q.owner != nil || q.request == nil && len(q.ready) == 0 {
 			continue
 		}
 		events, priority := q.ready, uint64(0)
@@ -417,7 +493,13 @@ func (p *Process) finish(t *thread, changes, n uint64) {
 	if q == nil {
 		q = p.kqueue(0)
 	}
+	refused := len(q.errors)
 	p.change(q, p.readKevents(changes, n))
+	if len(q.errors) > refused {
+		// A Mac's kernel hands a thread back the changes it refused instead of putting it to
+		// rest, which is not done here.
+		p.unimplemented("a work queue thread done with its work, with a change the kernel refuses", []uint64{q.id, uint64(q.errors[refused].data)})
+	}
 	if q.servicer == t {
 		q.servicer = nil
 	}

@@ -29,7 +29,24 @@ var powerClasses = []string{powerClass, "IOService", "IORegistryEntry", "OSObjec
 // powerAbsent are properties a program asks the power root for that it does not have: measured
 // as not there on macOS 27.2.1, and set nowhere in the kernel's source. The first is what a
 // library asks before it says an object's class (another name for it); the rest are powerd's.
-var powerAbsent = []string{"IOClassNameOverride", "IOPMBatteryPercentageFactors", "DarkWakeServices", "IOPlatformFeatureDefaults", "Power Status"}
+var powerAbsent = []string{"IOClassNameOverride", "IOPMBatteryPercentageFactors", "DarkWakeServices", "IOPlatformFeatureDefaults", "Power Status",
+	// What names the last time the machine slept and woke, which one that has not slept does not
+	// have (measured in a virtual machine, macOS 27.2; the source sets it at a sleep).
+	"SleepWakeUUID",
+	// The battery's state in the form it had long ago, which the portable measured does not
+	// have either.
+	"IOBatteryInfo",
+	// The services that keep the machine from sleeping when idle and from sleeping at all, by
+	// name and with their identifiers, which the kernel's source makes up when asked and gives
+	// only if there is one: a driver says so of itself, and there is none here. From the
+	// source, not measured (a Mac always has some).
+	"IdleSleepPreventers", "SystemSleepPreventers", "IdleSleepPreventersWithID", "SystemSleepPreventersWithID"}
+
+// powerEmpty are properties the kernel's source has the power root start with as dictionaries
+// that hold nothing: the features its drivers then publish, of which a machine with no driver
+// has none, and the platform's overrides of the power settings, which are none on the two Macs
+// measured.
+var powerEmpty = []string{"Supported Features", "SystemPowerProfileOverrideDict"}
 
 type powerRoot struct{}
 
@@ -76,22 +93,38 @@ func (o powerRoot) request(p *Process, id uint32, body []byte) (migReply, bool) 
 		}
 	case 2889: // io_registry_entry_get_property_bin_buf
 		_, name := r.text(), r.text()
-		if !r.failed && slices.Contains(powerAbsent, name) {
+		options := r.u32()
+		buf, room := r.u64(), r.u64()
+		if r.failed {
+			return migCode(migBadArguments), true
+		}
+		if options&1 != 0 { // kIORegistryIterateRecursively: the entries above or below are asked too
+			p.unimplemented("I/O Registry property "+name+" of the power root, looked for in other entries too", nil)
+			return migReply{}, false
+		}
+		if slices.Contains(powerAbsent, name) {
 			return migCode(ioReturnNotFound), true
 		}
-		if !r.failed && (name == "AppleClamshellState" || name == "AppleClamshellCausesSleep") && !p.m.hasLid() {
+		if slices.Contains(powerEmpty, name) {
+			return p.migSerialized(le32(ioSerializeMagic, ioLast|ioDictionaryType<<24), buf, room), true
+		}
+		if (name == "AppleClamshellState" || name == "AppleClamshellCausesSleep") && p.m.lidless() {
 			// Whether the lid is shut, and whether shutting it sleeps the machine: the kernel's
-			// source has the power root say so only of a machine that has a lid, which was not
-			// measured, there being no Mac without one to ask.
+			// source has the power root say so only once a lid's driver has told it of one, which
+			// a Mac that is a box or a screen has none of. From the source, not measured.
 			return migCode(ioReturnNotFound), true
 		}
 		p.unimplemented("I/O Registry property "+name+" of the power root, whose properties are a machine's state", nil)
 	case 2862: // io_service_open_extended
-		at, ok := descriptors(body, func(int, byte) {})
+		given := false // properties to open it with, which the kernel's source has it refuse
+		at, ok := descriptors(body, func(at int, kind byte) { given = given || kind == 1 && le.Uint64(body[at:]) != 0 })
 		open := ioReader{data: body, at: at + 8}
 		kind := open.u32()
 		if !ok || open.failed {
 			return migCode(migBadArguments), true
+		}
+		if given {
+			return migCode(ioReturnUnsupported), true
 		}
 		if kind != 0 && kind != 7 { // the two that were measured
 			p.unimplemented("opening the power root with a type that was not measured", []uint64{uint64(kind)})
@@ -111,9 +144,10 @@ func (o powerRoot) request(p *Process, id uint32, body []byte) (migReply, bool) 
 			return migCode(migBadArguments), true
 		}
 		// The kinds there are, as measured: of the system's power (which IORegisterForSystemPower
-		// asks) and of it before others, of the service's own state, and of its being busy. None
+		// asks) and of it before others, of what the system can do, of the service's own state, of its
+		// being busy, and of the console's being locked. None
 		// of those changes here. Any other is one the kernel does not have.
-		if !slices.Contains([]string{"IOAppPowerStateInterest", "IOPriorityPowerStateInterest", "IOGeneralInterest", "IOBusyInterest"}, kind) {
+		if !slices.Contains([]string{"IOAppPowerStateInterest", "IOPriorityPowerStateInterest", "IOGeneralInterest", "IOBusyInterest", "IOPMSystemCapabilityInterest", "IOConsoleSecurityInterest"}, kind) {
 			return migCode(ioReturnUnsupported), true
 		}
 		p.note("  IOKit interest in the power root: %s", kind)
@@ -142,12 +176,19 @@ func (powerConnection) request(p *Process, id uint32, body []byte) (migReply, bo
 	return migReply{}, false
 }
 
-// hasLid says whether the device is a portable Mac, by what its tree says its model is.
-func (m *Machine) hasLid() bool {
+// lidless says whether the device is a Mac of a kind that has no lid: a Mac mini, an iMac or a
+// Mac Pro, by what its tree says its model is. Of any other it says no, without knowing: newer
+// Macs' models (Mac14,2) do not say what they are.
+func (m *Machine) lidless() bool {
 	device := m.device()
 	if device == nil {
 		return false
 	}
 	model, _ := property(device.properties, "model")
-	return strings.HasPrefix(string(model), "MacBook")
+	for _, kind := range []string{"Macmini", "iMac", "MacPro"} {
+		if strings.HasPrefix(string(model), kind) {
+			return true
+		}
+	}
+	return false
 }

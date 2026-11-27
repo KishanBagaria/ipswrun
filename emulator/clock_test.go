@@ -38,6 +38,7 @@ func TestClockStandsStillWhileAway(t *testing.T) {
 	c := &clock{boot: time.Now()} // newClock asks the host its uptime, which on a Mac needs the library loaded
 	var rings atomic.Int32
 	now, ticks := c.now(), c.ticks()
+	between := c.now().Sub(now) // the two are not read at one instant: the tick is this much later at most
 	off := c.alarm(now.Add(soon), func() { rings.Add(1) })
 	started := time.Now()
 	during, _ := away(c, func() (time.Duration, error) {
@@ -63,7 +64,7 @@ func TestClockStandsStillWhileAway(t *testing.T) {
 	if !off() || time.Since(started) < gone+soon/2 {
 		t.Errorf("the alarm rang %d times, %v after it was set", rings.Load(), time.Since(started))
 	}
-	if late := c.tickTime(ticks).Sub(now); late < -time.Microsecond || late > time.Microsecond {
+	if late := c.tickTime(ticks).Sub(now); late < -time.Microsecond || late > between+time.Microsecond {
 		t.Errorf("the time of a tick is %v off after the host was away", late)
 	}
 }

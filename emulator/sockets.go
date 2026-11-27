@@ -150,6 +150,9 @@ func (p *Process) eventIoctl(f *fd, a []uint64) int64 {
 		p.unimplemented("ioctl of the kernel's event socket that was not measured", a)
 		return -eNOSYS
 	}
+	if request := uint32(a[1]); request&0x80000000 != 0 && request>>16&0x1FFF != 0 {
+		p.read(a[2], uint64(request>>16&0x1FFF)) // what it gives is read first, by the source: EFAULT of nowhere
+	}
 	return -eNOTSUP // an event request there is not, as the source has it and as measured of one
 }
 
@@ -400,6 +403,9 @@ func sysShutdown(p *Process, a []uint64) int64 {
 	s := f.sock
 	const sending = 1 // SHUT_WR
 	switch {
+	case s.events != nil:
+		p.unimplemented("shutdown of the kernel's event socket, which was not measured", a)
+		return -eNOSYS
 	case a[1] > 2:
 		return -eINVAL
 	case a[1] == sending && s.cantSend, a[1] != sending && s.cantReceive:
@@ -528,8 +534,13 @@ func (p *Process) socketName(a []uint64) int64 {
 }
 
 func sysGetsockname(p *Process, a []uint64) int64 {
-	if _, errno := p.socketOf(a[0]); errno != 0 {
+	f, errno := p.socketOf(a[0])
+	if errno != 0 {
 		return errno
+	}
+	if f.sock.events != nil {
+		p.unimplemented("the name of the kernel's event socket, which was not measured", a)
+		return -eNOSYS
 	}
 	return p.socketName(a)
 }
@@ -541,6 +552,9 @@ func sysGetpeername(p *Process, a []uint64) int64 {
 	switch {
 	case errno != 0:
 		return errno
+	case f.sock.events != nil:
+		p.unimplemented("the name of what the kernel's event socket is connected to, which was not measured", a)
+		return -eNOSYS
 	case f.sock.cantSend && f.sock.cantReceive:
 		return -eINVAL
 	}

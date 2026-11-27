@@ -802,7 +802,7 @@ func (p *Process) fork() *Process {
 	child.fds = map[uint64]*fd{}
 	for n, f := range p.fds {
 		switch {
-		case f.kq != nil:
+		case f.kq != nil, f.necp != nil: // nor is a session with the network's policy, by the source
 			continue
 		case f.kind == hostFD:
 			var err error

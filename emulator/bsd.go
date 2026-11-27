@@ -36,7 +36,7 @@ func init() {
 		"mkdir": {2, sysMkdir}, "rename": {2, sysRename}, "readlink": {3, sysReadlink}, "readlinkat": {4, sysReadlinkat},
 		"mkdirat": {3, sysMkdirat}, "rmdir": {1, sysRmdir}, "unlinkat": {3, sysUnlinkat}, "renameat": {4, sysRenameat},
 		"renameatx_np": {5, sysRenameatx}, "faccessat": {4, sysFaccessat}, "truncate": {2, sysTruncate}, "fcntl": {3, sysFcntl}, "dup": {1, sysDup}, "dup2": {2, sysDup2},
-		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir}, "chmod": {2, sysChmod}, "identitysvc": {2, sysIdentitysvc}, "socket": {3, sysSocket}, "chflags": {2, sysChflags}, "fchflags": {2, sysFchflags}, "fchmod": {2, sysFchmod}, "fchmodat": {4, sysFchmodat}, "fchmod_extended": {5, sysFchmodExtended}, "chmod_extended": {5, sysChmodExtended}, "symlink": {2, sysSymlink}, "symlinkat": {3, sysSymlinkat}, "link": {2, sysLink}, "linkat": {5, sysLinkat}, "stat64_extended": {4, sysStat64Extended}, "lstat64_extended": {4, sysLstat64Extended}, "fstat64_extended": {4, sysFstat64Extended}, "chown": {3, sysChown}, "fchownat": {5, sysFchownat},
+		"chdir": {1, sysChdir}, "fchdir": {1, sysFchdir}, "chmod": {2, sysChmod}, "identitysvc": {2, sysIdentitysvc}, "necp_session_open": {1, sysNecpSessionOpen}, "necp_session_action": {6, sysNecpSessionAction}, "socket": {3, sysSocket}, "chflags": {2, sysChflags}, "fchflags": {2, sysFchflags}, "fchmod": {2, sysFchmod}, "fchmodat": {4, sysFchmodat}, "fchmod_extended": {5, sysFchmodExtended}, "chmod_extended": {5, sysChmodExtended}, "symlink": {2, sysSymlink}, "symlinkat": {3, sysSymlinkat}, "link": {2, sysLink}, "linkat": {5, sysLinkat}, "stat64_extended": {4, sysStat64Extended}, "lstat64_extended": {4, sysLstat64Extended}, "fstat64_extended": {4, sysFstat64Extended}, "chown": {3, sysChown}, "fchownat": {5, sysFchownat},
 		"lchown": {3, sysLchown}, "fchown": {3, sysFchown}, "utimes": {2, sysUtimes}, "futimes": {2, sysFutimes},
 		"setattrlist": {5, sysSetattrlist}, "setattrlistat": {6, sysSetattrlistat}, "mkfifo": {2, sysMkfifo}, "getgroups": {2, sysGetgroups}, "fsetattrlist": {5, sysFsetattrlist}, "flock": {2, sysFlock},
 		"getxattr": {6, sysGetxattr}, "fgetxattr": {6, sysFgetxattr}, "setxattr": {6, sysSetxattr}, "fsetxattr": {6, sysFsetxattr},
@@ -838,7 +838,21 @@ func (p *Process) sandboxCheck(a []uint64) int64 {
 		if p.doAccess(p.cstr(arg)) != 0 {
 			result = 2
 		}
-	case kind == 0 && le.Uint64(w[16:]) == 0, kind == 5, kind == 6, kind == 0x1c, kind == 0x41, kind == 0xf0:
+	case kind == 0 && le.Uint64(w[16:]) != 0:
+		// An operation by its name, of anything: no process here is confined, and a Mac's kernel
+		// allows one that is not confined every operation it has (measured of the four named
+		// here, with and without the flag not to report), and says of a name it has no
+		// operation for that it is no argument (EINVAL). Its list of names is the sandbox
+		// extension's and in no source, so any other name stops.
+		switch name := p.cstr(le.Uint64(w[16:])); {
+		case slices.Contains([]string{"file-read-data", "mach-lookup", "network-outbound", "system-socket"}, name):
+		case name == "no-such-operation":
+			return -eINVAL
+		default:
+			p.unimplemented("sandbox check of the operation "+name+", which was not measured to be one", a)
+			return -eNOSYS
+		}
+	case kind == 0, kind == 5, kind == 6, kind == 0x1c, kind == 0x41, kind == 0xf0:
 	default:
 		p.unimplemented(fmt.Sprintf("sandbox check of pid %d, filter type %#x, flags %#x", pid, kind, flags), a)
 		return -eNOSYS

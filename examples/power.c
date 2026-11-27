@@ -43,7 +43,7 @@ int main(void) {
 	printf("registered for the system's power: a connection %d, a port %d, a notifier %d\n", registered != 0, port != NULL, notifier != 0);
 	printf("that taken back: %#x\n", IODeregisterForSystemPower(&notifier));
 	// Interest of the other kinds a daemon registers, and of a kind there is not.
-	const char *kinds[] = {"IOGeneralInterest", "IOBusyInterest", "IOAppPowerStateInterest", "IOPriorityPowerStateInterest", "IONoSuchInterest"};
+	const char *kinds[] = {"IOGeneralInterest", "IOBusyInterest", "IOAppPowerStateInterest", "IOPriorityPowerStateInterest", "IOPMSystemCapabilityInterest", "IOConsoleSecurityInterest", "IONoSuchInterest"};
 	IONotificationPortRef told = IONotificationPortCreate(MACH_PORT_NULL);
 	for (unsigned i = 0; i < sizeof kinds / sizeof *kinds; i++) {
 		io_object_t interest = 0;

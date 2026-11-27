@@ -115,6 +115,21 @@ int main(void) {
 	       fcntl(reads, F_BARRIERFSYNC), fcntl(dir, F_FULLFSYNC), fcntl(dir, F_BARRIERFSYNC));
 	printf("; a pipe: %d (%s)", fcntl(ends[0], F_FULLFSYNC), strerror(errno));
 	printf(" and %d (%s)\n", fcntl(ends[0], F_BARRIERFSYNC), strerror(errno));
+	// Told what part of it will be read, as configd tells of a file it reads.
+	struct radvisory parts[] = {{0, 4}, {9, 400}, {10, 4}, {-1, 4}, {0, -4}, {0, 0}};
+	const char *named[] = {"its start", "its last byte and more", "from its end", "from before its start", "less than nothing", "nothing"};
+	int told = open(path, O_RDWR);
+	ftruncate(told, 0);
+	write(told, "0123456789", 10);
+	printf("told what will be read:");
+	for (unsigned i = 0; i < sizeof parts / sizeof *parts; i++) {
+		int r = fcntl(told, F_RDADVISE, &parts[i]);
+		printf(" %s %d%s%s%s;", named[i], r, r ? " (" : "", r ? strerror(errno) : "", r ? ")" : "");
+	}
+	printf(" one opened only to read %d;", fcntl(reads, F_RDADVISE, &parts[0]));
+	printf(" a directory %d (%s);", fcntl(dir, F_RDADVISE, &parts[0]), strerror(errno));
+	printf(" a pipe %d (%s)\n", fcntl(ends[0], F_RDADVISE, &parts[0]), strerror(errno));
+	close(told);
 	// Room asked for ahead of writing, as cp asks.
 	fstore_t room = {F_ALLOCATECONTIG | F_ALLOCATEALL, F_PEOFPOSMODE, 0, 5000, -7}, less = {F_ALLOCATEALL, F_PEOFPOSMODE, 0, -1, -7}, within = {F_ALLOCATEALL, F_PEOFPOSMODE, 5, 5000, -7},
 	         elsewhere = {F_ALLOCATEALL, F_VOLPOSMODE, 0, 5000, -7}, again = {F_ALLOCATEALL, F_PEOFPOSMODE, 0, 0, -7};

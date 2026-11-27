@@ -257,6 +257,22 @@ func (p *Process) threadList() string {
 			lr = p.uc.contextReg(t.ctx, regLR)
 		}
 		out = append(out, fmt.Sprintf("    thread %d: %s, at %s lr %s", t.id, what, p.where(pc), p.where(lr)))
+		if t.state == waiting && t != p.current && t.ctx != 0 {
+			// Who called what it waits in: the frames above, a few of them.
+			var callers []string
+			fp := p.uc.contextReg(t.ctx, regX29)
+			for i := 0; i < 8 && fp != 0 && p.isMapped(fp) && p.isMapped(fp+15); i++ {
+				frame, err := p.uc.memRead(fp, 16)
+				if err != nil {
+					break
+				}
+				fp = le.Uint64(frame)
+				callers = append(callers, p.where(le.Uint64(frame[8:])&0xFFFFFFFFFFFF))
+			}
+			if len(callers) != 0 {
+				out = append(out, "      called from "+strings.Join(callers, " < "))
+			}
+		}
 	}
 	return strings.Join(out, "\n")
 }
