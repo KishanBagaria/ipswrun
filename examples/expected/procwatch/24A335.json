@@ -1,0 +1,7 @@
+{
+  "build": "24A335",
+  "cache_uuid": "D997B0E9-E31B-35FE-B129-3171B279B087",
+  "exit_code": 0,
+  "output": "watching for the end and for a new program: 0\nbefore anything: 0 events\nit became another program: of the watched process 1, filter -5, flags 0x21, what happened 0x20000000, with it 0, its mark 42\nafter that, with nothing more: 0 events\nit ended: of the watched process 1, filter -5, flags 0x8031, what happened 0x84000000, with it 15, its mark 42\nafter that: 0 events\nas wait has it: 0xf\nwatching it for a new program once it is gone: 1, error 3\n",
+  "version": "15.0"
+}

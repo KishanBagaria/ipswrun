@@ -39,6 +39,8 @@ type Machine struct {
 	owners       map[hostFile]Owner       // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
 	said         map[hostFile]uint16      // the permissions the data volume's template has for a file, where the host's file has others (see data.go)
 	flags        map[hostFile]uint32      // the flags a file carries beside its mode, where it has any (see chflags)
+	resolver     uint32                   // the process that made itself the one the kernel asks who a user or a group is (identitysvc), if one has
+	caches       [2]uint32                // how many users and how many groups' members the kernel is to keep answers for: 500 and 250 at first, as a Mac's kernel says
 	polls        []carried                // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
 	pipes        uint64                   // how many pipes were ever made: the next one's number
 	host, clocks *port                    // the host's port and its clock's, while any process has a right to them (see kernelports.go)
@@ -88,7 +90,7 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, said: map[hostFile]uint16{}, flags: map[hostFile]uint32{}, fifos: map[hostFile]bool{}, clock: newClock()}
+	m := &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, said: map[hostFile]uint16{}, flags: map[hostFile]uint32{}, caches: [2]uint32{500, 250}, fifos: map[hostFile]bool{}, clock: newClock()}
 	for i := range m.mounts {
 		m.claim(&m.mounts[i])
 	}
@@ -309,9 +311,9 @@ func (m *Machine) schedule() bool {
 				}
 				switch {
 				case t.deadline.IsZero():
-					// A wait for a message or a signal may go on for good: that is a service with no
-					// client. Any other wait with no end is one that nothing can end.
-					stuck = stuck || t.kind != waitPort && t.kind != waitSignal
+					// A wait for a message or a signal, or for the kernel to ask the resolver of
+					// users something, may go on for good: that is a service with no client. Any other wait with no end is one that nothing can end.
+					stuck = stuck || t.kind != waitPort && t.kind != waitSignal && t.kind != waitResolver
 				case !t.deadline.After(now):
 					late := t.late
 					t.answer = &late

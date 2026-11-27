@@ -1,0 +1,8 @@
+watching for the end and for a new program: 0
+before anything: 0 events
+it became another program: of the watched process 1, filter -5, flags 0x21, what happened 0x20000000, with it 0, its mark 42
+after that, with nothing more: 0 events
+it ended: of the watched process 1, filter -5, flags 0x8031, what happened 0x84000000, with it 15, its mark 42
+after that: 0 events
+as wait has it: 0xf
+watching it for a new program once it is gone: 1, error 3

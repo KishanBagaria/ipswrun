@@ -41,9 +41,10 @@ const (
 	waitChild
 	waitSpawn
 	waitKevent
+	waitResolver
 )
 
-var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message", "a file lock", "a pipe", "a descriptor to be ready", "a child to end", "a process it is starting", "an event of a kqueue"}
+var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message", "a file lock", "a pipe", "a descriptor to be ready", "a child to end", "a process it is starting", "an event of a kqueue", "the kernel to ask who a user is"}
 
 // thread is one guest thread. Its registers are in ctx whenever it is not the one running.
 type thread struct {

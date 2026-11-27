@@ -41,6 +41,7 @@ type knote struct {
 	once     bool          // whether it is due only once, which it then was
 	seen     uint64        // of a pipe watched for what is new: how much had happened to it when last told
 	never    bool          // nothing here says when it happens (see sysKevent)
+	version  uint32        // of a watched process: which of its programs it was when last looked at
 }
 
 func sysKqueue(p *Process, a []uint64) int64 {
@@ -220,7 +221,8 @@ func (p *Process) newNote(n *knote) int64 {
 		if p.m.process(uint32(c.ident)) == nil {
 			return -eSRCH
 		}
-		n.never = c.fflags&^(noteExit|noteExitStatus) != 0 || c.fflags&noteExit == 0
+		n.never = c.fflags&^(noteExit|noteExitStatus|noteExec) != 0 || c.fflags&noteExit == 0
+		n.version = p.m.process(uint32(c.ident)).version
 	case filterSignal, -4, filterMachport: // signals, files and ports: accepted, as they were
 		n.never = true
 	default:
@@ -297,7 +299,15 @@ func (p *Process) pollNotes(q *userKqueue, room int) []kevent {
 		case filterProc:
 			ended := p.m.ended(uint32(n.event.ident))
 			if ended == nil {
-				continue
+				// It goes on: has it become another program since this was last asked?
+				now := p.m.process(uint32(n.event.ident))
+				if now == nil || n.flags&noteExec == 0 || now.version == n.version {
+					continue
+				}
+				n.version = now.version
+				event.flags |= evClear
+				event.fflags = noteExec
+				break
 			}
 			event.flags |= evEOF | evOneshot | evClear
 			if event.fflags = noteExit; n.flags&noteExitStatus != 0 {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // What a process tells the kernel of itself through proc_info, as the kernel's own source has
@@ -210,12 +211,53 @@ func sysMemorystatusControl(p *Process, a []uint64) int64 {
 // sysIdentitysvc is identitysvc(opcode, message), by which opendirectoryd makes itself the one
 // the kernel asks who a user or a group is, and takes the kernel's questions. The kernel looks
 // first for the entitlement for it: a program without is refused whatever it asks (EPERM), as
-// the source has it and as measured of a user on macOS 27.2.1, opcode by opcode. What a root's
-// program that has the entitlement is told was not measured, and stops the run.
+// the source has it and as measured of a user and of root. With the entitlement, as measured of
+// a probe signed with it in a virtual machine (macOS 27.2, 26B123, with SIP off there): a user is
+// refused everything; root registers (0, and again); anything else is for root's process that
+// registered and no other (EPERM); it is told how many answers the kernel keeps (500 of users
+// and 250 of groups), may set them (EINVAL above the 10,000 the source has; not measured between)
+// or have them forgotten, and deregisters, after which it is refused as any other. An opcode that
+// names nothing is taken and does nothing. A worker waits for a question of the kernel's, and
+// none comes here: nothing in this kernel asks who a user is by anything but a number, so the
+// wait has no end, as it had none in three seconds on a Mac and none after deregistering.
+// Stopping, not having been measured: a worker's answer to a question (which there never is).
 func sysIdentitysvc(p *Process, a []uint64) int64 {
-	if !strings.Contains(p.entitlements, "com.apple.private.identitysvc") {
+	const register, answer, worker, deregister, getSizes, setSizes, clear = 0, 1, 2, 4, 8, 16, 32
+	const most = 10000
+	opcode := uint32(a[0])
+	switch {
+	case !strings.Contains(p.entitlements, "com.apple.private.identitysvc"):
 		return -ePERM
+	case opcode == register:
+		if p.uid != 0 {
+			return -ePERM
+		}
+		p.m.resolver = p.pid
+		return 0
+	case p.uid != 0 || p.m.resolver != p.pid:
+		return -ePERM
+	case opcode == getSizes:
+		p.write(a[1], append(le32(p.m.caches[0]), le32(p.m.caches[1])...))
+		return 0
+	case opcode == setSizes:
+		sizes := p.read(a[1], 8)
+		users, groups := le.Uint32(sizes), le.Uint32(sizes[4:])
+		if users > most || groups > most {
+			return -eINVAL
+		}
+		p.m.caches = [2]uint32{users, groups}
+		return 0
+	case opcode == clear:
+		return 0 // the kernel keeps no answers here, there being no questions
+	case opcode == deregister:
+		p.m.resolver = 0
+		return 0
+	case opcode&answer != 0:
+		p.unimplemented("identitysvc with the resolver's answer to a question the kernel never asked", a)
+		return -eNOSYS
+	case opcode&worker != 0:
+		p.wait(waitResolver, 0, time.Time{}, result{})
+		return 0
 	}
-	p.unimplemented("identitysvc of a program entitled to it", a)
-	return -eNOSYS
+	return 0
 }

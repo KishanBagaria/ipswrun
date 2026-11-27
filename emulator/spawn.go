@@ -486,6 +486,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 		}
 	}
 	p.note("is now %s", abs)
+	m.execWatched(p.pid)
 	p.exited = true
 	p.reap()
 	m.procs[at] = next
@@ -626,6 +627,7 @@ func sysGetpgid(p *Process, a []uint64) int64 {
 const (
 	noteExit       = 0x80000000 // of a process filter: it ended, and
 	noteExitStatus = 0x04000000 // how, as wait4 says it
+	noteExec       = 0x20000000 // it became another program
 )
 
 // changeProc takes a change to a kqueue's interest in a process ending. A process that has
@@ -637,19 +639,22 @@ func (p *Process) changeProc(q *kqueue, c kevent) {
 	case c.flags&evDelete != 0:
 		delete(q.procs, key)
 	case c.flags&evAdd == 0:
-	case c.fflags&^(noteExit|noteExitStatus) != 0 || c.fflags&noteExit == 0:
-		p.unimplemented(fmt.Sprintf("a kqueue watching a process for more than its end (%#x)", c.fflags), nil)
 	case p.m.process(uint32(c.ident)) == nil:
 		refused := c
 		refused.flags, refused.data = c.flags|evError, eSRCH // as it was asked, with the error
 		q.errors = append(q.errors, refused)
+	case c.fflags&^(noteExit|noteExitStatus|noteExec) != 0 || c.fflags&noteExit == 0:
+		// Its end, with or without the program it becomes before that; not that alone, which
+		// was not measured of a process that then ends.
+		p.unimplemented(fmt.Sprintf("a kqueue watching a process for more than its end and the program it becomes (%#x)", c.fflags), nil)
 	default:
 		q.procs[key] = c
 	}
 }
 
-// exitWatched tells every kqueue that watches a process that it has ended.
-func (m *Machine) exitWatched(ended *Process) {
+// watched calls tell for every watch a kqueue of a process that is running has on another, in an
+// order that is the same every time.
+func (m *Machine) watched(pid uint32, tell func(q *kqueue, key watchKey, w kevent)) {
 	for _, p := range m.procs {
 		if p.exited {
 			continue
@@ -657,20 +662,40 @@ func (m *Machine) exitWatched(ended *Process) {
 		for _, id := range slices.Sorted(maps.Keys(p.kqueues)) {
 			q := p.kqueues[id]
 			for _, key := range slices.SortedFunc(maps.Keys(q.procs), func(a, b watchKey) int { return cmp.Compare(a.udata, b.udata) }) {
-				if w := q.procs[key]; key.ident == uint64(ended.pid) {
-					event := w
-					event.flags = w.flags&^evEnable | evEOF | evOneshot | evClear
-					event.fflags, event.data = noteExit, 0
-					if w.fflags&noteExitStatus != 0 {
-						event.fflags |= noteExitStatus
-						event.data = int64(ended.status())
-					}
-					q.ready = append(q.ready, event)
-					delete(q.procs, key)
+				if key.ident == uint64(pid) {
+					tell(q, key, q.procs[key])
 				}
 			}
 		}
 	}
+}
+
+// exitWatched tells every kqueue that watches a process that it has ended.
+func (m *Machine) exitWatched(ended *Process) {
+	m.watched(ended.pid, func(q *kqueue, key watchKey, w kevent) {
+		event := w
+		event.flags = w.flags&^evEnable | evEOF | evOneshot | evClear
+		event.fflags, event.data = noteExit, 0
+		if w.fflags&noteExitStatus != 0 {
+			event.fflags |= noteExitStatus
+			event.data = int64(ended.status())
+		}
+		q.ready = append(q.ready, event)
+		delete(q.procs, key)
+	})
+}
+
+// execWatched tells every kqueue that watches a process for the program it becomes that it has
+// become another, and goes on watching it.
+func (m *Machine) execWatched(pid uint32) {
+	m.watched(pid, func(q *kqueue, key watchKey, w kevent) {
+		if w.fflags&noteExec != 0 {
+			event := w
+			event.flags = w.flags&^evEnable | evClear
+			event.fflags, event.data = noteExec, 0
+			q.ready = append(q.ready, event)
+		}
+	})
 }
 
 // sysFork is fork(): a copy of the process, which goes on from the same place as the thread that
