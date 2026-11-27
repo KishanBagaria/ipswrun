@@ -58,6 +58,16 @@ const (
 	ioctlGrant      = 0x20007454 // TIOCPTYGRANT
 	ioctlName       = 0x40807453 // TIOCPTYGNAME
 	ioctlUnlock     = 0x20007452 // TIOCPTYUNLK
+	ioctlTake       = 0x20007461 // TIOCSCTTY
+	ioctlGetFront   = 0x40047477 // TIOCGPGRP
+	ioctlSetFront   = 0x80047476 // TIOCSPGRP
+	ioctlGetSession = 0x40047463 // TIOCGSID
+
+	termNoFlush                                                                = 0x80000000 // NOFLSH
+	termStopWrite                                                              = 0x400000   // TOSTOP
+	termLocalLine                                                              = 0x8000     // CLOCAL, of the control flags
+	sigHangup, sigInterrupt, sigQuit, sigTerminalIn, sigTerminalOut, sigWindow = 1, 2, 3, 21, 22, 28
+	ownTerminal                                                                = "/dev/tty"
 )
 
 // terminalDefaults are what a terminal is set to when its second end is first opened, from the
@@ -96,7 +106,15 @@ type terminal struct {
 	typed   []byte
 	lines   []typedLine
 	shown   []byte // what the first end can read: the echo, and what the second wrote
-	firsts  int    // descriptors open of the first end: one, or none once it has closed
+	// The session whose own it is, with the group of it that is in front: the one the keys
+	// signal, and that may read it. And that the session's leader has ended with others
+	// still having it open.
+	session, front uint32
+	revoked        bool
+	// One of the session has opened /dev/tty: that keeps the second end open, as one
+	// opening of it, until the session's leader ends (as measured).
+	pinned bool
+	firsts int // descriptors open of the first end: one, or none once it has closed
 	// The second end's: how many are open, that it has been opened at some time, whose it
 	// was made by grantpt and that it may be opened; and until when what it wrote waits to
 	// be read after its last close.
@@ -156,6 +174,23 @@ func (p *Process) terminalNames() []string {
 // until unlockpt it is EAGAIN; it may be opened to read only or to write only. As measured.
 func (p *Process) openTerminal(path string, flags uint64) (int64, bool) {
 	const nonblock, readWrite = 0x4, 2
+	if p.absolute(path) == ownTerminal {
+		// The session's own terminal, to whoever has one (ENXIO to who has none, as
+		// measured). It is no further opening of the terminal's second end.
+		t := p.ownTerminal()
+		switch {
+		case t == nil:
+			return -eNXIO, true
+		case !t.pinned:
+			t.pinned = true
+			t.seconds++
+		}
+		n := p.newFD(&fd{kind: ttyFD, tty: t, own: true, flags: uint32(flags) & (3 | flagNonblock), refs: 1})
+		if flags&0x1000000 != 0 { // O_CLOEXEC
+			p.cloexec[n] = true
+		}
+		return int64(n), true
+	}
 	first := p.absolute(path) == "/dev/ptmx"
 	t := p.terminalNamed(path)
 	if !first && t == nil {
@@ -190,6 +225,9 @@ func (p *Process) openTerminal(path string, flags uint64) (int64, bool) {
 		// not to return.
 		p.unimplemented("the second end of a terminal opened, waiting, after the first has closed", nil)
 		return -eNOSYS, true
+	case t.revoked:
+		p.unimplemented("a terminal opened again after it was taken from those who had it, its session's leader having ended", nil)
+		return -eNOSYS, true
 	case !t.until.IsZero():
 		p.unimplemented("the second end of a terminal opened again while what it wrote before its last close waits to be read", nil)
 		return -eNOSYS, true
@@ -204,9 +242,14 @@ func (p *Process) openTerminal(path string, flags uint64) (int64, bool) {
 	if flags&0x20000 == 0 { // O_NOCTTY
 		// Whether it becomes the session's own terminal is the kernel's to decide for a
 		// process that leads a session and has none.
-		if p.sessionOf() == p.pid {
-			p.unimplemented("a terminal opened by the leader of a session without O_NOCTTY: it would become the session's own", nil)
-			return -eNOSYS, true
+		// Opened so by the leader of a session, it becomes the session's own, where
+		// neither has one: as measured of the second end.
+		if p.sessionOf() == p.pid && !p.controlt && t.session == 0 {
+			if first {
+				p.unimplemented("the first end of a terminal opened by the leader of a session without O_NOCTTY", nil)
+				return -eNOSYS, true
+			}
+			p.takeTerminal(t)
 		}
 	}
 	n := p.newFD(&fd{kind: ttyFD, tty: t, first: first, flags: uint32(flags) & (3 | flagNonblock), refs: 1})
@@ -232,22 +275,45 @@ func (p *Process) terminalClosed(f *fd) {
 	}
 	t := f.tty
 	switch {
+	case f.own, f.dead:
+		return
 	case f.first:
+		// The terminal has hung up: the leader of the session whose it is, is told, while
+		// the second end is open and the terminal not set to be a local line (the source's
+		// ttymodem; measured as set at first).
+		if t.session != 0 && t.seconds > 0 && t.control&0x100000 != 0 {
+			p.unimplemented("a terminal set to stop and start on its carrier (MDMBUF) hanging up", nil)
+		}
+		if leader := p.m.process(t.session); leader != nil && t.session != 0 && t.seconds > 0 && t.control&termLocalLine == 0 {
+			leader.sendSignal(pendingSignal{sig: sigHangup, status: sigHangup})
+		}
 		t.firsts = 0
 		t.line, t.typed, t.lines, t.shown, t.until, t.echoed, t.literal = nil, nil, nil, nil, time.Time{}, 0, false
 	case t.seconds > 1:
 		t.seconds--
 	default:
-		t.seconds = 0
-		t.line, t.typed, t.lines, t.echoed, t.literal = nil, nil, nil, 0, false
-		if len(t.shown) > 0 && t.firsts > 0 {
-			t.until = t.clock.now().Add(closeWait)
-		}
+		p.terminalLastClose(t)
 	}
 	if t.firsts+t.seconds == 0 { // its number and its name are free for another (the source's ptmx_free_ioctl)
 		p.m.terminals[t.number] = nil
 	}
 	p.terminalChanged(t)
+}
+
+// terminalLastClose is the second end open nowhere any more: what was typed and not read goes,
+// what was written waits a while to be read, and the terminal is no session's (as measured:
+// the first end is then told no group in front, /dev/tty is nothing, and the keys signal
+// nobody).
+func (p *Process) terminalLastClose(t *terminal) {
+	t.seconds = 0
+	t.line, t.typed, t.lines, t.echoed, t.literal = nil, nil, nil, 0, false
+	if len(t.shown) > 0 && t.firsts > 0 {
+		t.until = t.clock.now().Add(closeWait)
+	}
+	if t.session != 0 {
+		delete(p.m.sessionTerminals, t.session)
+		t.session, t.front = 0, 0
+	}
 }
 
 // leavesTerminal closes, for a process that is ending, the descriptors of a terminal's second
@@ -257,7 +323,7 @@ func (p *Process) terminalClosed(f *fd) {
 func (p *Process) leavesTerminal() *fd {
 	held := map[*fd]int{}
 	for _, f := range p.fds {
-		if f.kind == ttyFD && !f.first {
+		if f.kind == ttyFD && !f.first && !f.own && !f.dead {
 			held[f]++
 		}
 	}
@@ -400,8 +466,21 @@ func (p *Process) terminalType(t *terminal, data []byte) {
 		case extended && key(ccDiscard):
 			stop("the key that discards output typed at a terminal", c)
 			return
-		case t.is(termSignals) && (key(ccInterrupt) || key(ccQuit) || key(ccSuspend) || extended && key(ccDelayedSuspend)):
-			stop("a key that interrupts, quits or suspends typed at a terminal: the signals a terminal sends are not here yet", c)
+		case t.is(termSignals) && (key(ccInterrupt) || key(ccQuit)):
+			// What was typed and what waits to be seen are let go, the key is shown, and
+			// the group in front is signalled, if there is one.
+			if !t.is(termNoFlush) {
+				t.line, t.typed, t.lines, t.shown, t.echoed = nil, nil, nil, nil, 0
+			}
+			p.terminalEcho(t, c)
+			sig := uint64(sigInterrupt)
+			if key(ccQuit) {
+				sig = sigQuit
+			}
+			p.m.signalFront(t, sig)
+			continue
+		case t.is(termSignals) && (key(ccSuspend) || extended && key(ccDelayedSuspend)):
+			stop("a key that suspends typed at a terminal: nothing here stops a process yet", c)
 			return
 		case t.input&termFlow != 0 && (key(ccStart) || key(ccStop)):
 			stop("a key that stops or starts output typed at a terminal", c)
@@ -491,7 +570,7 @@ func (p *Process) terminalType(t *terminal, data []byte) {
 func (f *fd) terminalGone() bool {
 	t := f.tty
 	t.settle()
-	return f.first && t.seconds == 0 && t.was && t.until.IsZero() || !f.first && t.firsts == 0
+	return f.dead || f.first && t.seconds == 0 && t.was && t.until.IsZero() || !f.first && t.firsts == 0
 }
 
 // terminalWrite is write to either end. With nobody at the other end it is EIO. What is typed
@@ -501,6 +580,17 @@ func (f *fd) terminalGone() bool {
 func (p *Process) terminalWrite(f *fd, data []byte) int64 {
 	if f.flags&3 == 0 {
 		return -eBADF
+	}
+	if f.dead || !p.ownDescriptor(f) {
+		return -eIO
+	}
+	if p.terminalTaken(f) {
+		return -eNOSYS
+	}
+	if !f.first && f.tty.is(termStopWrite) {
+		if r := p.terminalBehind(f.tty, sigTerminalOut, false); r != 0 {
+			return r
+		}
 	}
 	op := &pipeOp{f: f, data: data, sending: true}
 	if r, ok := p.tryTerminal(op); ok {
@@ -582,6 +672,20 @@ func (f *fd) terminalReady(writing bool) bool {
 func (p *Process) terminalRead(f *fd, into []stretch) int64 {
 	if f.flags&3 == 1 {
 		return -eBADF
+	}
+	if !p.ownDescriptor(f) {
+		return -eIO
+	}
+	if f.dead {
+		return 0
+	}
+	if p.terminalTaken(f) {
+		return -eNOSYS
+	}
+	if !f.first {
+		if r := p.terminalBehind(f.tty, sigTerminalIn, true); r != 0 {
+			return r
+		}
 	}
 	op := &pipeOp{f: f, into: into}
 	for _, s := range into {
@@ -708,9 +812,18 @@ func (f *fd) terminalFiltered(filter int16) (data int64, ended, ready bool) {
 // unlockpt and ptsname. Before the second end is first opened the first is no terminal to the
 // requests of one (ENOTTY, as measured of four of them). Any other stops.
 func (p *Process) terminalIoctl(f *fd, a []uint64) int64 {
+	if !p.ownDescriptor(f) {
+		return -eIO
+	}
 	t := f.tty
+	if f.dead {
+		return -eNOTTY
+	}
 	t.settle()
 	request := uint32(a[1])
+	if request != ioctlGetFront && p.terminalTaken(f) {
+		return -eNOSYS
+	}
 	switch request {
 	case ioctlGetTerm, ioctlSetTerm, ioctlSetTerm + 1, ioctlSetTerm + 2, ioctlGetSize, ioctlSetSize, ioctlAvailable:
 		if f.first && !t.was {
@@ -718,6 +831,58 @@ func (p *Process) terminalIoctl(f *fd, a []uint64) int64 {
 		}
 	}
 	switch request {
+	case ioctlSetTerm, ioctlSetTerm + 1, ioctlSetTerm + 2, ioctlSetSize, ioctlSetFront:
+		if r := p.terminalBehind(t, sigTerminalOut, false); r != 0 {
+			return r
+		}
+	}
+	switch request {
+	case ioctlTake:
+		// The terminal becomes the session's own, for its leader, where neither has one
+		// already (EPERM; asked again of its own it is no error). As measured, but EPERM
+		// of a terminal or a session that has one, which is from the source.
+		session := p.sessionOf()
+		switch {
+		case f.first || f.own:
+			p.unimplemented("a terminal asked for as a session's own at its first end or through /dev/tty", a)
+			return -eNOSYS
+		case session != p.pid:
+			return -ePERM
+		case t.session == session:
+		case t.session != 0 || p.m.sessionTerminals[session] != nil:
+			return -ePERM
+		default:
+			p.takeTerminal(t)
+		}
+	case ioctlGetFront:
+		// At the first end anybody is told (none: 0, from the source); at the second only
+		// those whose own terminal it is.
+		switch {
+		case f.first:
+		case p.ownTerminal() != t:
+			return -eNOTTY
+		case t.front == 0:
+			p.unimplemented("the group in front asked of a terminal that has none", a)
+			return -eNOSYS
+		}
+		p.write(a[2], le32(t.front))
+	case ioctlGetSession: // tcgetsid: the leader of the session whose it is (none: ENOTTY, from the source)
+		if t.session == 0 || p.m.process(t.session) == nil {
+			return -eNOTTY
+		}
+		p.write(a[2], le32(t.session))
+	case ioctlSetFront:
+		group := p.u32(a[2])
+		in := p.m.inGroup(group)
+		switch {
+		case p.ownTerminal() != t:
+			return -eNOTTY
+		case len(in) == 0:
+			return -eINVAL
+		case in[0].sessionOf() != p.sessionOf():
+			return -ePERM
+		}
+		t.front = group
 	case ioctlGetTerm:
 		b := le64(t.input, t.output, t.control, t.local)
 		b = append(append(b, t.characters[:]...), 0, 0, 0, 0)
@@ -737,7 +902,8 @@ func (p *Process) terminalIoctl(f *fd, a []uint64) int64 {
 	case ioctlSetSize:
 		b := p.read(a[2], 8)
 		if size := [4]uint16{le.Uint16(b), le.Uint16(b[2:]), le.Uint16(b[4:]), le.Uint16(b[6:])}; size != t.size {
-			t.size = size // whoever has it for its own would be told (SIGWINCH), and nobody has yet
+			t.size = size
+			p.m.signalFront(t, sigWindow)
 		}
 	case ioctlAvailable:
 		p.write(a[2], le32(uint32(t.waiting())))
@@ -794,6 +960,138 @@ func (p *Process) trySetTerminal(op *pipeOp) (int64, bool) {
 	}
 	t.changes++
 	return 0, true
+}
+
+// terminalTaken stops the run for the first end of a terminal that was taken from those who had
+// its second end open: what it is then was not measured.
+func (p *Process) terminalTaken(f *fd) bool {
+	if f.first && f.tty.revoked {
+		p.unimplemented("the first end of a terminal used after the terminal was taken from those who had it, its session's leader having ended", nil)
+		return true
+	}
+	return false
+}
+
+// takeTerminal makes a terminal the own one of the session p leads, with p's group in front.
+func (p *Process) takeTerminal(t *terminal) {
+	if p.m.sessionTerminals == nil {
+		p.m.sessionTerminals = map[uint32]*terminal{}
+	}
+	p.m.sessionTerminals[p.pid], t.session, t.front, p.controlt = t, p.pid, p.group(), true
+}
+
+// ownTerminal is the terminal p's session has for its own, if p may use it as that.
+func (p *Process) ownTerminal() *terminal {
+	if !p.controlt {
+		return nil
+	}
+	return p.m.sessionTerminals[p.sessionOf()]
+}
+
+// signalFront sends a signal to the group in front at a terminal, as the kernel does of a key,
+// a change of size or a hanging up: from nobody.
+func (m *Machine) signalFront(t *terminal, sig uint64) {
+	if t.front == 0 {
+		return
+	}
+	for _, q := range m.inGroup(t.front) {
+		if !q.exited && q.ownTerminal() == t { // only those whose own terminal it is, as measured
+			q.sendSignal(pendingSignal{sig: sig, status: int32(sig)})
+		}
+	}
+}
+
+// orphaned says that no process of a group came of one in another group of its session: there
+// is nobody to see to it if it were stopped (the source's pg_jobc of none).
+func (m *Machine) orphaned(group uint32) bool {
+	for _, q := range m.inGroup(group) {
+		if parent := q.parent; !q.exited && parent != nil && !parent.exited && parent.group() != group && parent.sessionOf() == q.sessionOf() {
+			return false
+		}
+	}
+	return true
+}
+
+// terminalBehind is the check of a process that reads its own terminal, sets something of it,
+// or, where the terminal is set so, writes to it, while its group is not the one in front. The
+// kernel stops it with a signal (SIGTTIN, SIGTTOU) until it is put in front; nothing here stops
+// a process yet, so that stops the run. Where the signal is ignored or blocked a read is EIO
+// and the rest goes on, and a group with nobody to see to it is EIO: from the source, and
+// measured of a setting by such a group.
+func (p *Process) terminalBehind(t *terminal, sig uint64, reading bool) int64 {
+	if p.ownTerminal() != t || p.group() == t.front {
+		return 0
+	}
+	unheard := p.sigactions[sig].handler == sigIgnore || p.current.sigmask>>(sig-1)&1 != 0
+	switch {
+	case unheard && reading, !unheard && p.m.orphaned(p.group()):
+		return -eIO
+	case unheard:
+		return 0
+	}
+	p.unimplemented(fmt.Sprintf("signal %d to a process that uses its terminal from behind, which stops it until it is put in front", sig), nil)
+	return -eNOSYS
+}
+
+// leaveSession is a process ending: if it leads a session that has a terminal, those of the
+// group in front are told the terminal has hung up, and the terminal is nobody's. If nobody
+// else has its second end open, that is its last close. If somebody has, the terminal is taken
+// from them: their descriptors read nothing, write EIO and are no terminal to a request
+// (measured of the signal, a read, a write, the settings and the group in front; the rest is
+// the source's dead files'), and what the terminal is to its first end, and opened again,
+// after that was not measured through and stops the run.
+func (p *Process) leaveSession() {
+	t := p.m.sessionTerminals[p.pid]
+	if t == nil || p.sessionOf() != p.pid {
+		return
+	}
+	p.m.signalFront(t, sigHangup)
+	if t.pinned {
+		t.pinned = false
+		t.seconds--
+	}
+	if t.seconds == 0 {
+		p.terminalLastClose(t)
+		if t.firsts == 0 {
+			p.m.terminals[t.number] = nil
+		}
+		p.terminalChanged(t)
+		return
+	}
+	delete(p.m.sessionTerminals, p.pid)
+	t.session, t.front = 0, 0
+	for _, q := range p.m.procs {
+		for _, f := range q.fds {
+			if f.kind == ttyFD && f.tty == t && !f.first && !f.own {
+				f.dead = true
+			}
+		}
+	}
+	t.seconds, t.revoked = 0, true
+	t.line, t.typed, t.lines, t.shown, t.until, t.echoed, t.literal = nil, nil, nil, nil, time.Time{}, 0, false
+	p.terminalChanged(t)
+}
+
+// ownDescriptor makes a descriptor of /dev/tty one of the terminal its user's session has now,
+// which it is looked up as at each use; false where there is none (EIO to a read, a write and
+// a request, as measured).
+func (p *Process) ownDescriptor(f *fd) bool {
+	if f.own {
+		if f.tty = p.ownTerminal(); f.tty == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// ownTerminalStat is the struct stat64 of /dev/tty: a device of characters, root's and
+// anybody's to read and write, of kind 2 and number 0, as measured on macOS 27.2.1.
+func ownTerminalStat() []byte {
+	b := make([]byte, 144)
+	le.PutUint16(b[4:], syscall.S_IFCHR|0o666)
+	le.PutUint16(b[6:], 1)
+	le.PutUint32(b[24:], 2<<24)
+	return b
 }
 
 // terminalStat is the struct stat64 of an end: a device of characters of the group tty, the

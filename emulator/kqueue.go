@@ -209,6 +209,9 @@ func (p *Process) newNote(n *knote) int64 {
 		}
 		// Of a descriptor that is no pipe's, or the end of one that is not the one read, or
 		// written, nothing here says when it can be.
+		if f.kind == ttyFD && f.own { // /dev/tty is nothing a kqueue watches, as measured
+			return -eINVAL
+		}
 		n.never = !f.watchable()
 		if !n.never {
 			if _, _, _, applies := f.filtered(c.filter, c); !applies {

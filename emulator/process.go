@@ -296,6 +296,7 @@ type Process struct {
 	early      bool  // it exited while the guest the run is for was still running
 	taskName   *port // its task as those who may only name it have it (see machTaskNameForPid)
 	becoming   bool  // it is becoming another program, and closing what that one is not to have
+	controlt   bool  // its session's terminal is its own to use (see terminals.go): since it took one, or by coming of one that had
 	detached   bool  // it had launchd move it to the background's session (see routineSession)
 	demanded   bool  // launchd started it when a service of its was first looked up (see onDemand)
 	exitCode   int

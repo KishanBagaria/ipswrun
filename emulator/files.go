@@ -82,6 +82,8 @@ type fd struct {
 	state     *status      // of what is no pipe and no socket: what fcntl reads and sets of it (see fileflags.go)
 	refs      int          // the descriptors it is, in every process: a duplicate and a child's are the same end
 	both      bool         // of a named pipe's: it was opened to read and to write
+	own       bool         // of a terminal's: it was opened as /dev/tty, the session's own
+	dead      bool         // of a terminal's: the terminal was taken from it when its session's leader ended
 	tty       *terminal    // of an end of a terminal: which, and
 	first     bool         // that it is the first end, the one that is typed at
 }
@@ -547,6 +549,10 @@ func (p *Process) doStat(path string, buf uint64, follow bool) int64 {
 	if n, ok := p.descriptorAt(path); ok { // what the descriptor is, followed or not
 		return sysFstat64(p, []uint64{n, buf})
 	}
+	if p.absolute(path) == ownTerminal {
+		p.write(buf, ownTerminalStat())
+		return 0
+	}
 	if t := p.terminalNamed(path); t != nil {
 		p.write(buf, p.terminalStat(t, false))
 		return 0
@@ -629,6 +635,14 @@ func sysFstat64(p *Process, a []uint64) int64 {
 		return 0
 	}
 	if f.kind == ttyFD {
+		if f.dead {
+			p.unimplemented("fstat of a terminal that was taken from the descriptor", nil)
+			return -eNOSYS
+		}
+		if f.own {
+			p.write(a[1], ownTerminalStat())
+			return 0
+		}
 		p.write(a[1], p.terminalStat(f.tty, f.first))
 		return 0
 	}

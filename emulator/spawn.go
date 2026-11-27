@@ -455,6 +455,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 	next.cwd, next.usage, next.early, next.pgroup, next.childrenUsed = p.cwd, p.usage, p.early, p.pgroup, p.childrenUsed
 	next.charged = [2]time.Duration{p.usage.user, p.usage.system} // all of it by threads that are gone
 	p.handOn(next, false)
+	next.controlt = p.controlt // the same process
 	p.keepIgnored(next, 0)
 	next.current.sigmask, next.itimer, next.execed = p.current.sigmask, p.itimer, true
 	for _, s := range p.pending { // a signal that waits goes on waiting, for the one thread there now is
@@ -507,6 +508,10 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 // threads go with them only to a copy, which has the thread.
 func (p *Process) handOn(to *Process, threads bool) {
 	to.uid, to.gid, to.stdio, to.session = p.uid, p.gid, p.stdio, p.sessionOf()
+	// The session's terminal is the newcomer's to use if it is p's and the session has one
+	// now (the source's fork; measured of a copy made before the terminal was taken, and of
+	// one made after it was let go).
+	to.controlt = p.ownTerminal() != nil
 	to.cmask, to.cmaskSet, to.nice = p.cmask, p.cmaskSet, p.nice
 	to.rlimits = maps.Clone(p.rlimits)
 	to.iopolicies = maps.Clone(p.iopolicies)
@@ -552,7 +557,7 @@ func sysSetsid(p *Process, a []uint64) int64 {
 	if len(p.m.inGroup(p.pid)) != 0 {
 		return -ePERM
 	}
-	p.session, p.pgroup = 0, 0
+	p.session, p.pgroup, p.controlt = 0, 0, false
 	return int64(p.pid)
 }
 

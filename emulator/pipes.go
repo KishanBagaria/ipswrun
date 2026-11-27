@@ -111,7 +111,7 @@ func (f *fd) streams() bool { return f.kind == pipeFD || f.kind == socketFD }
 
 // watchable says whether a kqueue can be told when the descriptor can be read or written: of
 // those, and of an end of a terminal.
-func (f *fd) watchable() bool { return f.streams() || f.kind == ttyFD }
+func (f *fd) watchable() bool { return f.streams() || f.kind == ttyFD && !f.own }
 
 // selecting is a select that waits: the descriptors it asked about, and where to say which are
 // ready.
@@ -467,7 +467,7 @@ func (p *Process) selectPipes(a []uint64, nanoseconds uint64) (int64, bool) {
 		}
 		s.asked[i] = p.read(set, size)
 		for n := range a[0] {
-			if f := p.fds[n]; s.asked[i][n/8]>>(n%8)&1 != 0 && f != nil && (f.streams() || f.isFile() || f.kind == ttyFD) {
+			if f := p.fds[n]; s.asked[i][n/8]>>(n%8)&1 != 0 && f != nil && (f.streams() || f.isFile() || f.kind == ttyFD && !f.own) {
 				found = true
 			}
 		}
@@ -503,7 +503,7 @@ func (p *Process) selected(s *selecting) int64 {
 		out[i] = make([]byte, len(asked))
 		for n := range uint64(len(asked) * 8) {
 			f := p.fds[n]
-			if asked[n/8]>>(n%8)&1 == 0 || f == nil || i == 2 || !(f.streams() && f.pipeReady(i == 1) || f.isFile() || f.kind == ttyFD && f.terminalReady(i == 1)) {
+			if asked[n/8]>>(n%8)&1 == 0 || f == nil || i == 2 || !(f.streams() && f.pipeReady(i == 1) || f.isFile() || f.kind == ttyFD && !f.own && f.terminalReady(i == 1)) {
 				continue
 			}
 			out[i][n/8] |= 1 << (n % 8)
@@ -697,6 +697,8 @@ func (p *Process) polled(n int32, events uint16) (uint16, bool) {
 		return events & (pollReading | pollWriting), true
 	case f.kind == socketFD:
 		return f.sock.polled(events), true
+	case f.kind == ttyFD && f.own: // /dev/tty is nothing poll can ask of, as measured
+		return pollInvalid, true
 	case f.kind == ttyFD:
 		return f.terminalPolled(events), true
 	case f.kind != pipeFD:
