@@ -749,6 +749,10 @@ func sysMacSyscall(p *Process, a []uint64) int64 {
 			return 0
 		}
 		return -eNOENT
+	case "Sandbox 261":
+		return p.sandboxStorageClass(a, true)
+	case "Sandbox 264":
+		return p.sandboxStorageClass(a, false)
 	case "Sandbox 67": // sandbox_get_container_expected: {&expected, &second}
 		p.write(p.u64(a[2]), le64(0))
 		p.write(p.u64(a[2]+8), le64(0))
@@ -1163,7 +1167,7 @@ func (p *Process) regionPath(about *Process, addr, buf, size uint64) int64 {
 // ---- sysctl ----
 
 var sysctlMIBs = map[[2]int32]string{
-	{1, 1}: "kern.ostype", {1, 2}: "kern.osrelease", {1, 4}: "kern.version", {1, 8}: "kern.argmax", {1, 10}: "kern.hostname",
+	{1, 1}: "kern.ostype", {1, 2}: "kern.osrelease", {1, 4}: "kern.version", {1, 8}: "kern.argmax", {1, 10}: "kern.hostname", {1, 11}: "kern.hostid",
 	{1, 65}: "kern.osversion", {1, 21}: "kern.boottime", {1, 59}: "kern.usrstack64", {1, 66}: "kern.safeboot", {1, 24}: "kern.ngroups",
 	{6, 1}: "hw.machine", {6, 2}: "hw.model", {6, 3}: "hw.ncpu", {6, 7}: "hw.pagesize", {6, 24}: "hw.memsize",
 	{6, 25}: "hw.activecpu", {6, 5}: "hw.physmem", {6, 4}: "hw.byteorder",
@@ -1309,6 +1313,8 @@ var sysctlFormats = map[string]struct {
 	"hw.physmem":                       {0x84e00002, "IU"},
 	"hw.targettype":                    {0x81e00003, "A"},
 	"kern.argmax":                      {0x81e00002, "I"},
+	"kern.hostid":                      {0xc1e00002, "I"},
+	"kern.wq_max_threads":              {0xc0e00002, "I"},
 	"kern.bootargs":                    {0x81e00003, "A"},
 	"kern.bootsessionuuid":             {0x80e00003, "A"},
 	"kern.boottime":                    {0x81e00005, "S,timeval"},
@@ -1429,7 +1435,7 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			"hw.cpusubtype": n(cpuSubtypeARM64E), "hw.cpu64bit_capable": n(1), "hw.cachelinesize": n(128), "hw.packages": n(1),
 			"hw.nperflevels": n(1), "hw.perflevel0.logicalcpu": n(1), "hw.perflevel0.physicalcpu": n(1),
 			"hw.perflevel0.logicalcpu_max": n(1), "hw.machine": "arm64", "hw.model": os("model", "Macmini9,1"),
-			"kern.ostype": "Darwin", "kern.bootsessionuuid": bootSession, "kern.hostname": "emu.local", "kern.argmax": n(1 << 20),
+			"kern.ostype": "Darwin", "kern.bootsessionuuid": bootSession, "kern.hostname": "emu.local", "kern.argmax": n(1 << 20), "kern.hostid": n(0), "kern.wq_max_threads": n(512),
 			"kern.usrstack64": n(stackTop), "kern.safeboot": n(0), "kern.ngroups": n(16),
 			"kern.secure_kernel": n(0), "kern.bootargs": "", "kern.osvariant_status": n(osVariantMac), "kern.willshutdown": n(0),
 			"kern.hv_vmm_present": n(0), "sysctl.proc_translated": n(0), "kern.osrelease": os("release", "22.1.0"),

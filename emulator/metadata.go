@@ -82,7 +82,9 @@ func (p *Process) changeable(path string, follow bool) (target, hostFile, int64)
 // From the kernel's source and not measured: a user is refused of a file that is not its own.
 // Nothing here acts on a flag, so those the kernel acts on stop the run: a file that may not be
 // changed or only added to, one that is compressed, tracked or in a vault, and any of the
-// system's set by root.
+// system's set by root but the one dirhelper sets on the folders it makes, that a file may not
+// be unlinked: root sets it and still removes the file, as measured in a virtual machine (macOS
+// 27.2, with SIP off there; with it on, whether root still may was not measured).
 func (p *Process) chflags(id hostFile, flags uint32, a []uint64) int64 {
 	const user, acted = 0xffff, 0x2 | 0x4 | 0x20 | 0x40 | 0x80 // UF_SETTABLE; UF_IMMUTABLE, UF_APPEND, UF_COMPRESSED, UF_TRACKED, UF_DATAVAULT
 	switch {
@@ -90,7 +92,7 @@ func (p *Process) chflags(id hostFile, flags uint32, a []uint64) int64 {
 		return -ePERM
 	case flags&^user != 0 && p.uid != 0:
 		return -ePERM
-	case flags&^user != 0 || flags&acted != 0:
+	case flags&^(user|flagNoUnlink) != 0 || flags&acted != 0:
 		p.unimplemented(fmt.Sprintf("chflags to %#x, flags the kernel acts on", flags), a)
 		return -eNOSYS
 	}

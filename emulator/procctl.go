@@ -262,3 +262,64 @@ func sysIdentitysvc(p *Process, a []uint64) int64 {
 	}
 	return 0
 }
+
+// The mark dirhelper puts on the per-user folders it makes, so that only what the system allows
+// removes them: an attribute that names their class of storage. (It also sets, by fchflags, the
+// flag that they may not be unlinked.)
+const (
+	rootlessAttribute = "com.apple.rootless"
+	flagNoUnlink      = 0x100000 // SF_NOUNLINK
+)
+
+// sandboxStorageClass is the sandbox's calls 261 and 264, {a descriptor, the name of a class of
+// storage}, by which dirhelper marks a folder it has made and then checks the mark. They are the
+// sandbox extension's, in no source, and were measured of root in a virtual machine (macOS 27.2,
+// 26B123, with SIP off there). Both: no class is EINVAL, a descriptor that is not open EBADF.
+// 261 gives the file the attribute com.apple.rootless with the class for its value, whatever the
+// class and whether or not the program has an entitlement, and a user is refused it (EACCES).
+// 264 says whether the file has that class: 0 if so, EINVAL if it has another, and that there is
+// no such attribute (ENOATTR) if it has none. With SIP on, as it is here, who may set a class
+// was not measured: it is done for a program that has the entitlement for the class, as
+// dirhelper has for "folders", and stops for another, as does a user's check.
+func (p *Process) sandboxStorageClass(a []uint64, set bool) int64 {
+	const eNOATTR = 93
+	args := p.read(a[2], 16)
+	fd, class := le.Uint64(args), le.Uint64(args[8:])
+	switch {
+	case class == 0:
+		return -eINVAL
+	case p.fds[fd] == nil:
+		return -eBADF
+	case p.uid != 0 && set:
+		return -eACCES
+	}
+	name := p.cstr(class)
+	if p.uid != 0 || set && !strings.Contains(p.entitlements, "com.apple.rootless.storage."+name) {
+		p.unimplemented("a class of storage ("+name+") set by a program with no entitlement for it, or checked by a user", a)
+		return -eNOSYS
+	}
+	_, id, errno := p.changeableFD(fd)
+	if errno != 0 {
+		p.unimplemented("the class of storage of a file that is not under the home or a mount", a)
+		return -eNOSYS
+	}
+	if set {
+		p.m.mark(id, name)
+		return 0
+	}
+	switch has, ok := p.m.xattrs[id][rootlessAttribute]; {
+	case !ok:
+		return -eNOATTR
+	case string(has) != name:
+		return -eINVAL
+	}
+	return 0
+}
+
+// mark gives a host file the attribute of a class of storage.
+func (m *Machine) mark(id hostFile, class string) {
+	if m.xattrs[id] == nil {
+		m.xattrs[id] = map[string][]byte{}
+	}
+	m.xattrs[id][rootlessAttribute] = []byte(class)
+}

@@ -235,7 +235,8 @@ func (mt *mounted) openRecord(path string) error {
 // on macOS 27.2.1 and on 27.2 in a virtual machine, where they were made in the first second of
 // the first start, and are root's and wheel's): the folder itself, named as Libc names it from
 // the user's number and identifier, which for root is the same on every Mac, and in it what is
-// kept for the user, its caches, its temporary files and one more. A release's template has
+// kept for the user, its caches, its temporary files and one more, each marked as dirhelper marks
+// a folder it makes (see sandboxStorageClass). A release's template has
 // /private/var/folders empty, as a Mac's is before it has first started.
 var rootFolders = []struct {
 	rel  string
@@ -266,5 +267,10 @@ func (m *Machine) boot(mt *mounted) {
 			stopf("the data volume: making %s: %v", pathpkg.Join(mt.guest, f.rel), err)
 		}
 		m.inherit(mt, f.rel, &Inode{Mode: f.mode})
+		var st syscall.Stat_t
+		if statInRoot(mt.root, f.rel, false, &st) == nil { // marked as dirhelper marks what it makes
+			m.mark(hostFileOf(&st), "folders")
+			m.flags[hostFileOf(&st)] |= flagNoUnlink
+		}
 	}
 }
