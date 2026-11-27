@@ -59,7 +59,10 @@ type socket struct {
 	// accepted.
 	// rights are the descriptors that came with what waits to be received, each where the
 	// message it came with starts (see messages.go).
-	rights    []*rights
+	rights []*rights
+	// datagram, of a datagram socket, is what it has that a stream socket has not (see
+	// datagrams.go).
+	datagram  *datagrams
 	lone      bool
 	name      []byte
 	bound     bool // the name is its own, and not that of the one that accepted it
@@ -95,9 +98,10 @@ type eventFilter struct {
 }
 
 const (
-	domainSystem  = 32 // PF_SYSTEM
-	socketRaw     = 3
-	protocolEvent = 1 // SYSPROTO_EVENT
+	domainSystem   = 32 // PF_SYSTEM
+	socketRaw      = 3
+	socketDatagram = 2 // SOCK_DGRAM
+	protocolEvent  = 1 // SYSPROTO_EVENT
 
 	ePROTOTYPE      = 41
 	ePROTONOSUPPORT = 43
@@ -124,7 +128,9 @@ func sysSocket(p *Process, a []uint64) int64 {
 	domain, kind, protocol := a[0], a[1], a[2]
 	switch {
 	case domain == domainLocal && kind == socketStream && protocol == 0:
-		return p.localSocket()
+		return p.localSocket(false)
+	case domain == domainLocal && kind == socketDatagram && protocol == 0:
+		return p.localSocket(true)
 	case domain != domainSystem:
 		return -eACCES
 	case kind == socketStream && protocol == protocolEvent:
@@ -184,11 +190,14 @@ func sysSocketpair(p *Process, a []uint64) int64 {
 	switch {
 	case a[0] == domainInternet:
 		return -eOPNOTSUPP
-	case a[0] != domainLocal || a[1] != socketStream || a[2] != 0:
-		p.unimplemented("socketpair of anything but stream sockets of the local domain", a)
+	case a[0] != domainLocal || a[1] != socketStream && a[1] != socketDatagram || a[2] != 0:
+		p.unimplemented("socketpair of anything but stream or datagram sockets of the local domain", a)
 		return -eNOSYS
 	case p.allocFD(p.allocFD(0)+1) >= p.fdLimit():
 		return -eMFILE
+	}
+	if a[1] == socketDatagram {
+		return p.datagramPair(a[3])
 	}
 	p.m.pipes++
 	pair := &socketPair{id: p.m.pipes}
@@ -213,6 +222,9 @@ func (p *Process) socketClosed(f *fd) {
 		return // a duplicate is still open, or another process's
 	}
 	s := f.sock
+	if s.datagram != nil {
+		p.datagramClosed(s)
+	}
 	s.data = nil
 	for _, r := range s.rights { // what was sent to it and never received is nobody's now
 		for _, file := range r.files {
@@ -240,6 +252,9 @@ func (p *Process) socketReceive(f *fd, into []stretch, flags uint64) int64 {
 
 // socketReceiveInto is socketReceive for an operation made already, which a recvmsg's is.
 func (p *Process) socketReceiveInto(f *fd, op *pipeOp) int64 {
+	if f.sock.datagram != nil {
+		return p.datagramReceive(f, op)
+	}
 	flags := op.flags
 	waits := f.flags&flagNonblock == 0 && flags&messageDontWait == 0
 	switch {
@@ -285,6 +300,9 @@ func (p *Process) receiveOp(op *pipeOp, waits bool) int64 {
 
 func (p *Process) tryReceive(op *pipeOp) (int64, bool) {
 	s := op.f.sock
+	if s.datagram != nil {
+		return p.tryDatagram(op)
+	}
 	// What was sent with descriptors beside it starts a message of its own, as measured: a
 	// receive takes nothing from before it together with it, and the descriptors come with the
 	// first of its bytes. What was sent alone after it is part of it.
@@ -352,6 +370,16 @@ func (p *Process) socketSend(f *fd, data []byte, flags uint64, written bool) int
 // sendOp is socketSend for an operation that may have descriptors to go with the bytes (sendmsg).
 func (p *Process) sendOp(op *pipeOp, written bool) int64 {
 	f, flags := op.f, op.flags
+	if f.sock.datagram != nil {
+		if op.files != nil {
+			for _, file := range op.files {
+				p.dropFD(file)
+			}
+			p.unimplemented("descriptors sent over a datagram socket", nil)
+			return -eNOSYS
+		}
+		return p.datagramSend(f, op.data, flags, 0, 0)
+	}
 	fail := func(errno int64) int64 {
 		for _, file := range op.files {
 			p.dropFD(file)
@@ -430,6 +458,11 @@ func (p *Process) trySend(op *pipeOp) (int64, bool) {
 // ready says whether a socket can be received from, or sent to, without waiting, as select has
 // it: also when it never will be again, which a receive or a send says at once.
 func (s *socket) ready(sending bool) bool {
+	if d := s.datagram; d != nil {
+		// It can always be sent on, as measured, and received from when a message waits, or
+		// (from the source) when it has something gone wrong to say.
+		return sending || len(d.messages) > 0 || d.reset
+	}
 	if s.lone {
 		// One that listens can be read when someone has connected and waits to be accepted,
 		// as measured; one connected to nobody can be neither read nor written, by the
@@ -448,6 +481,12 @@ func (s *socket) ready(sending bool) bool {
 // about writing.
 func (s *socket) polled(events uint16) uint16 {
 	var answer uint16
+	if s.datagram != nil {
+		if s.ready(false) {
+			answer |= events & (pollIn | pollRdNorm)
+		}
+		return answer | events&pollWriting
+	}
 	if events&pollReading != 0 && s.ready(false) {
 		if answer |= events & (pollIn | pollRdNorm); s.cantReceive {
 			answer |= pollHangup | events&pollReading
@@ -507,8 +546,14 @@ func sysSendto(p *Process, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
+	if f.sock.datagram != nil {
+		if a[2] > datagramMost { // too long to be sent: what it holds is not read
+			return p.datagramSend(f, make([]byte, datagramMost+1), a[3], a[4], a[5])
+		}
+		return p.datagramSend(f, p.read(a[1], a[2]), a[3], a[4], a[5])
+	}
 	if a[4] != 0 {
-		p.unimplemented("sendto with an address", a)
+		p.unimplemented("sendto with an address, on a stream socket", a)
 		return -eNOSYS
 	}
 	return p.socketSend(f, p.read(a[1], a[2]), a[3], false)
@@ -520,8 +565,11 @@ func sysRecvfrom(p *Process, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
+	if f.sock.datagram != nil {
+		return p.socketReceiveInto(f, &pipeOp{f: f, into: []stretch{{a[1], a[2]}}, flags: a[3], address: a[4], length: a[5]})
+	}
 	if a[4] != 0 {
-		p.unimplemented("recvfrom asking whom it is from", a)
+		p.unimplemented("recvfrom asking whom it is from, on a stream socket", a)
 		return -eNOSYS
 	}
 	return p.socketReceive(f, []stretch{{a[1], a[2]}}, a[3])
@@ -540,6 +588,9 @@ func sysShutdown(p *Process, a []uint64) int64 {
 	switch {
 	case s.events != nil:
 		p.unimplemented("shutdown of the kernel's event socket, which was not measured", a)
+		return -eNOSYS
+	case s.datagram != nil:
+		p.unimplemented("shutdown of a datagram socket", a)
 		return -eNOSYS
 	case s.lone && a[1] <= 2: // connected to nobody: from the source (soshutdown), not measured
 		return -eNOTCONN
@@ -587,6 +638,15 @@ func sysGetsockopt(p *Process, a []uint64) int64 {
 		value = f.sock.events.room
 	case f.sock.events != nil:
 		p.unimplemented("getsockopt of the kernel's event socket other than its type and what it holds", a)
+		return -eNOSYS
+	case f.sock.datagram != nil && a[2] == optionType:
+		value = socketDatagram
+	case f.sock.datagram != nil && a[2] == optionSendSize:
+		value = datagramMost
+	case f.sock.datagram != nil && a[2] == optionReceiveSize:
+		value = datagramRoom
+	case f.sock.datagram != nil:
+		p.unimplemented("getsockopt of a datagram socket other than its kind and its sizes", a)
 		return -eNOSYS
 	case a[2] == optionSendSize, a[2] == optionReceiveSize:
 		value = socketSize
@@ -694,6 +754,10 @@ func sysGetpeername(p *Process, a []uint64) int64 {
 	case f.sock.events != nil:
 		p.unimplemented("the name of what the kernel's event socket is connected to, which was not measured", a)
 		return -eNOSYS
+	case f.sock.datagram != nil && f.sock.datagram.to == nil:
+		return -eNOTCONN
+	case f.sock.datagram != nil:
+		return p.socketName(a, f.sock.datagram.to.name)
 	case f.sock.lone: // connected to nobody, as measured
 		return -eNOTCONN
 	case f.sock.cantSend && f.sock.cantReceive:

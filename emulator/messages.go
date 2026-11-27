@@ -63,8 +63,18 @@ func sysSendmsg(p *Process, a []uint64) int64 {
 	switch {
 	case errno != 0:
 		return errno
+	case f.sock.datagram != nil:
+		if h.beside != 0 {
+			p.unimplemented("something beside the bytes of a message sent over a datagram socket", a)
+			return -eNOSYS
+		}
+		var data []byte
+		for _, part := range p.stretches(h) {
+			data = append(data, p.read(part.addr, part.size)...)
+		}
+		return p.datagramSend(f, data, a[2], h.name, uint64(h.nameSize))
 	case h.name != 0:
-		p.unimplemented("sendmsg to an address", a)
+		p.unimplemented("sendmsg to an address, on a stream socket", a)
 		return -eNOSYS
 	case f.sock.events != nil:
 		return -eOPNOTSUPP
@@ -159,7 +169,7 @@ func (p *Process) received(op *pipeOp) int64 {
 		return op.done
 	}
 	h := p.messageHeader(op.message)
-	marks := uint32(op.flags)
+	marks := uint32(op.flags) | op.marks
 	if h.beside != 0 {
 		fits := min(len(op.beside), int(h.room))
 		if fits > 0 {
@@ -171,7 +181,12 @@ func (p *Process) received(op *pipeOp) int64 {
 		p.write(op.message+40, le32(uint32(fits)))
 	}
 	if h.name != 0 {
-		p.write(op.message+8, le32(0))
+		var from []byte
+		if op.named { // of a datagram: whom it was from, as much as there is room for
+			from = address(op.from) // how long all of it is is said, as measured of recvfrom
+			p.write(h.name, from[:min(len(from), int(h.nameSize))])
+		}
+		p.write(op.message+8, le32(uint32(len(from))))
 	}
 	p.write(op.message+44, le32(marks))
 	return op.done

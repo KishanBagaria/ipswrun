@@ -59,6 +59,10 @@ type pipeOp struct {
 	address, length uint64
 	// Of a message (sendmsg, recvmsg; see messages.go): the descriptors to go with what is
 	// sent; where the receiver's message is described, and what came beside the bytes.
+	// Of a datagram's receive (see datagrams.go): whom it was from, and how it was marked.
+	from       []byte
+	named      bool
+	marks      uint32
 	files      []*fd
 	besideSize int // how much room what is beside the bytes takes in the socket
 	message    uint64
@@ -368,7 +372,9 @@ func sysIoctl(p *Process, a []uint64) int64 {
 	switch uint32(a[1]) {
 	case ioctlAvailable: // of its own end: nothing waits to be read from the end that is written
 		var n uint32
-		if f.kind == socketFD {
+		if f.kind == socketFD && f.sock.datagram != nil { // the messages and whom each is from, as measured
+			n = uint32(f.sock.datagram.bytes)
+		} else if f.kind == socketFD {
 			n = uint32(len(f.sock.data))
 		} else if !f.writing() {
 			n = uint32(len(f.pipe.data))
@@ -572,6 +578,10 @@ func (f *fd) filtered(filter int16, asked kevent) (data int64, ended bool, least
 		least = max(asked.data, 1)
 	}
 	switch {
+	case f.kind == socketFD && f.sock.datagram != nil && filter == filterRead: // the messages that wait and whom each is from, by the source
+		return int64(f.sock.datagram.bytes), false, least, true
+	case f.kind == socketFD && f.sock.datagram != nil:
+		return datagramMost, false, 1, true
 	case f.kind == socketFD && f.sock.lone && filter == filterRead: // of one that listens: how many wait to be accepted
 		return int64(len(f.sock.pending)), false, 1, true
 	case f.kind == socketFD && f.sock.lone: // nothing can be sent to nobody

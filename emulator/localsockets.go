@@ -30,13 +30,16 @@ const (
 
 // localSocket is socket(AF_UNIX, SOCK_STREAM, 0): a socket connected to nobody. It has for its
 // other end one that is nobody's until it is connected.
-func (p *Process) localSocket() int64 {
+func (p *Process) localSocket(datagram bool) int64 {
 	if p.full() {
 		return -eMFILE
 	}
 	p.m.pipes++
 	pair := &socketPair{id: p.m.pipes}
-	one, nobody := &socket{pair: pair, lone: true}, &socket{pair: pair, second: true}
+	one, nobody := &socket{pair: pair, lone: !datagram}, &socket{pair: pair, second: true}
+	if datagram {
+		one.datagram = &datagrams{}
+	}
 	one.peer, nobody.peer = nobody, one
 	const readWrite = 2 // O_RDWR
 	return int64(p.newFD(&fd{kind: socketFD, sock: one, flags: readWrite, refs: 1}))
@@ -79,7 +82,7 @@ func sysBind(p *Process, a []uint64) int64 {
 		return errno
 	}
 	s := f.sock
-	if s.events != nil || !s.lone && s.name == nil {
+	if s.events != nil || !s.lone && s.datagram == nil && s.name == nil {
 		p.unimplemented("bind of a socket that is one of a pair, or the kernel's for events", a)
 		return -eNOSYS
 	}
@@ -134,6 +137,8 @@ func sysListen(p *Process, a []uint64) int64 {
 	}
 	s := f.sock
 	switch {
+	case s.datagram != nil: // nobody connects to one of these to be accepted, as measured
+		return -eOPNOTSUPP
 	case s.events != nil || !s.lone:
 		p.unimplemented("listen on a socket that is connected, or the kernel's for events", a)
 		return -eNOSYS
@@ -164,6 +169,22 @@ func sysConnect(p *Process, a []uint64) int64 {
 		p.unimplemented("connect of the kernel's event socket", a)
 		return -eNOSYS
 	}
+	if s.datagram != nil {
+		// One connected already is connected to nobody before the address is judged, by the
+		// source, but for an address that cannot be read at all.
+		switch {
+		case a[2] > mostOfAddress:
+			return -eNAMETOOLONG
+		case a[1] == 0:
+			return -eINVAL
+		}
+		s.disconnect()
+		path, _, errno := p.localPath(a[1], a[2], false)
+		if errno != 0 {
+			return errno
+		}
+		return p.datagramConnect(s, path)
+	}
 	path, _, errno := p.localPath(a[1], a[2], false) // the address is looked at first, by the source
 	switch {
 	case errno != 0:
@@ -193,6 +214,10 @@ func sysConnect(p *Process, a []uint64) int64 {
 	switch {
 	case to == nil:
 		return -eNOTSOCK
+	case to.datagram != nil && to.datagram.closed: // nobody has it, which is said first, by the source
+		return -eCONNREFUSED
+	case to.datagram != nil: // a socket of another kind, as measured
+		return -ePROTOTYPE
 	case !to.listening, len(to.pending) >= to.backlog: // as many wait as may, as measured
 		return -eCONNREFUSED
 	}
@@ -219,6 +244,8 @@ func sysAccept(p *Process, a []uint64) int64 {
 	}
 	switch {
 	case f.sock.events != nil: // the kernel's own takes nobody, by the source
+		return -eOPNOTSUPP
+	case f.sock.datagram != nil: // nor does a datagram socket, as measured
 		return -eOPNOTSUPP
 	case !f.sock.listening:
 		return -eINVAL

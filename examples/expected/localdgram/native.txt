@@ -1,0 +1,18 @@
+a pair: 0; its kind 2, room to send 2048, to receive 4096
+three sent, of 5, of none and of 3: 5 0 3; something to read 1
+received with room for all: 5 "first"; then 0; then 3 "end"; something to read 0
+one of 8 received with room for 3: 3 "abc", marked 0x10; the next: 4 "next"
+with one of 6 waiting, said to be there to read: 0, 22
+looked at: 6 "peeked"; and received: 6
+with nothing there and not waiting: -1 (Resource temporarily unavailable); it can be written 1
+a message of 2048: 2048; it can then be written 1; of 2049: -1 (Message too long); received 2048
+how many it holds: of 400 bytes 9 (No buffer space available), of 1000 bytes 4 (No buffer space available), of 2048 bytes 1 (No buffer space available)
+the other closed: received -1 (Connection reset by peer); sent -1 (Destination address required); something to read 0
+two made: 1 1; sent on with nobody named: -1 (Destination address required); bound to a path: 0; the file a socket 1; listened on: -1 (Operation not supported on socket)
+sent to the path: 5; to a path that is not there: -1 (No such file or directory)
+received: 5 "hello", from an address of 16 bytes (it says 16), family 1
+from one with a name: 5, an address of 106 bytes (it says 106), its path 1; answered to that address: 4; received 4 "back"
+from it again with room for 16 bytes of address: 5, said to be 106, the 17th byte written 0; with nowhere to say how long: 5, anything written 0; accepted from: -1 (Operation not supported on socket)
+connected to the path: 0; sent: 4; sent to an address all the same: -1 (Socket is already connected); connected to a path that is not there: -1 (No such file or directory)
+a stream socket connected to it: -1 (Protocol wrong type for socket); the one bound closed: sent to by the one connected -1 (Destination address required), by another to its path -1 (Connection refused)
+tidied: 0 0
