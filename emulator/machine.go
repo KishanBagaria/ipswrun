@@ -42,27 +42,28 @@ type Machine struct {
 	// (see kernelprofiles.go), or why they could not be.
 	profiles         []string
 	profilesErr      error
-	fifos            map[hostFile]bool        // the named pipes guests have made under the home and mounts (see sysMkfifo)
-	sockets          map[hostFile]*socket     // the sockets guests have bound to names there (see sysBind)
-	fifoPipes        map[hostFile]*pipe       // the named pipes that are open, by the file that names each (see fifos.go)
-	sessionTerminals map[uint32]*terminal     // the terminal each session has for its own, by the session's number
-	terminals        []*terminal              // the terminals there have been, by the number in each one's name (see terminals.go)
-	owners           map[hostFile]Owner       // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
-	said             map[hostFile]uint16      // the permissions the data volume's template has for a file, where the host's file has others (see data.go)
-	flags            map[hostFile]uint32      // the flags a file carries beside its mode, where it has any (see chflags)
-	acls             map[hostFile]*acl        // the access control lists of the files that have one (see acls.go)
-	resolver         uint32                   // the process that made itself the one the kernel asks who a user or a group is (identitysvc), if one has
-	caches           [2]uint32                // how many users and how many groups' members the kernel is to keep answers for: 500 and 250 at first, as a Mac's kernel says
-	polls            []carried                // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
-	pipes            uint64                   // how many pipes were ever made: the next one's number
-	host, clocks     *port                    // the host's port and its clock's, while any process has a right to them (see kernelports.go)
-	seen             map[fileID]string        // where each file a guest has looked at is, by its number (see saw)
-	ranges           map[hostFile][]rangeLock // the locks open files hold on parts of files (see rangelocks.go)
-	uniques          uint64                   // how many processes were given a number of their own, after launchd's
-	versions         uint32                   // how many versions were given, after launchd's (see lineage)
-	launchdUUID      *[16]byte                // the UUID of the release's launchd, once a process has asked for it
-	started          uint32                   // how many processes were ever made: a pid is not given twice, whatever has ended since
-	ioRoot           *ioEntry                 // the root of the I/O Registry, once a process has asked for it (see registry.go)
+	fifos            map[hostFile]bool          // the named pipes guests have made under the home and mounts (see sysMkfifo)
+	sockets          map[hostFile]*socket       // the sockets guests have bound to names there (see sysBind)
+	fifoPipes        map[hostFile]*pipe         // the named pipes that are open, by the file that names each (see fifos.go)
+	semaphores       map[string]*namedSemaphore // the semaphores that have a name (see semaphores.go)
+	sessionTerminals map[uint32]*terminal       // the terminal each session has for its own, by the session's number
+	terminals        []*terminal                // the terminals there have been, by the number in each one's name (see terminals.go)
+	owners           map[hostFile]Owner         // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
+	said             map[hostFile]uint16        // the permissions the data volume's template has for a file, where the host's file has others (see data.go)
+	flags            map[hostFile]uint32        // the flags a file carries beside its mode, where it has any (see chflags)
+	acls             map[hostFile]*acl          // the access control lists of the files that have one (see acls.go)
+	resolver         uint32                     // the process that made itself the one the kernel asks who a user or a group is (identitysvc), if one has
+	caches           [2]uint32                  // how many users and how many groups' members the kernel is to keep answers for: 500 and 250 at first, as a Mac's kernel says
+	polls            []carried                  // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
+	pipes            uint64                     // how many pipes were ever made: the next one's number
+	host, clocks     *port                      // the host's port and its clock's, while any process has a right to them (see kernelports.go)
+	seen             map[fileID]string          // where each file a guest has looked at is, by its number (see saw)
+	ranges           map[hostFile][]rangeLock   // the locks open files hold on parts of files (see rangelocks.go)
+	uniques          uint64                     // how many processes were given a number of their own, after launchd's
+	versions         uint32                     // how many versions were given, after launchd's (see lineage)
+	launchdUUID      *[16]byte                  // the UUID of the release's launchd, once a process has asked for it
+	started          uint32                     // how many processes were ever made: a pid is not given twice, whatever has ended since
+	ioRoot           *ioEntry                   // the root of the I/O Registry, once a process has asked for it (see registry.go)
 	clock            *clock
 	deadline         time.Time // of the run, as every time here by the machine's clock
 	settling         time.Time // once the main guest has exited: when the daemons are no longer waited for

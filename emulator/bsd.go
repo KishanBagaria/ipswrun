@@ -44,6 +44,7 @@ func init() {
 		"ioctl": {3, sysIoctl}, "pipe": {0, sysPipe}, "poll": {3, sysPoll}, "fsctl": {4, constant(-eNOTSUP)}, "statfs64": {2, sysStatfs64}, "fstatfs64": {2, sysFstatfs64},
 		"getattrlist": {5, sysGetattrlist}, "getattrlistat": {6, sysGetattrlistat}, "fgetattrlist": {5, sysFgetattrlist},
 		"getattrlistbulk": {5, sysGetattrlistbulk}, "fsgetpath": {4, sysFsgetpath}, "shm_open": {3, sysShmOpen}, "shm_unlink": {1, sysShmUnlink},
+		"sem_open": {4, sysSemOpen}, "sem_close": {1, sysSemClose}, "sem_unlink": {1, sysSemUnlink}, "sem_wait": {1, sysSemWait}, "sem_trywait": {1, sysSemTrywait}, "sem_post": {1, sysSemPost},
 		"getfsstat64": {3, sysGetfsstat64}, "pathconf": {2, sysPathconf}, "fpathconf": {2, sysPathconf}, "getdirentries64": {4, sysGetdirentries64},
 		// memory
 		"mmap": {6, sysMmap}, "munmap": {2, sysMunmap}, "mprotect": {3, sysMprotect}, "madvise": {3, constant(0)},
@@ -166,8 +167,18 @@ func sysMmap(p *Process, a []uint64) int64 {
 	if f.kind == dirFD {
 		return -eACCES
 	}
+	if f.kind == semFD || f.kind == dataFD && f.shared != nil && flags&mapShared == 0 { // a semaphore, and shared memory mapped for oneself: as measured
+		return -eINVAL
+	}
 	if f.shared != nil && flags&mapShared != 0 {
-		return p.mapShared(f.shared, addr, length, off, fixed, deny)
+		if f.kind == dataFD && f.flags&3 == 0 && deny&2 == 0 { // opened to read only and mapped to write: as measured
+			return -ePERM
+		}
+		r := p.mapShared(f.shared, addr, length, off, fixed, deny)
+		if r > 0 && f.kind == dataFD && f.flags&3 == 0 {
+			p.findRegion(uint64(r)).readOnly = true
+		}
+		return r
 	}
 	name := "?"
 	if f.path != "" {
@@ -196,7 +207,11 @@ func sysMprotect(p *Process, a []uint64) int64 {
 	if addr%pageSize != 0 {
 		return -eINVAL
 	}
-	if !p.protect(addr, addr+align(a[1], pageSize), uint32(a[2]&protAll)) {
+	end := addr + align(a[1], pageSize)
+	if a[2]&2 != 0 && slices.ContainsFunc(p.overlaps(addr, end), func(r *region) bool { return r.readOnly }) {
+		return -eACCES // shared memory that was opened to read only is not made writable, as measured
+	}
+	if !p.protect(addr, end, uint32(a[2]&protAll)) {
 		return -eNOMEM
 	}
 	return 0

@@ -141,6 +141,7 @@ const (
 
 // region is a reserved range of guest address space; its pages reach Unicorn on first touch.
 type region struct {
+	readOnly   bool // it may never be written: shared memory with a name that was opened to read only
 	start, end uint64
 	kind       regionKind
 	data       []byte

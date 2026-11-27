@@ -446,7 +446,7 @@ func (p *Process) interrupt4(t *thread, sig uint64) bool {
 			again = false
 		}
 	case waitChild, waitLock, waitResolver, waitRange: // a lock on part of a file as measured (EINTR); // the last from the source (the worker sleeps so that a signal ends it), not measured
-	case waitSelect, waitKevent, waitSleep:
+	case waitSelect, waitKevent, waitSleep, waitNamed:
 		again = false
 	case waitSemaphore:
 		if !t.sleeping { // a semaphore of Mach's, which is not a call a signal's handler is run from here

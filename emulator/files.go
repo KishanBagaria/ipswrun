@@ -57,6 +57,7 @@ const (
 	pipeFD                 // one end of a pipe (see pipes.go)
 	socketFD               // one of a pair of connected sockets (see sockets.go)
 	ttyFD                  // an end of a terminal (see terminals.go)
+	semFD                  // a semaphore that has a name (see semaphores.go)
 )
 
 type fd struct {
@@ -77,15 +78,16 @@ type fd struct {
 	sock      *socket // of a socket: the socket, with the same flags
 	flags     uint32
 	noSigpipe bool
-	kq        *userKqueue  // of a kqueue: what it watches (see kqueue.go)
-	necp      *necpSession // of a session with the kernel's network policy (see necp.go)
-	state     *status      // of what is no pipe and no socket: what fcntl reads and sets of it (see fileflags.go)
-	refs      int          // the descriptors it is, in every process: a duplicate and a child's are the same end
-	both      bool         // of a named pipe's: it was opened to read and to write
-	own       bool         // of a terminal's: it was opened as /dev/tty, the session's own
-	dead      bool         // of a terminal's: the terminal was taken from it when its session's leader ended
-	tty       *terminal    // of an end of a terminal: which, and
-	first     bool         // that it is the first end, the one that is typed at
+	kq        *userKqueue     // of a kqueue: what it watches (see kqueue.go)
+	necp      *necpSession    // of a session with the kernel's network policy (see necp.go)
+	state     *status         // of what is no pipe and no socket: what fcntl reads and sets of it (see fileflags.go)
+	refs      int             // the descriptors it is, in every process: a duplicate and a child's are the same end
+	both      bool            // of a named pipe's: it was opened to read and to write
+	sem       *namedSemaphore // of a semaphore's: which
+	own       bool            // of a terminal's: it was opened as /dev/tty, the session's own
+	dead      bool            // of a terminal's: the terminal was taken from it when its session's leader ended
+	tty       *terminal       // of an end of a terminal: which, and
+	first     bool            // that it is the first end, the one that is typed at
 }
 
 func (f *fd) size() int64 {
@@ -619,10 +621,24 @@ func sysFstat64Extended(p *Process, a []uint64) int64 {
 	})
 }
 
-func sysFstat64(p *Process, a []uint64) int64 {
+func sysFstat64(p *Process, a []uint64) (r int64) {
 	f := p.fds[a[0]]
 	if f == nil {
 		return -eBADF
+	}
+	if f.kind == semFD { // as measured
+		return -eBADF
+	}
+	if s := f.shared; f.kind == dataFD && s != nil {
+		// Shared memory with a name: its mode with no kind of file, whose it is and its size,
+		// and nothing else, as measured.
+		b := make([]byte, 144)
+		le.PutUint16(b[4:], s.mode)
+		le.PutUint32(b[16:], s.uid)
+		le.PutUint32(b[20:], s.gid)
+		le.PutUint64(b[96:], uint64(len(s.data)))
+		p.write(a[1], b)
+		return 0
 	}
 	if f.necp != nil {
 		return p.sessionOnly(a)
@@ -955,6 +971,9 @@ func sysRead(p *Process, a []uint64) int64 {
 	if f.necp != nil {
 		return p.sessionOnly(a)
 	}
+	if f.kind == dataFD && f.shared != nil || f.kind == semFD { // shared memory is mapped, not read or written, as measured; a semaphore likewise
+		return -eNXIO
+	}
 	var data []byte
 	switch {
 	case f.kind == pipeFD:
@@ -988,7 +1007,7 @@ func sysPread(p *Process, a []uint64) int64 {
 	if f == nil {
 		return -eBADF
 	}
-	if f.kind == stdioFD || f.streams() {
+	if f.kind == stdioFD || f.streams() || f.kind == dataFD && f.shared != nil {
 		return -eSPIPE
 	}
 	data, errno := p.pread(f, a[3], a[2])
@@ -1010,6 +1029,12 @@ func sysWrite(p *Process, a []uint64) int64 {
 	}
 	if f.necp != nil {
 		return p.sessionOnly(a)
+	}
+	if f.kind == dataFD && f.shared != nil {
+		return -eNXIO
+	}
+	if f.kind == semFD { // as measured
+		return -eBADF
 	}
 	if f.kind == pipeFD {
 		return p.pipeWrite(f, p.read(a[1], a[2]))
@@ -1129,7 +1154,7 @@ func sysWritev(p *Process, a []uint64) int64 {
 
 func sysPwrite(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
-	if f != nil && f.streams() {
+	if f != nil && (f.streams() || f.kind == dataFD && f.shared != nil) {
 		return -eSPIPE
 	}
 	if f == nil || f.kind != hostFD {
@@ -1154,6 +1179,9 @@ func sysLseek(p *Process, a []uint64) int64 {
 		return p.sessionOnly(a)
 	}
 	off := int64(a[1])
+	if f.kind == dataFD && f.shared != nil || f.kind == semFD { // as measured
+		return -eSPIPE
+	}
 	switch f.kind {
 	case hostFD:
 		pos, err := syscall.Seek(f.host, off, hostWhence(int(int32(a[2]))))
@@ -1177,6 +1205,9 @@ func sysLseek(p *Process, a []uint64) int64 {
 
 func sysFtruncate(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
+	if f != nil && f.kind == semFD { // as measured
+		return -eINVAL
+	}
 	if f != nil && f.shared != nil {
 		return f.shared.resize(a[1])
 	}

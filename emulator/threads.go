@@ -43,6 +43,7 @@ const (
 	waitKevent
 	waitResolver
 	waitRange
+	waitNamed // for a semaphore that has a name (see semaphores.go)
 )
 
 var waitNames = [...]string{"nothing", "a lock word", "a mutex", "a condition", "a semaphore", "a deadline", "its turn on a workloop", "a signal", "a read-write lock", "a Mach message", "a file lock", "a pipe", "a descriptor to be ready", "a child to end", "a process it is starting", "an event of a kqueue", "the kernel to ask who a user is", "a lock on part of a file"}

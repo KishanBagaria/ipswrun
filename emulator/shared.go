@@ -21,6 +21,11 @@ const (
 type sharedMemory struct {
 	data []byte // a whole number of pages
 	refs int
+	// Of one with a name: what it was made with and whose it is, and that it has been given
+	// its size, which is done once, be it none.
+	mode     uint16
+	uid, gid uint32
+	sized    bool
 }
 
 // newShared is shared memory of a size, zeroed, that nothing refers to yet. With no size it is
@@ -38,11 +43,15 @@ func (m *Machine) newShared(size uint64) *sharedMemory {
 func (s *sharedMemory) resize(size uint64) int64 {
 	size = align(size, pageSize)
 	switch {
-	case size == uint64(len(s.data)):
-		return 0
-	case s.data != nil || size == 0 || size > 1<<30:
+	case s.sized: // once only, even to the size it has or from none: as measured
 		return -eINVAL
+	case size == 0:
+		s.sized = true
+		return 0
+	case size > 1<<30:
+		stopf("shared memory of more than a gigabyte (%d bytes): the host is not asked for that much", size)
 	}
+	s.sized = true
 	data, err := syscall.Mmap(-1, 0, int(size), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_ANON|syscall.MAP_PRIVATE)
 	if err != nil {
 		return -eNOMEM
@@ -115,30 +124,64 @@ func sysShmOpen(p *Process, a []uint64) int64 {
 	name := p.cstr(a[0])
 	s := p.m.named[name]
 	p.note("  shm_open %s", name)
+	const truncate = 0x400 // O_TRUNC
 	switch {
+	case len(name) > shmNameMost: // 31 bytes at most: measured of 31, 32 and 40
+		return -eNAMETOOLONG
+	case name == "" || a[1]&3 == 3: // as measured
+		return -eINVAL
 	case p.full():
 		return -eMFILE
 	case s == nil && a[1]&oCreate == 0:
 		return -eNOENT
 	case s == nil:
 		s = p.m.newShared(0).retain()
+		s.mode, s.uid, s.gid = uint16(a[2]&0o7777), p.uid, p.gid
 		p.m.named[name] = s
+	case a[1]&truncate != 0 && s.sized: // as measured
+		return -eINVAL
+	case a[1]&truncate != 0:
+		p.unimplemented("shm_open with O_TRUNC of memory that has no size yet", a)
+		return -eNOSYS
+	case !p.allowed(s.mode, s.uid, s.gid, a[1]&3 != 0): // by its mode, as a file's: measured of its owner
+		return -eACCES
 	case a[1]&oCreate != 0 && a[1]&oExcl != 0:
 		return -eEXIST
 	}
-	return int64(p.newFD(&fd{kind: dataFD, shared: s.retain(), flags: uint32(a[1] & 3)})) // what it may do, for fcntl
+	n := p.newFD(&fd{kind: dataFD, shared: s.retain(), flags: uint32(a[1] & 3)}) // what it may do, for fcntl
+	p.cloexec[n] = true                                                          // as measured
+	return int64(n)
 }
 
 // sysShmUnlink takes the name away. Whoever has the memory open or mapped keeps it.
 func sysShmUnlink(p *Process, a []uint64) int64 {
 	name := p.cstr(a[0])
 	s := p.m.named[name]
-	if s == nil {
+	switch {
+	case name == "" || len(name) > shmNameMost: // as measured
+		return -eINVAL
+	case s == nil:
 		return -eNOENT
 	}
 	delete(p.m.named, name)
 	s.release()
 	return 0
+}
+
+// allowed says whether p may read, or read and write, what has a mode and an owner, as a file's
+// mode says: by the owner's bits for its owner, the group's for one of its group, the others'
+// for anyone else, and all to root. Measured of the owner; the rest is the source's.
+func (p *Process) allowed(mode uint16, uid, gid uint32, write bool) bool {
+	bits := mode & 7
+	switch {
+	case p.uid == 0:
+		return true
+	case p.uid == uid:
+		bits = mode >> 6 & 7
+	case p.gid == gid:
+		bits = mode >> 3 & 7
+	}
+	return bits&4 != 0 && (!write || bits&2 != 0)
 }
 
 // mapShared is mmap of shared memory, shared: the mapping is the memory itself, denied deny.
