@@ -683,12 +683,18 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 			if flags&0x100 != 0 && !missing && st.Mode&syscall.S_IFMT == syscall.S_IFLNK {
 				return -eLOOP // told not to follow, and it is a link
 			}
-			if len(p.m.fifos) != 0 && !missing {
+			if len(p.m.fifos)+len(p.m.sockets) != 0 && !missing {
 				is := st // what is opened: the file a link leads to, if there is one
 				if st.Mode&syscall.S_IFMT != syscall.S_IFLNK || statInRoot(t.root, t.rel, true, &is) == nil {
 					if p.m.fifos[hostFileOf(&is)] {
 						p.unimplemented("open of a named pipe", []uint64{flags, mode})
 						return -eNOSYS
+					}
+					if p.m.sockets[hostFileOf(&is)] != nil { // a socket's name is connected to, not opened, as measured
+						if flags&0xA00 == 0xA00 { // to be made, and only if it is not there
+							return -eEXIST
+						}
+						return -eOPNOTSUPP
 					}
 				}
 			}
@@ -1532,6 +1538,9 @@ func sysGetdirentries64(p *Process, a []uint64) int64 {
 						kind = byte(st.Mode >> 12) // DT_* are the file type bits of a mode
 						if p.m.fifos[hostFileOf(&st)] {
 							kind = syscall.DT_FIFO
+						}
+						if p.m.sockets[hostFileOf(&st)] != nil {
+							kind = syscall.DT_SOCK
 						}
 					}
 				case t.kind == cacheFD || t.kind == dataFD:

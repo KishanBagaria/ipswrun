@@ -46,6 +46,9 @@ func (p *Process) describe(kind fdKind, path string, size int64, inode *Inode, h
 		if p.m.fifos[id] { // a named pipe, which the host keeps as a file (see sysMkfifo)
 			info.mode = syscall.S_IFIFO | info.mode&0o7777
 		}
+		if p.m.sockets[id] != nil { // a socket's name, likewise (see sysBind)
+			info.mode = syscall.S_IFSOCK | info.mode&0o7777
+		}
 		if owner, ok := p.m.owners[id]; ok {
 			info.owner = &owner
 		}

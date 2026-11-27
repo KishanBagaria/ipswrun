@@ -741,6 +741,7 @@ func (p *Process) forgetFile(t target) {
 		delete(p.m.xattrs, hostFileOf(&st))
 		delete(p.m.owners, hostFileOf(&st))
 		delete(p.m.fifos, hostFileOf(&st))
+		delete(p.m.sockets, hostFileOf(&st))
 		delete(p.m.said, hostFileOf(&st))
 		delete(p.m.flags, hostFileOf(&st))
 		delete(p.m.acls, hostFileOf(&st))

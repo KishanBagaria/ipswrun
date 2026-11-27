@@ -53,6 +53,16 @@ type socket struct {
 	// least is the room there has to be before part of what is sent is taken and before the
 	// socket is said to be one that can be written (SO_SNDLOWAT), where it was set.
 	least int
+	// Of a socket made by socket() and not as one of a pair (see localsockets.go): that it is
+	// connected to no other yet, the address it was bound to as it was given, and, of one
+	// that listens, for how many and the ends made for those who connected and were not yet
+	// accepted.
+	lone      bool
+	name      []byte
+	bound     bool // the name is its own, and not that of the one that accepted it
+	listening bool
+	backlog   int
+	pending   []*socket
 }
 
 // sendLeast is that room: what was set, or what a socket has at first.
@@ -102,6 +112,8 @@ const (
 func sysSocket(p *Process, a []uint64) int64 {
 	domain, kind, protocol := a[0], a[1], a[2]
 	switch {
+	case domain == domainLocal && kind == socketStream && protocol == 0:
+		return p.localSocket()
 	case domain != domainSystem:
 		return -eACCES
 	case kind == socketStream && protocol == protocolEvent:
@@ -193,6 +205,13 @@ func (p *Process) socketClosed(f *fd) {
 	s.data = nil
 	s.cantSend, s.cantReceive = true, true
 	s.peer.cantSend, s.peer.cantReceive = true, true
+	// Those who connected to one that listened and were never accepted have nobody now.
+	for _, end := range s.pending {
+		end.cantSend, end.cantReceive = true, true
+		end.peer.cantSend, end.peer.cantReceive = true, true
+		p.socketChanged(end)
+	}
+	s.pending, s.listening = nil, false
 	p.socketChanged(s)
 }
 
@@ -201,6 +220,8 @@ func (p *Process) socketClosed(f *fd) {
 func (p *Process) socketReceive(f *fd, into []stretch, flags uint64) int64 {
 	waits := f.flags&flagNonblock == 0 && flags&messageDontWait == 0
 	switch {
+	case f.sock.lone: // connected to nobody, as measured
+		return -eNOTCONN
 	case flags&^(messagePeek|messageWaitAll|messageDontWait) != 0,
 		flags&messageWaitAll != 0 && (flags&messagePeek != 0 || !waits): // the second waits, on a Mac, and for how long was not measured
 		p.unimplemented("a receive from a socket asked for in a way that was not measured", []uint64{flags})
@@ -249,6 +270,8 @@ func (p *Process) socketSend(f *fd, data []byte, flags uint64, written bool) int
 	switch {
 	case f.sock.events != nil: // the kernel takes nothing on its event socket
 		return -eOPNOTSUPP
+	case f.sock.lone: // connected to nobody, as measured
+		return -eNOTCONN
 	case flags&^(messageDontWait|messageNoSignal) != 0:
 		p.unimplemented("a send to a socket asked for in a way that was not measured", []uint64{flags})
 		return -eNOSYS
@@ -301,6 +324,12 @@ func (p *Process) trySend(op *pipeOp) (int64, bool) {
 // ready says whether a socket can be received from, or sent to, without waiting, as select has
 // it: also when it never will be again, which a receive or a send says at once.
 func (s *socket) ready(sending bool) bool {
+	if s.lone {
+		// One that listens can be read when someone has connected and waits to be accepted,
+		// as measured; one connected to nobody can be neither read nor written, by the
+		// kernel's source (soreadable and sowriteable want a connection of a stream socket).
+		return !sending && len(s.pending) > 0
+	}
 	if sending {
 		return s.cantSend || s.space() >= s.sendLeast()
 	}
@@ -406,6 +435,8 @@ func sysShutdown(p *Process, a []uint64) int64 {
 	case s.events != nil:
 		p.unimplemented("shutdown of the kernel's event socket, which was not measured", a)
 		return -eNOSYS
+	case s.lone && a[1] <= 2: // connected to nobody: from the source (soshutdown), not measured
+		return -eNOTCONN
 	case a[1] > 2:
 		return -eINVAL
 	case a[1] == sending && s.cantSend, a[1] != sending && s.cantReceive:
@@ -521,15 +552,17 @@ func sysSetsockopt(p *Process, a []uint64) int64 {
 	return 0
 }
 
-// socketName answers getsockname and getpeername: a socket of a pair has no name, and its
-// address is the 16 bytes that say so.
-func (p *Process) socketName(a []uint64) int64 {
-	if p.u32(a[2]) < 16 {
-		p.unimplemented("the name of a socket, with room for less than it takes", a)
-		return -eNOSYS
+// socketName answers getsockname and getpeername with an address: the one a socket was bound
+// to, as it was given and as long as it was said to be (as measured: 106 bytes of a
+// sockaddr_un given whole), or for one with no name the 16 bytes that say so. As much of it as
+// there is room for is written, and how long the whole of it is, as measured.
+func (p *Process) socketName(a []uint64, name []byte) int64 {
+	if name == nil {
+		name = append([]byte{16, domainLocal}, make([]byte, 14)...)
 	}
-	p.write(a[1], append([]byte{16, domainLocal}, make([]byte, 14)...))
-	p.write(a[2], le32(16))
+	n := min(uint64(p.u32(a[2])), uint64(len(name)))
+	p.write(a[1], name[:n])
+	p.write(a[2], le32(uint32(len(name))))
 	return 0
 }
 
@@ -542,7 +575,7 @@ func sysGetsockname(p *Process, a []uint64) int64 {
 		p.unimplemented("the name of the kernel's event socket, which was not measured", a)
 		return -eNOSYS
 	}
-	return p.socketName(a)
+	return p.socketName(a, f.sock.name)
 }
 
 // sysGetpeername is the other's name, which a socket that can neither send nor receive has
@@ -555,8 +588,10 @@ func sysGetpeername(p *Process, a []uint64) int64 {
 	case f.sock.events != nil:
 		p.unimplemented("the name of what the kernel's event socket is connected to, which was not measured", a)
 		return -eNOSYS
+	case f.sock.lone: // connected to nobody, as measured
+		return -eNOTCONN
 	case f.sock.cantSend && f.sock.cantReceive:
 		return -eINVAL
 	}
-	return p.socketName(a)
+	return p.socketName(a, f.sock.peer.name)
 }

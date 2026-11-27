@@ -31,7 +31,7 @@ func init() {
 		"stat64": {2, sysStat64}, "lstat64": {2, sysLstat64}, "fstatat64": {4, sysFstatat64}, "fstat64": {2, sysFstat64},
 		"open": {3, sysOpen}, "openat": {4, sysOpenat}, "guarded_open_np": {5, sysGuardedOpen}, "open_dprotected_np": {5, sysOpenDprotected}, "guarded_open_dprotected_np": {7, sysGuardedOpenDprotected}, "guarded_close_np": {2, sysGuardedClose},
 		"guarded_write_np": {4, sysGuardedWrite}, "guarded_pwrite_np": {5, sysGuardedPwrite}, "close": {1, sysClose},
-		"read": {3, sysRead}, "pread": {4, sysPread}, "write": {3, sysWrite}, "writev": {3, sysWritev}, "readv": {3, sysReadv}, "socketpair": {4, sysSocketpair}, "sendto": {6, sysSendto}, "recvfrom": {6, sysRecvfrom}, "shutdown": {2, sysShutdown}, "getsockopt": {5, sysGetsockopt}, "setsockopt": {5, sysSetsockopt}, "getsockname": {3, sysGetsockname}, "getpeername": {3, sysGetpeername}, "pwrite": {4, sysPwrite}, "lseek": {3, sysLseek},
+		"read": {3, sysRead}, "pread": {4, sysPread}, "write": {3, sysWrite}, "writev": {3, sysWritev}, "readv": {3, sysReadv}, "socketpair": {4, sysSocketpair}, "sendto": {6, sysSendto}, "recvfrom": {6, sysRecvfrom}, "shutdown": {2, sysShutdown}, "getsockopt": {5, sysGetsockopt}, "setsockopt": {5, sysSetsockopt}, "getsockname": {3, sysGetsockname}, "getpeername": {3, sysGetpeername}, "bind": {3, sysBind}, "listen": {2, sysListen}, "connect": {3, sysConnect}, "accept": {3, sysAccept}, "pwrite": {4, sysPwrite}, "lseek": {3, sysLseek},
 		"ftruncate": {2, sysFtruncate}, "fsync": {1, sysFsync}, "sync": {0, sysSync}, "umask": {1, sysUmask}, "iopolicysys": {2, sysIopolicysys}, "memorystatus_get_level": {1, sysMemorystatusGetLevel}, "getpriority": {2, sysGetpriority}, "setpriority": {3, sysSetpriority}, "access": {2, sysAccess}, "unlink": {1, sysUnlink},
 		"mkdir": {2, sysMkdir}, "rename": {2, sysRename}, "readlink": {3, sysReadlink}, "readlinkat": {4, sysReadlinkat},
 		"mkdirat": {3, sysMkdirat}, "rmdir": {1, sysRmdir}, "unlinkat": {3, sysUnlinkat}, "renameat": {4, sysRenameat},
@@ -104,7 +104,7 @@ func (p *Process) call(h handler, args []uint64, onFault int64) (result int64) {
 var descriptorArgs = func() map[string]uint8 {
 	m := map[string]uint8{"dup2": 1 | 2, "renameat": 1 | 4, "clonefileat": 1 | 4, "fclonefileat": 1 | 2, "renameatx_np": 1 | 4, "linkat": 1 | 4, "symlinkat": 2, "mmap": 16}
 	for _, name := range strings.Fields(`fstat64 fstatat64 openat guarded_close_np guarded_write_np guarded_pwrite_np close read pread write writev readv
-		sendto recvfrom shutdown getsockopt setsockopt getsockname getpeername pwrite lseek ftruncate fsync readlinkat mkdirat unlinkat faccessat
+		sendto recvfrom shutdown getsockopt setsockopt getsockname getpeername bind listen connect accept pwrite lseek ftruncate fsync readlinkat mkdirat unlinkat faccessat
 		fcntl dup fchdir __pthread_fchdir fchmod fchmodat fchmod_extended fstat64_extended fchownat fchown futimes setattrlistat fsetattrlist
 		flock fgetxattr fsetxattr flistxattr fremovexattr ioctl fstatfs64 getattrlistat fgetattrlist getattrlistbulk fpathconf getdirentries64
 		kevent kevent64 kevent_qos`) {

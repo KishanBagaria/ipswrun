@@ -54,6 +54,9 @@ type pipeOp struct {
 	// Of a socket's (see sockets.go): that it sends, and how it was asked to.
 	sending bool
 	flags   uint64
+	// Of an accept: that it is one, and where the address of who connected is wanted.
+	accepting       bool
+	address, length uint64
 }
 
 // stretch is a piece of the guest's memory.
@@ -237,6 +240,8 @@ func (m *Machine) streamChanged(id uint64) {
 			}
 			try := owner.tryRead
 			switch {
+			case op.f.kind == socketFD && op.accepting:
+				try = owner.tryAccept
 			case op.f.kind == socketFD && op.sending:
 				try = owner.trySend
 			case op.f.kind == socketFD:
@@ -560,6 +565,10 @@ func (f *fd) filtered(filter int16, asked kevent) (data int64, ended bool, least
 		least = max(asked.data, 1)
 	}
 	switch {
+	case f.kind == socketFD && f.sock.lone && filter == filterRead: // of one that listens: how many wait to be accepted
+		return int64(len(f.sock.pending)), false, 1, true
+	case f.kind == socketFD && f.sock.lone: // nothing can be sent to nobody
+		return 0, false, 1, true
 	case f.kind == socketFD && filter == filterRead:
 		return int64(len(f.sock.data)), f.sock.cantReceive, least, true
 	case f.kind == socketFD:
