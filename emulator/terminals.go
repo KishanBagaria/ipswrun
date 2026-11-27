@@ -479,8 +479,17 @@ func (p *Process) terminalType(t *terminal, data []byte) {
 			}
 			p.m.signalFront(t, sig)
 			continue
-		case t.is(termSignals) && (key(ccSuspend) || extended && key(ccDelayedSuspend)):
-			stop("a key that suspends typed at a terminal: nothing here stops a process yet", c)
+		case t.is(termSignals) && key(ccSuspend):
+			// What was typed is let go, and not what waits to be seen; the key is shown,
+			// and the group in front is sent the stop a terminal asks for. As measured.
+			if !t.is(termNoFlush) {
+				t.line, t.typed, t.lines, t.echoed = nil, nil, nil, 0
+			}
+			p.terminalEcho(t, c)
+			p.m.signalFront(t, sigTerminalStop)
+			continue
+		case t.is(termSignals) && extended && key(ccDelayedSuspend):
+			stop("the key that suspends when it is read typed at a terminal", c)
 			return
 		case t.input&termFlow != 0 && (key(ccStart) || key(ccStop)):
 			stop("a key that stops or starts output typed at a terminal", c)
@@ -1007,11 +1016,10 @@ func (m *Machine) orphaned(group uint32) bool {
 }
 
 // terminalBehind is the check of a process that reads its own terminal, sets something of it,
-// or, where the terminal is set so, writes to it, while its group is not the one in front. The
-// kernel stops it with a signal (SIGTTIN, SIGTTOU) until it is put in front; nothing here stops
-// a process yet, so that stops the run. Where the signal is ignored or blocked a read is EIO
-// and the rest goes on, and a group with nobody to see to it is EIO: from the source, and
-// measured of a setting by such a group.
+// or, where the terminal is set so, writes to it, while its group is not the one in front: its
+// group is sent SIGTTIN or SIGTTOU, which stops it until it is put in front and set going.
+// Where the signal is ignored or blocked a read is EIO and the rest goes on, and a group with
+// nobody to see to it is EIO.
 func (p *Process) terminalBehind(t *terminal, sig uint64, reading bool) int64 {
 	if p.ownTerminal() != t || p.group() == t.front {
 		return 0
@@ -1023,8 +1031,15 @@ func (p *Process) terminalBehind(t *terminal, sig uint64, reading bool) int64 {
 	case unheard:
 		return 0
 	}
-	p.unimplemented(fmt.Sprintf("signal %d to a process that uses its terminal from behind, which stops it until it is put in front", sig), nil)
-	return -eNOSYS
+	// Its whole group is sent the signal, which stops whoever does not catch it, and the call
+	// is broken off: it is EINTR to one that catches the signal, and to one that was stopped
+	// once it is set going. As measured.
+	for _, q := range p.m.inGroup(p.group()) {
+		if !q.exited {
+			q.sendSignal(pendingSignal{sig: sig, status: int32(sig)})
+		}
+	}
+	return -eINTR
 }
 
 // leaveSession is a process ending: if it leads a session that has a terminal, those of the

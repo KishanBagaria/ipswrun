@@ -1,0 +1,12 @@
+the key that suspends typed with the leader's group in front, which catches it: SIGTSTP came 1; the first end sees 4 "ab^Z"; then a newline, and the second end reads 1 "\n"
+with the job in front: the job is stopped by 18; the first end sees 4 "cd^Z"; set going: going again
+in front it reads what is typed: 2, with SIGTTIN 0, SIGTTOU 0, SIGTSTP 0
+behind, it reads: the job is stopped by 21; set going still behind: going again, then nothing; put in front and set going, with a line typed: -1 (Interrupted system call), with SIGTTIN 0, SIGTTOU 0, SIGTSTP 0
+behind, it writes: 4, with SIGTTIN 0, SIGTTOU 0, SIGTSTP 0; the first end sees 5 "job\r\n"
+with the terminal set to stop that: the job is stopped by 22; put in front and set going: -1 (Interrupted system call), with SIGTTIN 0, SIGTTOU 0, SIGTSTP 0; the first end sees -1 (Resource temporarily unavailable)
+behind, it sets the terminal's settings: the job is stopped by 22; put in front and set going: -1 (Interrupted system call), with SIGTTIN 0, SIGTTOU 0, SIGTSTP 0
+catching the signals, behind, it reads: -1 (Interrupted system call), with SIGTTIN 1, SIGTTOU 0, SIGTSTP 0; the job is nothing
+it sets the settings: -1 (Interrupted system call), with SIGTTIN 1, SIGTTOU 1, SIGTSTP 0
+in front, the key that suspends typed: 0, with SIGTTIN 1, SIGTTOU 1, SIGTSTP 1; the job is nothing
+told to end: ended with 0
+the leader: ended with 0
