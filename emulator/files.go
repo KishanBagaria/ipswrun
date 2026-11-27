@@ -555,11 +555,12 @@ func sysFstatat64(p *Process, a []uint64) int64 {
 
 // The stat calls that also tell of a file's security (stat64_extended and the like, which
 // mkdir -p, ls -l and cp use): {path or descriptor, where the status goes, where the security
-// goes, and how much room there is for it, then how much it takes}. No file here has an access
-// control list, and a Mac's kernel was measured to say of one that has none: 44 bytes, which
-// are a mark, no owner's and no group's identifier, and that there is no list. With less room
-// nothing is written but how much it takes; of a pipe or a socket it takes none.
-func (p *Process) statExtended(a []uint64, stat func() int64, vnode bool) int64 {
+// goes, and how much room there is for it, then how much it takes}. Of a file that has no access
+// control list a Mac's kernel was measured to say 44 bytes, which are a mark, no owner's and no
+// group's identifier, and that there is no list; of one that has, the list follows (see
+// acls.go). With less room nothing is written but how much it takes; of a pipe or a socket it
+// takes none. The file is named by what the host calls it, if it is one of the host's.
+func (p *Process) statExtended(a []uint64, stat func() int64, vnode bool, file func() (hostFile, bool)) int64 {
 	security, size := a[2], a[3]
 	if security != 0 && size == 0 {
 		return -eFAULT
@@ -567,28 +568,40 @@ func (p *Process) statExtended(a []uint64, stat func() int64, vnode bool) int64 
 	if errno := stat(); errno != 0 || security == 0 {
 		return errno
 	}
-	var none []byte
+	var record []byte
 	if vnode {
-		none = append(append(le32(0x012CC16D), make([]byte, 32)...), le32(0xFFFFFFFF, 0)...)
-		if p.u64(size) >= uint64(len(none)) {
-			p.write(security, none)
+		id, known := file()
+		record = p.m.filesec(id, known)
+		if p.u64(size) >= uint64(len(record)) {
+			p.write(security, record)
 		}
 	}
-	p.write(size, le64(uint64(len(none))))
+	p.write(size, le64(uint64(len(record))))
 	return 0
 }
 
+// fileAt is the host file a path names, if it names one under the home or a mount.
+func (p *Process) fileAt(path string, follow bool) (hostFile, bool) {
+	_, id, errno := p.changeable(path, follow)
+	return id, errno == 0
+}
+
 func sysStat64Extended(p *Process, a []uint64) int64 {
-	return p.statExtended(a, func() int64 { return p.doStat(p.cstr(a[0]), a[1], true) }, true)
+	path := p.cstr(a[0])
+	return p.statExtended(a, func() int64 { return p.doStat(path, a[1], true) }, true, func() (hostFile, bool) { return p.fileAt(path, true) })
 }
 
 func sysLstat64Extended(p *Process, a []uint64) int64 {
-	return p.statExtended(a, func() int64 { return p.doStat(p.cstr(a[0]), a[1], false) }, true)
+	path := p.cstr(a[0])
+	return p.statExtended(a, func() int64 { return p.doStat(path, a[1], false) }, true, func() (hostFile, bool) { return p.fileAt(path, false) })
 }
 
 func sysFstat64Extended(p *Process, a []uint64) int64 {
 	f := p.fds[a[0]]
-	return p.statExtended(a, func() int64 { return sysFstat64(p, a) }, f == nil || !f.streams())
+	return p.statExtended(a, func() int64 { return sysFstat64(p, a) }, f == nil || !f.streams(), func() (hostFile, bool) {
+		_, id, errno := p.changeableFD(a[0])
+		return id, errno == 0
+	})
 }
 
 func sysFstat64(p *Process, a []uint64) int64 {

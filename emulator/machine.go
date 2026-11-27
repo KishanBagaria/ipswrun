@@ -39,6 +39,7 @@ type Machine struct {
 	owners       map[hostFile]Owner       // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
 	said         map[hostFile]uint16      // the permissions the data volume's template has for a file, where the host's file has others (see data.go)
 	flags        map[hostFile]uint32      // the flags a file carries beside its mode, where it has any (see chflags)
+	acls         map[hostFile]*acl        // the access control lists of the files that have one (see acls.go)
 	resolver     uint32                   // the process that made itself the one the kernel asks who a user or a group is (identitysvc), if one has
 	caches       [2]uint32                // how many users and how many groups' members the kernel is to keep answers for: 500 and 250 at first, as a Mac's kernel says
 	polls        []carried                // the rights launchd keeps to answer those who asked to be told of a change (see launchd.go)
@@ -90,7 +91,7 @@ func NewMachine(cfg Config) (*Machine, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, said: map[hostFile]uint16{}, flags: map[hostFile]uint32{}, caches: [2]uint32{500, 250}, fifos: map[hostFile]bool{}, clock: newClock()}
+	m := &Machine{cfg: cfg, user: u, dyld: dyld, mounts: mounts, services: map[string]*service{}, asked: map[string]bool{}, named: map[string]*sharedMemory{}, xattrs: map[hostFile]map[string][]byte{}, owners: map[hostFile]Owner{}, said: map[hostFile]uint16{}, flags: map[hostFile]uint32{}, acls: map[hostFile]*acl{}, caches: [2]uint32{500, 250}, fifos: map[hostFile]bool{}, clock: newClock()}
 	for i := range m.mounts {
 		m.claim(&m.mounts[i])
 	}

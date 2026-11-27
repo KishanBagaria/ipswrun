@@ -16,6 +16,7 @@ type fileInfo struct {
 	links uint16 // the names it has, if more than the one
 	owner *Owner // if it is not the guests' user's (see Machine.owners)
 	flags uint32 // those it carries beside its mode (see chflags)
+	acl   bool   // it has an access control list (see acls.go)
 }
 
 // describe looks at a resolved path or an open descriptor. Paths with a pinned inode number
@@ -49,6 +50,7 @@ func (p *Process) describe(kind fdKind, path string, size int64, inode *Inode, h
 			info.owner = &owner
 		}
 		info.flags = p.m.flags[id]
+		info.acl = p.m.acls[id] != nil
 		if mode, ok := p.m.said[id]; ok {
 			info.mode = info.mode&syscall.S_IFMT | mode
 		}
@@ -239,7 +241,12 @@ var (
 		{0x200000, 4, func(c *attrContext) []byte { // user access: what the owner bits allow
 			return le32(uint32(c.mode) >> 6 & 7)
 		}},
-		{0x400000, -8, nil},                       // no extended security (a reference)
+		{0x400000, -8, func(c *attrContext) []byte { // extended security (a reference): none
+			if c.acl {
+				c.p.unimplemented("getattrlist of the security of a file that has an access control list", nil)
+			}
+			return nil
+		}},
 		{0x800000, 16, nil}, {0x1000000, 16, nil}, // owner and group UUIDs
 		{0x2000000, 8, attrIno},
 		{0x4000000, 8, func(c *attrContext) []byte { return le64(crcInode(pathpkg.Dir(c.path))) }},

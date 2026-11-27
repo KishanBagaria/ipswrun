@@ -1,0 +1,7 @@
+{
+  "build": "19H117",
+  "cache_uuid": "375B6D72-3337-3608-BE0C-E434918EB3A3",
+  "exit_code": 0,
+  "output": "a new file's: none (No such file or directory)\na new directory's: none (No such file or directory)\none entry set on the file: 0\nthe file's: [deny 7 what 0x10] 1 entries\nby its descriptor: [deny 7 what 0x10] 1 entries\nits mode still 644; made 600: 0; the list then: [deny 7 what 0x10] 1 entries\ntwo entries set by the descriptor, an allow before a deny: 0\nthe file's: [allow 9 what 0x2] [deny 3 what 0x4] 2 entries\none that is handed down, on the directory: 0\nthe directory's: [deny 5 what 0x40 handed down to files] 1 entries\na file made in it has: [deny 5 what 0x40] 1 entries\nthat file removed, which the list denies nobody here: 0\na list of none set on the file: 0\nthe file's: none (No such file or directory)\na list of none set on the directory: 0\nthe directory's: none (No such file or directory)\nof a file that is not there: set -1 (No such file or directory), read: none (No such file or directory)\ntidied: 0 0\n",
+  "version": "15.7.1"
+}

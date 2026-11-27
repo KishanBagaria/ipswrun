@@ -219,18 +219,37 @@ func sysFchmodat(p *Process, a []uint64) int64 {
 // sysFchmodExtended is fchmod_extended(descriptor, user, group, mode, security), which sets
 // whichever of them it is given: KAUTH_UID_NONE and KAUTH_GID_NONE (-101) are no user and no
 // group, all ones no mode, and nothing no security. gzip and cp call it with what they found of
-// the file they copied. An access control list is not kept here.
+// the file they copied, and a library that sets a file's access control list (see acls.go) with
+// that alone.
 func sysFchmodExtended(p *Process, a []uint64) int64 {
-	const none = 0xFFFFFF9B
-	uid, gid, mode := uint32(a[1]), uint32(a[2]), uint32(a[3])
-	if a[4] != 0 {
-		p.unimplemented("fchmod_extended with an access control list", a)
-		return -eNOSYS
+	list, remove, errno := p.readFilesec(a[4])
+	if errno != 0 {
+		return errno
 	}
 	f, id, errno := p.changeableFD(a[0])
 	if errno != 0 {
 		return errno
 	}
+	return p.chmodExtended(id, a, list, remove, func(mode uint32) int64 { return p.chmodFD(f.host, mode) })
+}
+
+// sysChmodExtended is chmod_extended(path, user, group, mode, security): the same of a path.
+func sysChmodExtended(p *Process, a []uint64) int64 {
+	list, remove, errno := p.readFilesec(a[4])
+	if errno != 0 {
+		return errno
+	}
+	t, id, errno := p.changeable(p.cstr(a[0]), true)
+	if errno != 0 {
+		return errno
+	}
+	return p.chmodExtended(id, a, list, remove, func(mode uint32) int64 { return p.chmodAt(t, fileMode(uint64(mode))) })
+}
+
+// chmodExtended sets what chmod_extended and fchmod_extended were given of a host file.
+func (p *Process) chmodExtended(id hostFile, a []uint64, list *acl, remove bool, chmod func(mode uint32) int64) int64 {
+	const none = 0xFFFFFF9B
+	uid, gid, mode := uint32(a[1]), uint32(a[2]), uint32(a[3])
 	if uid != none || gid != none {
 		if uid == none {
 			uid = ^uint32(0)
@@ -243,7 +262,12 @@ func sysFchmodExtended(p *Process, a []uint64) int64 {
 		}
 	}
 	if mode != ^uint32(0) {
-		return p.chmodFD(f.host, mode&0o7777)
+		if errno := chmod(mode & 0o7777); errno != 0 {
+			return errno
+		}
+	}
+	if list != nil || remove {
+		p.m.setACL(id, list)
 	}
 	return 0
 }
@@ -295,6 +319,7 @@ func (p *Process) created(t target) {
 		owner.GID = p.m.owned(hostFileOf(&dir)).GID
 	}
 	p.m.own(hostFileOf(&st), owner)
+	p.inheritACL(t, &st)
 }
 
 // chown gives a file to a user and a group, either left as it is if all ones. Leaving both is
@@ -689,6 +714,7 @@ func (p *Process) forgetFile(t target) {
 		delete(p.m.fifos, hostFileOf(&st))
 		delete(p.m.said, hostFileOf(&st))
 		delete(p.m.flags, hostFileOf(&st))
+		delete(p.m.acls, hostFileOf(&st))
 	}
 }
 

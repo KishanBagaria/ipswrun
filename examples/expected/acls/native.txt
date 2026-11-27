@@ -1,0 +1,18 @@
+a new file's: none (No such file or directory)
+a new directory's: none (No such file or directory)
+one entry set on the file: 0
+the file's: [deny 7 what 0x10] 1 entries
+by its descriptor: [deny 7 what 0x10] 1 entries
+its mode still 644; made 600: 0; the list then: [deny 7 what 0x10] 1 entries
+two entries set by the descriptor, an allow before a deny: 0
+the file's: [allow 9 what 0x2] [deny 3 what 0x4] 2 entries
+one that is handed down, on the directory: 0
+the directory's: [deny 5 what 0x40 handed down to files] 1 entries
+a file made in it has: [deny 5 what 0x40] 1 entries
+that file removed, which the list denies nobody here: 0
+a list of none set on the file: 0
+the file's: none (No such file or directory)
+a list of none set on the directory: 0
+the directory's: none (No such file or directory)
+of a file that is not there: set -1 (No such file or directory), read: none (No such file or directory)
+tidied: 0 0
