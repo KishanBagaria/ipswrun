@@ -15,9 +15,9 @@ import (
 // grown, so that nobody finds the two apart. As measured on macOS 27.2.1 (examples/mapfile.c).
 //
 // A mapping may reach past the file's end: the pages past the one its last byte is in fault
-// (SIGBUS), and are taken back from whoever has them when the file is cut. The memory is taken
-// as large as twice the file, and 64 MB at least: a mapping of the file's own pages further
-// than that stops the run. What reads or changes the file by another way than read, pread, write,
+// (SIGBUS), and are taken back from whoever has them when the file is cut. A gigabyte of the
+// host's addresses is kept for the memory, which costs nothing until it is touched, so that the
+// file can grow under its mappings: a file larger than that, mapped, stops the run. What reads or changes the file by another way than read, pread, write,
 // pwrite and ftruncate (a copy of it, a truncation by its name, the host) does not go by it.
 
 type mappedFile struct {
@@ -27,7 +27,7 @@ type mappedFile struct {
 	owed   bool   // what was written through a mapping has reached the file with its time of change left as it was
 }
 
-const mappedLeast = 64 << 20
+const mappedRoom = 1 << 30
 
 // fileOf is the host file a descriptor is of.
 func fileOf(host int) (hostFile, int64, bool) {
@@ -48,15 +48,14 @@ func (p *Process) mappedFor(f *fd) (*mappedFile, int64) {
 	if mf := p.m.mappedFiles[id]; mf != nil {
 		return mf, 0
 	}
-	room := max(mappedLeast, 2*align(uint64(size), pageSize))
-	if room > 1<<30 {
-		stopf("a file of %d bytes mapped to be shared: the host is not asked for memory for that much", size)
+	if uint64(size) > mappedRoom {
+		stopf("a file of %d bytes mapped to be shared: more than the gigabyte kept for one", size)
 	}
 	host, err := syscall.Dup(f.host)
 	if err != nil {
 		return nil, hostErrno(err)
 	}
-	s := p.m.newShared(room)
+	s := p.m.newShared(mappedRoom)
 	if s == nil {
 		syscall.Close(host)
 		return nil, -eNOMEM
@@ -74,7 +73,10 @@ func (p *Process) mappedFor(f *fd) (*mappedFile, int64) {
 func (mf *mappedFile) load() {
 	data := mf.shared.data
 	_, size, _ := fileOf(mf.host)
-	held := min(uint64(size), uint64(len(data)))
+	if uint64(size) > uint64(len(data)) {
+		stopf("a mapped file grown to %d bytes: more than the gigabyte kept for one", size)
+	}
+	held := uint64(size)
 	if n, err := syscall.Pread(mf.host, data[:held], 0); err != nil || uint64(n) != held {
 		stopf("a mapped file could not be read: %d of %d bytes, %v", n, held, err)
 	}

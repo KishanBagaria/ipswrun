@@ -17,5 +17,6 @@ of a file of the system's, shared and to write: failed (Permission denied); to r
 advice of a kind there is not: -1 (Invalid argument); of memory that is not mapped: -1 (Invalid argument); of the usual kind: 0
 a file of 5 bytes mapped for three pages: mapped; its first page reads 0, its second signal 10, written signal 10; grown to three pages, the second reads 0; cut to 5 again, the second reads signal 10, the first past the end 0
 grown to two pages and cut to nothing by its name: 0, of 0, the mapping reads signal 10; grown again and opened to be emptied: 1, of 0, the mapping reads signal 10, written signal 10, of 0 then
+a file of nothing mapped for 96 MB: mapped; at 70 MB it reads signal 10; grown to 80 MB, 0; written there, the file reads "F"; the file written a page on, the mapping reads 71; past 80 MB signal 10
 its descriptor closed and its name taken away: the mapping is written, and the other descriptor reads "AFTER"
 unmapped: 0; again: 0

@@ -52,7 +52,7 @@ func (s *sharedMemory) resize(size uint64) int64 {
 		stopf("shared memory of more than a gigabyte (%d bytes): the host is not asked for that much", size)
 	}
 	s.sized = true
-	data, err := syscall.Mmap(-1, 0, int(size), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_ANON|syscall.MAP_PRIVATE)
+	data, err := syscall.Mmap(-1, 0, int(size), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_ANON|syscall.MAP_PRIVATE|syscall.MAP_NORESERVE)
 	if err != nil {
 		return -eNOMEM
 	}

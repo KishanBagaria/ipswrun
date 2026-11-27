@@ -225,6 +225,21 @@ int main(void) {
 	printf("; grown again and opened to be emptied: %d, of %lld, the mapping reads %s, written %s", emptied >= 0, (long long)st.st_size, touched(l, 0), touched(l, 1));
 	fstat(little, &st);
 	printf(", of %lld then\n", (long long)st.st_size);
+
+	// A small file mapped for far more than it has, and then grown far: the mapping is the
+	// file's there too, both ways.
+	const size_t far = 96u << 20, grown = 80u << 20, here = 70u << 20;
+	char *f = mmap(NULL, far, PROT_READ | PROT_WRITE, MAP_SHARED, little, 0);
+	printf("a file of nothing mapped for 96 MB: %s; at 70 MB it reads %s", mapped(f), touched(f + here, 0));
+	ftruncate(little, grown);
+	printf("; grown to 80 MB, %s", touched(f + here, 0));
+	f[here] = 'F';
+	printf("; written there, the file reads \"%s\"", at(little, here, 1));
+	pwrite(little, "G", 1, here + PAGE);
+	printf("; the file written a page on, the mapping reads %s", touched(f + here + PAGE, 0));
+	printf("; past 80 MB %s\n", touched(f + grown, 0));
+	ftruncate(little, 0);
+	munmap(f, far);
 	unlink(lpath);
 	signal(SIGBUS, SIG_DFL);
 	signal(SIGSEGV, SIG_DFL);
