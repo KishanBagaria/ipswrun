@@ -290,6 +290,9 @@ func TestSystemLinkToCacheDirectory(t *testing.T) {
 		if path == link {
 			return SystemFile{Dir: true, Real: real, Link: text}, nil
 		}
+		if path == real { // the directory itself is there: reading it as a link is EINVAL, not ENOENT
+			return SystemFile{Dir: true}, nil
+		}
 		return SystemFile{}, nil
 	}
 	if _, info, errno := p.describePath("lstat", link, false); errno != 0 || info.mode != modeLink || info.size != int64(len(text)) {

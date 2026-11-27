@@ -3,6 +3,7 @@ it reads "file" (4); followed, it is a file, mode 640, 1 links, 4 bytes, and hol
 again: -1 (File exists); over a file: -1 (File exists); in no directory: -1 (No such file or directory)
 to nothing: 0; it is a link, mode 755, 1 links, 13 bytes; followed: No such file or directory; opened: No such file or directory
 to a directory, from one: 0; through it: a file, mode 640, 1 links, 4 bytes; readlinkat: 2 "fi"; into too little room: 2 "fi"; of a file: -1 (Invalid argument)
+of nothing here: -1 (No such file or directory); of nothing at the root: -1 (No such file or directory); of nothing in a directory of the system's: -1 (No such file or directory); of a directory of the system's: -1 (Invalid argument)
 written through the link: the file holds "kept!"; opened not to follow: -1 (Too many levels of symbolic links)
 the link removed: 0; the file is a file, mode 640, 1 links, 5 bytes
 link: 0; the first is a file, mode 640, 2 links, 5 bytes; the second is the same file: 1

@@ -70,6 +70,10 @@ int main(void) {
 	printf("; readlinkat: %s", said(n = readlinkat(here, "inner/up", buf, sizeof buf)));
 	printf(" \"%.*s\"; into too little room: %s", n > 0 ? (int)n : 0, buf, said(n = readlink("soft", buf, 2)));
 	printf(" \"%.*s\"; of a file: %s\n", n > 0 ? (int)n : 0, buf, said(readlink("file", buf, sizeof buf)));
+	printf("of nothing here: %s", said(readlink("nothing", buf, sizeof buf)));
+	printf("; of nothing at the root: %s", said(readlink("/nothing-there", buf, sizeof buf)));
+	printf("; of nothing in a directory of the system's: %s", said(readlink("/usr/share/nothing-there", buf, sizeof buf)));
+	printf("; of a directory of the system's: %s\n", said(readlink("/usr/share", buf, sizeof buf)));
 	printf("written through the link: ");
 	fd = open("soft", O_WRONLY | O_APPEND);
 	write(fd, "!", 1);

@@ -1441,7 +1441,9 @@ func (p *Process) doReadlink(path string, buf, size uint64) int64 {
 		if link, err = t.root.Readlink(t.rel); err != nil {
 			return hostErrno(err)
 		}
-	case !ok || link == "":
+	case !ok && link == "": // nothing is there, as measured of the system volume and of the root
+		return -eNOENT
+	case link == "": // something that is no link
 		return -eINVAL
 	}
 	n := min(uint64(len(link)), size)
