@@ -14,6 +14,14 @@
 extern char **environ;
 
 // has says whether a descriptor is there.
+// Xcode's SDKs before macOS 27 do not name these, which the kernel has had since macOS 15.
+#ifndef O_CLOFORK
+#define O_CLOFORK 0x08000000
+#endif
+#ifndef FD_CLOFORK
+#define FD_CLOFORK 2
+#endif
+
 static const char *has(int fd) {
 	struct stat st;
 	return fstat(fd, &st) == 0 ? "there" : errno == EBADF ? "not there" : strerror(errno);
