@@ -115,6 +115,8 @@ for guest in ${guests//,/ }; do
 	[ "$platform" != ios ] || [ "$guest" != adi ] || continue
 	# shell runs /bin/sh and /bin/echo, which iOS has not.
 	[ "$platform" != ios ] || [ "$guest" != shell ] || continue
+	# shellpty drives /bin/sh, which iOS has not.
+	[ "$platform" != ios ] || [ "$guest" != shellpty ] || continue
 	# datavolume and oslog need a data volume, which only a macOS release says how to make.
 	[ "$platform" != ios ] || { [ "$guest" != datavolume ] && [ "$guest" != oslog ]; } || continue
 	# volumes prints how a Mac's volumes are mounted, which is not known of an iPhone's.
@@ -175,7 +177,7 @@ wait
 
 failed=0
 for guest in ${guests//,/ }; do
-	if [ "$platform" = ios ] && { [ "$guest" = adi ] || [ "$guest" = shell ] || [ "$guest" = datavolume ] || [ "$guest" = oslog ] || [ "$guest" = volumes ] || [ "$guest" = profiles ] || [ "$guest" = procinfo ] || [ "$guest" = taskpolicy ]; }; then
+	if [ "$platform" = ios ] && { [ "$guest" = adi ] || [ "$guest" = shell ] || [ "$guest" = shellpty ] || [ "$guest" = datavolume ] || [ "$guest" = oslog ] || [ "$guest" = volumes ] || [ "$guest" = profiles ] || [ "$guest" = procinfo ] || [ "$guest" = taskpolicy ]; }; then
 		echo "== $guest: not run on iOS"
 		continue
 	fi

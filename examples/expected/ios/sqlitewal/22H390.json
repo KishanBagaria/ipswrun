@@ -1,0 +1,7 @@
+{
+  "build": "22H390",
+  "cache_uuid": "EF0E3993-EA01-3DB0-82D5-F671453A1235",
+  "exit_code": 0,
+  "output": "opened: 0 0; journal mode wal\nwritten through the first, the second counts 2; written through the second, the first counts 3\n[INSERT INTO t VALUES(4): locking protocol] another process inserts: 15, and counts 3\nafter it the first counts 3; checkpoint: 0, the second sums 6\nclosed: 0 0\n",
+  "version": "18.7.12"
+}

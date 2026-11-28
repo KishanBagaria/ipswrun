@@ -1,0 +1,7 @@
+{
+  "build": "21G115",
+  "cache_uuid": "049B583E-D4DC-3B2B-88DA-E52D6E18313D",
+  "exit_code": 0,
+  "output": "   @@ \ntyped: echo hello\\n\n   \n   echo hello\\r\\n\n   hello\\r\\n\n   @@ \ntyped: echo one two | tr a-z A-Z\\n\n   \n   echo one two | tr a-z A-Z\\r\\n\n   ONE TWO\\r\\n\n   @@ \ntyped: sleep 30\\n\n   \n   sleep 30\\r\\n\n   \ntyped: ^C\n   ^C\\r\\n\n   @@ \ntyped: sleep 30\\n\n   \n   sleep 30\\r\\n\n   \ntyped: ^Z\n   ^Z\\r\\n\n   [1]+  Stopped(SIGTSTP)        sleep 30\\r\\n\n   @@ \ntyped: jobs\\n\n   \n   jobs\\r\\n\n   [1]+  Stopped(SIGTSTP)        sleep 30\\r\\n\n   @@ \ntyped: kill %1\\n\n   \n   kill %1\\r\\n\n   \\r\\n\n   [1]+  Stopped(SIGTSTP)        sleep 30\\r\\n\n   @@ \ntyped: sleep 1 &\\n\n   \n   sleep 1 &\\r\\n\n   [2] pid\\r\\n\n   [1]   Terminated: 15          sleep 30\\r\\n\n   @@ \ntyped: wait\\n\n   \n   wait\\r\\n\n   [2]+  Done                    sleep 1\\r\\n\n   @@ \ntyped: exit\\n\n   \n   exit\\r\\n\n   exit\\r\\n\n   \nsh ended: 1, with 0\n",
+  "version": "12.6"
+}

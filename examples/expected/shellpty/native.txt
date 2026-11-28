@@ -1,0 +1,54 @@
+   @@ 
+typed: echo hello\n
+   
+   echo hello\r\n
+   hello\r\n
+   @@ 
+typed: echo one two | tr a-z A-Z\n
+   
+   echo one two | tr a-z A-Z\r\n
+   ONE TWO\r\n
+   @@ 
+typed: sleep 30\n
+   
+   sleep 30\r\n
+   
+typed: ^C
+   ^C\r\n
+   @@ 
+typed: sleep 30\n
+   
+   sleep 30\r\n
+   
+typed: ^Z
+   ^Z\r\n
+   [1]+  Stopped(SIGTSTP)        sleep 30\r\n
+   @@ 
+typed: jobs\n
+   
+   jobs\r\n
+   [1]+  Stopped(SIGTSTP)        sleep 30\r\n
+   @@ 
+typed: kill %1\n
+   
+   kill %1\r\n
+   \r\n
+   [1]+  Stopped(SIGTSTP)        sleep 30\r\n
+   @@ 
+typed: sleep 1 &\n
+   
+   sleep 1 &\r\n
+   [2] pid\r\n
+   [1]   Terminated: 15          sleep 30\r\n
+   @@ 
+typed: wait\n
+   
+   wait\r\n
+   [2]+  Done                    sleep 1\r\n
+   @@ 
+typed: exit\n
+   
+   exit\r\n
+   exit\r\n
+   
+sh ended: 1, with 0

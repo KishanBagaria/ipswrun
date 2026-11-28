@@ -1,0 +1,5 @@
+opened: 0 0; journal mode wal
+written through the first, the second counts 2; written through the second, the first counts 3
+[INSERT INTO t VALUES(4): locking protocol] another process inserts: 15, and counts 3
+after it the first counts 3; checkpoint: 0, the second sums 6
+closed: 0 0
