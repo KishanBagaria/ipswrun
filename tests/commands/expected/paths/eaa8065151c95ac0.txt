@@ -1,0 +1,4 @@
+there
+unreadable
+nothing to see
+/private/var/root: Permission denied

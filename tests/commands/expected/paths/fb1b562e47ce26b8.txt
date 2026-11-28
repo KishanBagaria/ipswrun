@@ -1,0 +1,4 @@
+in
+Permission denied
+x/y
+lrwxr-xr-x

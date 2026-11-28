@@ -140,10 +140,10 @@ func (p *Process) bsd(n int64) {
 		}
 	}
 	p.current.arg0, p.current.sleeping = first, name == "__semwait_signal" // what was in the first register, for a call that is made again
-	p.blocked, p.start = false, ""
+	p.blocked, p.starts, p.refusals, p.walks = 0, nil, nil, nil
 	r := p.call(h, args, -eFAULT)
-	if r < 0 && p.blocked { // a directory on the way to a name it was given may not be searched (see blockedAt)
-		r = -eACCES
+	if r < 0 && p.blocked != 0 { // a directory on the way to a name it was given may not be searched, or a step up in it not taken (see blockedAt, upward)
+		r = -p.blocked
 	}
 	p.setX(0, uint64(max(r, -r)))
 	p.carry(r < 0)
@@ -917,7 +917,7 @@ func (p *Process) quarantineOf(a []uint64, byPath bool) int64 {
 		case f.streams():
 			return -eINVAL
 		}
-		id, errno = p.xattrFile(0, int64(le.Uint64(args)), 0)
+		id, errno = p.xattrFile(0, int64(le.Uint64(args)), 0, 0)
 	}
 	value, ok := p.m.xattrs[id]["com.apple.quarantine"]
 	if errno != 0 || !ok { // nothing that is not the guest's to change has attributes

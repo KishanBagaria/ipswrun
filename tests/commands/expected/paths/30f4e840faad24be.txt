@@ -1,0 +1,4 @@
+Permission denied
+ls: /private/var/root/..: Permission denied
+0
+Permission denied

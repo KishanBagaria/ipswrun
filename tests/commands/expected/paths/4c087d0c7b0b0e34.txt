@@ -1,0 +1,5 @@
+Operation not permitted
+Read-only file system
+File exists
+File exists
+Operation not permitted

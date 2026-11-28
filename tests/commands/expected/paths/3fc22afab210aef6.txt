@@ -1,0 +1,5 @@
+pwd: error retrieving current directory: getcwd: cannot access parent directories: Permission denied
+Permission denied
+Permission denied
+Permission denied
+Permission denied

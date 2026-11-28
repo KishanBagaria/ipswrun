@@ -1,0 +1,5 @@
+ls: fts_read: Permission denied
+y
+Permission denied
+total 0
+Permission denied

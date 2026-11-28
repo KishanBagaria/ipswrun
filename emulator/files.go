@@ -265,6 +265,28 @@ func (p *Process) followed(t target, ok bool) (target, bool) {
 	for links := 0; ok && t.leads != "" && links < 16; links++ {
 		t, ok = p.resolve(t.leads)
 	}
+	// A link under the home or a mount, which the host follows with nothing said: what it
+	// leads to, and what that leads to if it is a link too, is reached by the way to it, which
+	// may be closed, as measured (a link to a file in a directory since closed). Asked only
+	// where some file's mode or owner is not the host's own.
+	if ok && t.root != nil && len(p.m.said)+len(p.m.owners) != 0 && p.uid != 0 {
+		for link, at, links := t.path, t, 0; links < 8 && at.root != nil; links++ {
+			text, err := at.root.Readlink(at.rel)
+			if err != nil {
+				break
+			}
+			to, closed := p.leadsBehind(link, text)
+			if closed {
+				p.blocked = eACCES
+				return t, false
+			}
+			var there bool
+			link = to
+			if at, there = p.lookup(to); !there {
+				break
+			}
+		}
+	}
 	return t, ok
 }
 
@@ -405,8 +427,12 @@ func (p *Process) resolve(path string) (target, bool) {
 		return target{}, false
 	}
 	path = p.absolute(path)
+	if errno := p.refusals[path]; errno != 0 { // a step up in it could not be taken (see upward)
+		p.blocked = errno
+		return target{path: path}, false
+	}
 	if p.blockedAt(path) {
-		p.blocked = true
+		p.blocked = eACCES
 		return target{path: path}, false
 	}
 	t, ok := p.lookup(path)
@@ -428,17 +454,46 @@ func (p *Process) resolve(path string) (target, bool) {
 // (tests/kernel/files/relsearch.c). Not as a Mac has it: a name that goes up from there
 // through a closed directory and down again by another way is let through.
 func (p *Process) blockedAt(path string) bool {
-	if p.uid == 0 || path == "/" || path == p.start {
+	if p.uid == 0 || path == "/" || slices.Contains(p.starts, path) {
 		return false
 	}
 	for dir := pathpkg.Dir(path); ; dir = pathpkg.Dir(dir) {
 		if !p.searchable(dir) {
 			return true
 		}
-		if dir == "/" || dir == p.start {
+		if dir == "/" || slices.Contains(p.starts, dir) {
 			return false
 		}
 	}
+}
+
+// from is a name of the call being answered having been given from a directory: it is looked
+// for from there (see blockedAt). A call may be given names from more than one.
+func (p *Process) from(dir string) {
+	if dir = canonical(dir); !slices.Contains(p.starts, dir) {
+		p.starts = append(p.starts, dir)
+	}
+}
+
+// leadsBehind is where the text of a link at a path leads, and whether that is behind a
+// directory that may not be searched: text that is no whole path is walked from the directory
+// the link is in, which is where that leads if it is reached by a link itself, as measured.
+func (p *Process) leadsBehind(link, text string) (string, bool) {
+	starts := p.starts
+	defer func() { p.starts = starts }()
+	p.starts = nil
+	to, dir := text, ""
+	if !strings.HasPrefix(text, "/") {
+		dir = p.physical(pathpkg.Dir(link))
+		p.starts = []string{dir}
+		to = dir + "/" + text
+	}
+	if goesUp(to) {
+		p.starts = nil // the walk says where it is looked for from
+		to = p.upward(to, dir)
+	}
+	to = canonical(to)
+	return to, p.refusals[to] != 0 || p.blockedAt(to)
 }
 
 // passKey is a directory and who would pass it.
@@ -472,7 +527,7 @@ func (p *Process) searchable(dir string) bool {
 	}
 	m.pass[key] = true
 	was := p.blocked
-	p.blocked = false
+	p.blocked = 0
 	p.searching++
 	_, info, errno := p.describePath("search", dir, true)
 	// A link on the way is passed by the way to what it leads to: one under the home or a
@@ -480,13 +535,10 @@ func (p *Process) searchable(dir string) bool {
 	// there.
 	beyond := false
 	if t, ok := p.lookup(dir); ok && t.leads != "" {
-		beyond = p.blockedAt(canonical(t.leads))
+		_, beyond = p.leadsBehind(dir, t.leads)
 	} else if ok && t.root != nil {
-		if to, err := t.root.Readlink(t.rel); err == nil {
-			if !strings.HasPrefix(to, "/") {
-				to = pathpkg.Dir(dir) + "/" + to
-			}
-			beyond = p.blockedAt(canonical(to))
+		if text, err := t.root.Readlink(t.rel); err == nil {
+			_, beyond = p.leadsBehind(dir, text)
 		}
 	}
 	p.searching--
@@ -577,11 +629,126 @@ func asDirectory(path string) bool {
 
 // absolute is the canonical form of a guest path, relative to the working directory or not.
 func (p *Process) absolute(path string) string {
+	from := ""
 	if !strings.HasPrefix(path, "/") {
-		p.start = canonical(p.workingDirectory()) // the name is looked for from here (see blockedAt)
-		path = p.workingDirectory() + "/" + path
+		from = p.workingDirectory()
+		path = from + "/" + path
+	}
+	switch {
+	case goesUp(path):
+		path = p.upward(path, from)
+	case from != "":
+		p.from(from) // the name is looked for from here (see blockedAt)
 	}
 	return canonical(path)
+}
+
+// goesUp says whether a path has a step up in it ("..").
+func goesUp(path string) bool {
+	return strings.Contains(path, "/../") || strings.HasSuffix(path, "/..")
+}
+
+// upward is a whole path with steps up in it, walked as the kernel walks it and not as it is
+// written: a step up is from a directory that is there and may be searched (ENOENT, ENOTDIR
+// or EACCES of the whole path otherwise, which the call is answered with when it has ended;
+// see bsd), and from where a link leads, not from where the link is. As measured
+// (tests/commands/paths.list, tests/kernel/files/relsearch.c). from is the directory the name
+// was given from, if it was given from one: what is looked for is then looked for from the
+// highest directory the steps reach, and what leads to that is not asked (see blockedAt).
+func (p *Process) upward(path, from string) string {
+	key := from + "\x00" + path
+	if w, ok := p.walks[key]; ok { // walked before for this call, which asks of one path many times
+		if w.top != "" {
+			p.from(w.top)
+		}
+		return w.to
+	}
+	cur, top := "/", ""
+	if from != "" {
+		top = canonical(from)
+	}
+	done := func(to string) string {
+		if p.walks == nil {
+			p.walks = map[string]walk{}
+		}
+		if p.walks[key] = (walk{to, top}); top != "" {
+			p.from(top) // what is looked for is looked for from the highest directory reached
+		}
+		return to
+	}
+	parts := strings.Split(path, "/")
+	for i, c := range parts {
+		switch c {
+		case "", ".":
+		case "..":
+			was, starts := p.blocked, p.starts
+			if p.blocked = 0; top != "" { // this far it has been looked for from here
+				p.starts = append(slices.Clone(starts), top)
+			}
+			_, info, errno := p.describePath("search", cur, true)
+			if p.blocked != 0 { // what leads to it may not be searched: that, and not that nothing is there
+				errno = -p.blocked
+			}
+			p.blocked, p.starts = was, starts
+			switch {
+			case errno != 0:
+			case info.mode&syscall.S_IFMT != syscall.S_IFDIR:
+				errno = -eNOTDIR
+			case p.uid != 0 && !p.permits(info, 1):
+				errno = -eACCES
+			}
+			if errno != 0 {
+				// A name nothing has, so that what is refused is this path as it was given and
+				// not the file its steps would come to if they were only read.
+				whole := pathpkg.Clean(cur+"/"+strings.Join(parts[i:], "/")) + "/\x00"
+				if p.refusals == nil {
+					p.refusals = map[string]int64{}
+				}
+				p.refusals[canonical(whole)] = -errno
+				return done(whole)
+			}
+			if cur = canonical(pathpkg.Dir(p.physical(cur))); top != "" && !under(cur, top) {
+				top = cur
+			}
+		default:
+			cur = pathpkg.Join(cur, c)
+		}
+	}
+	return done(cur)
+}
+
+// walk is a path with steps up as it was walked: where it came to, and the highest directory
+// it reached if it was given from one.
+type walk struct{ to, top string }
+
+// physical is the directory a path names when the path is a link to one: where it leads.
+func (p *Process) physical(dir string) string {
+	dir = canonical(dir) // /tmp, /var and /etc are links to the same under /private
+	for links := 0; links < 16; links++ {
+		t, ok := p.lookup(dir)
+		if !ok {
+			return dir
+		}
+		to := t.leads
+		switch {
+		case to != "":
+		case t.root != nil:
+			to, _ = t.root.Readlink(t.rel)
+		case t.kind == dirFD && t.path != "" && canonical(t.path) != dir: // a link of the system volume
+			return canonical(t.path)
+		}
+		if to == "" {
+			return dir
+		}
+		if !strings.HasPrefix(to, "/") { // from the directory the link is in, which is where that leads
+			to = p.physical(pathpkg.Dir(dir)) + "/" + to
+		}
+		if goesUp(to) {
+			to = p.upward(to, "")
+		}
+		dir = canonical(to)
+	}
+	return dir
 }
 
 func (p *Process) lookup(path string) (target, bool) { return p.lookupThrough(path, 0) }
@@ -1167,9 +1334,22 @@ func (p *Process) at(dirfd, path uint64) (string, int64) {
 			return "", errno
 		}
 	}
-	p.start = canonical(dir) // the name is looked for from here (see blockedAt)
 	if !strings.HasSuffix(dir, "/") {
 		dir += "/"
+	}
+	if !goesUp(dir + s) {
+		p.from(dir) // the name is looked for from here (see blockedAt)
+	}
+	if goesUp(dir + s) { // walked from the directory, with how it ends kept for what asks of that
+		walked := p.upward(dir+s, strings.TrimSuffix(dir, "/"))
+		switch {
+		case walked == "/":
+		case strings.HasSuffix(s, "/."):
+			walked += "/."
+		case strings.HasSuffix(s, "/"):
+			walked += "/"
+		}
+		return walked, 0
 	}
 	return dir + s, 0
 }
@@ -1897,6 +2077,12 @@ func (p *Process) doUnlink(path string, dir bool) int64 {
 		}
 		return -ePERM
 	}
+	if dir && (path == ".." || strings.HasSuffix(path, "/..")) { // a directory is not removed by the name of what is above another, as measured
+		if _, _, errno := p.describePath("rmdir", path, true); errno != 0 {
+			return errno
+		}
+		return -eINVAL
+	}
 	t, ok := p.writableTarget(path)
 	if !ok {
 		if errno := p.unwritable(path, false); errno != 0 {
@@ -1936,8 +2122,12 @@ func (p *Process) doUnlink(path string, dir bool) int64 {
 	case !dir && fi.IsDir():
 		return -ePERM
 	}
-	p.forgetFile(t)
-	return hostCall(t.root.Remove(t.rel))
+	forget := p.forgetting(t)
+	if err := t.root.Remove(t.rel); err != nil {
+		return hostErrno(err) // and what is kept of it stays: a directory that is not empty keeps its mode
+	}
+	forget()
+	return 0
 }
 
 func sysUnlink(p *Process, a []uint64) int64 { return p.doUnlink(p.cstr(a[0]), false) }
@@ -2210,6 +2400,9 @@ func sysReadlinkat(p *Process, a []uint64) int64 {
 // list reads the names in an open directory, once: directories under the home or a mount, and
 // allowed directories on the build's system volume.
 func (p *Process) list(f *fd) int64 {
+	if f.path != "" {
+		p.from(f.path) // what is in it is looked for from it, whatever leads to it now (see blockedAt)
+	}
 	if f.names != nil {
 		return 0
 	}

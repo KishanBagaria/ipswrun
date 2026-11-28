@@ -1,0 +1,3 @@
+ran
+Permission denied
+command not found

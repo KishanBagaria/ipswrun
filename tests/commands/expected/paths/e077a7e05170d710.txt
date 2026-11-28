@@ -1,0 +1,7 @@
+hello
+hello
+hello
+hello
+Not a directory
+Not a directory
+No such file or directory

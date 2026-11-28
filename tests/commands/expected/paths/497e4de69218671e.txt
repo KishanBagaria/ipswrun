@@ -1,0 +1,4 @@
+Directory not empty
+d---------
+Permission denied
+y

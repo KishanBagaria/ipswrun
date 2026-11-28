@@ -1,0 +1,2 @@
+/etc /private/tmp /tmp /var private/tmp private/var private/etc 
+lrwxr-xr-x

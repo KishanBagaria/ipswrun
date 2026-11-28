@@ -1,0 +1,7 @@
+a.txt
+No such file or directory
+/
+/bin/ls
+/private/tmp
+/private/var
+/private/etc

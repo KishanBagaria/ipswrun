@@ -1,0 +1,5 @@
+deep
+hello
+deep
+a.txt e 
+Not a directory

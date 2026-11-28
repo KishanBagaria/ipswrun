@@ -142,6 +142,9 @@ func (p *Process) changeableFD(n uint64) (*fd, hostFile, int64) {
 	if f == nil {
 		return nil, hostFile{}, -eBADF
 	}
+	if f.path != "" {
+		p.from(f.path) // it is the file itself, whatever leads to it now (see blockedAt)
+	}
 	switch _, writable := p.writableTarget(f.path); {
 	case f.streams(): // a pipe or a socket is no file, as measured of fchmod and fchmod_extended
 		return f, hostFile{}, -eINVAL
@@ -623,15 +626,30 @@ func sysFsetattrlist(p *Process, a []uint64) int64 {
 
 // xattrFile is what an extended-attribute call acts on: the host file, or why it cannot be
 // changed (see changeable).
-func (p *Process) xattrFile(path uint64, fdn int64, options uint64) (hostFile, int64) {
+//
+// want is what the file's mode has to let who asks do: read it (4) to list or read its
+// attributes, write it (2) to set one or take one away, as it is when the call is made,
+// through a descriptor opened before too (EACCES). As measured of files and directories of
+// each mode (tests/kernel/files/xattrmay.c).
+func (p *Process) xattrFile(path uint64, fdn int64, options uint64, want uint16) (hostFile, int64) {
 	if options&^xattrOptions != 0 {
 		return hostFile{}, -eINVAL
 	}
 	if fdn >= 0 {
-		_, id, errno := p.changeableFD(uint64(fdn))
+		f, id, errno := p.changeableFD(uint64(fdn))
+		if errno == 0 {
+			if info, errno := p.describeFD(f); errno == 0 && !p.permits(info, want) {
+				return id, -eACCES
+			}
+		}
 		return id, errno
 	}
 	_, id, errno := p.changeable(p.cstr(path), options&xattrNoFollow == 0)
+	if errno == 0 {
+		if _, info, errno := p.describePath("xattr", p.cstr(path), options&xattrNoFollow == 0); errno == 0 && info.mode&syscall.S_IFMT != syscall.S_IFLNK && !p.permits(info, want) {
+			return id, -eACCES
+		}
+	}
 	return id, errno
 }
 
@@ -657,7 +675,7 @@ func (p *Process) getxattr(path uint64, fdn int64, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
-	id, errno := p.xattrFile(path, fdn, options)
+	id, errno := p.xattrFile(path, fdn, options, 4)
 	if readOnly(errno) {
 		return -eNOATTR
 	}
@@ -688,7 +706,7 @@ func (p *Process) setxattr(path uint64, fdn int64, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
-	id, errno := p.xattrFile(path, fdn, options)
+	id, errno := p.xattrFile(path, fdn, options, 2)
 	if errno != 0 {
 		return errno
 	}
@@ -727,7 +745,7 @@ func (p *Process) setxattr(path uint64, fdn int64, a []uint64) int64 {
 
 func (p *Process) listxattr(path uint64, fdn int64, a []uint64) int64 {
 	buf, size, options := a[1], a[2], a[3]
-	id, errno := p.xattrFile(path, fdn, options)
+	id, errno := p.xattrFile(path, fdn, options, 4)
 	if readOnly(errno) {
 		return 0
 	}
@@ -753,7 +771,7 @@ func (p *Process) removexattr(path uint64, fdn int64, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
-	id, errno := p.xattrFile(path, fdn, a[2])
+	id, errno := p.xattrFile(path, fdn, a[2], 2)
 	if errno != 0 {
 		return errno
 	}
@@ -775,20 +793,31 @@ func sysFremovexattr(p *Process, a []uint64) int64 { return p.removexattr(0, int
 
 // forgetFile drops what the machine keeps of a host file that no longer exists: of the one a guest
 // path named before it was removed or replaced, if that was its last name.
-func (p *Process) forgetFile(t target) {
+func (p *Process) forgetFile(t target) { p.forgetting(t)() }
+
+// forgetting is forgetFile to be done once the name is gone: what there is to forget is found
+// while the name is still there.
+func (p *Process) forgetting(t target) func() {
 	var st syscall.Stat_t
-	if statInRoot(t.root, t.rel, false, &st) == nil && st.Mode&syscall.S_IFMT != syscall.S_IFREG {
-		p.m.changed() // a directory, or a link that may lead to one
+	if statInRoot(t.root, t.rel, false, &st) != nil {
+		return func() {}
 	}
-	if statInRoot(t.root, t.rel, false, &st) == nil && (st.Nlink <= 1 || st.Mode&syscall.S_IFMT == syscall.S_IFDIR) { // a directory has the one name
-		delete(p.m.xattrs, hostFileOf(&st))
-		delete(p.m.owners, hostFileOf(&st))
-		delete(p.m.fifos, hostFileOf(&st))
-		delete(p.m.fifoPipes, hostFileOf(&st)) // those who have it open go on with it
-		delete(p.m.sockets, hostFileOf(&st))
-		delete(p.m.said, hostFileOf(&st))
-		delete(p.m.flags, hostFileOf(&st))
-		delete(p.m.acls, hostFileOf(&st))
+	id, kind := hostFileOf(&st), st.Mode&syscall.S_IFMT
+	last := st.Nlink <= 1 || kind == syscall.S_IFDIR // a directory has the one name
+	return func() {
+		if kind != syscall.S_IFREG {
+			p.m.changed() // a directory, or a link that may lead to one
+		}
+		if last {
+			delete(p.m.xattrs, id)
+			delete(p.m.owners, id)
+			delete(p.m.fifos, id)
+			delete(p.m.fifoPipes, id) // those who have it open go on with it
+			delete(p.m.sockets, id)
+			delete(p.m.said, id)
+			delete(p.m.flags, id)
+			delete(p.m.acls, id)
+		}
 	}
 }
 

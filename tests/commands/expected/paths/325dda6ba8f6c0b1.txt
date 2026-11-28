@@ -1,0 +1,4 @@
+hello
+l2
+Symbolic Link
+Regular File

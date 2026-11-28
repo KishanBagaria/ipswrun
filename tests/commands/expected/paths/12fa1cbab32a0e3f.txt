@@ -1,0 +1,4 @@
+unreadable
+unsearchable
+a directory
+d---------

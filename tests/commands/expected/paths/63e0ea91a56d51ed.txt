@@ -1,0 +1,2 @@
+x: Permission denied
+out

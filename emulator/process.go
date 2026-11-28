@@ -334,10 +334,12 @@ type Process struct {
 	threads     []*thread
 	current     *thread
 	nextThread  int
-	yield       bool   // the running thread offered its turn
-	blocked     bool   // the call being answered came upon a directory it may not search (see blockedAt)
-	searching   int    // how deep in finding whether directories may be searched (see searchable)
-	start       string // the directory a name of the call being answered was given from, if it was given from one
+	yield       bool             // the running thread offered its turn
+	blocked     int64            // the call being answered came upon a directory it may not search, or could not take a step up: the error (see blockedAt, upward)
+	refusals    map[string]int64 // the paths of the call being answered in which a step up could not be taken, and why (see upward)
+	walks       map[string]walk  // and the paths with steps up it has walked, by how they were given
+	starts      []string         // the directories names of the call being answered were given from (see blockedAt)
+	searching   int              // how deep in finding whether directories may be searched (see searchable)
 	waits       uint64
 	semaphores  map[uint32]int
 	handoffs    map[uint64]int // mutexes unlocked for a waiter that had not arrived

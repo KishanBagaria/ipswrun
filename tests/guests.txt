@@ -82,6 +82,7 @@ openfds	tests/kernel/io	macos,ios
 openmay	tests/kernel/files	macos,ios
 searchmay	tests/kernel/files	macos,ios
 sysvolume	tests/kernel/files	macos,ios
+xattrmay	tests/kernel/files	macos,ios
 relsearch	tests/kernel/files	macos,ios
 fsizelimit	tests/kernel/files	macos,ios
 openpty	tests/kernel/tty	macos,ios

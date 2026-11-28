@@ -1,0 +1,52 @@
+# Paths: links, directories that are closed, names that go up and around, and what the system volume refuses. See run.sh.
+mkdir -p x/y/z; echo in > x/y/z/f; chmod 000 x; cat x/y/z/f 2>&1 | sed 's/^.*: //'; ls x 2>&1 | sed 's/^.*: //'; chmod 700 x; cat x/y/z/f
+mkdir -p x/y; echo in > x/y/f; cd x/y; chmod 000 ../../x; cat f; ls; echo more > g; cat g; cat ../y/f 2>&1 | sed 's/^.*: //'; chmod 700 "$OLDPWD/x" 2>&1 | sed 's/^.*: //'
+mkdir -p x/y; cd x/y; chmod 000 ../../x; pwd; /bin/pwd 2>&1 | sed 's/^.*: //'; cd . 2>&1 | sed 's/^.*: //'; cd .. 2>&1 | sed 's/^.*: //'
+mkdir -p x/y; echo in > x/y/f; ln -s x/y l; cat l/f; chmod 000 x; cat l/f 2>&1 | sed 's/^.*: //'; readlink l; ls -l l | cut -c1-10; chmod 700 x
+mkdir -p x/y; echo in > x/y/f; ln -s x/y/f lf; chmod 000 x; cat lf 2>&1 | sed 's/^.*: //'; test -e lf || echo not there; test -L lf && echo a link; chmod 700 x
+mkdir -p x/y; chmod 100 x; ls x 2>&1 | sed 's/^.*: //'; ls x/y | wc -l; cd x/y && echo entered; cd ../..; chmod 700 x
+mkdir -p x/y; chmod 400 x; ls x; ls -l x 2>&1 | sed 's/^.*: //' | head -2; cd x 2>&1 | sed 's/^.*: //'; chmod 700 x
+mkdir -p x/y/z; chmod 000 x/y; find x 2>&1 | sed 's/^find: //' | sort; chmod 700 x/y
+mkdir -p x/y; touch x/y/f; chmod 000 x/y; du -a x 2>&1 | sed 's/^du: //' | awk '{ print $NF }' | sort; chmod 700 x/y
+mkdir -p x/y; touch x/f; chmod 500 x; touch x/g 2>&1 | sed 's/^.*: //'; mv x/f x/h 2>&1 | sed 's/^.*: //'; mkdir x/y/ok && echo deeper is still open; chmod 700 x
+mkdir x; chmod 000 x; rmdir x && echo removed though closed
+mkdir -p x/y; chmod 000 x; rmdir x 2>&1 | sed 's/^.*: //'; mv x x2 && ls -d x2; chmod 700 x2
+mkdir -p x/y; chmod 000 x; cp -R x c 2>&1 | sed 's/^.*: //'; tar cf t.tar x 2>&1 | sed 's/^.*: //' | head -2; chmod 700 x
+mkdir x; chmod 000 x; test -r x || echo unreadable; test -x x || echo unsearchable; test -d x && echo a directory; stat -f %Sp x; chmod 700 x
+mkdir x; chmod 000 x; sh -c 'cd x' 2>&1 | sed 's/^.*: cd: //'; (cd x 2>/dev/null && echo in || echo out); chmod 700 x
+mkdir -p x/bin; printf '#!/bin/sh\necho ran\n' > x/bin/t; chmod +x x/bin/t; x/bin/t; chmod 000 x; x/bin/t 2>&1 | sed 's/^.*: //'; PATH=$PWD/x/bin:$PATH t 2>&1 | sed 's/^.*: //'; chmod 700 x
+ln -s a.txt l1; ln -s l1 l2; ln -s l2 l3; cat l3; readlink l3; stat -f %HT l3; stat -L -f %HT l3
+ln -s nothing dangling; cat dangling 2>&1 | sed 's/^.*: //'; test -e dangling || echo not there; test -L dangling && echo a link; ls dangling
+ln -s loop loop; cat loop 2>&1 | sed 's/^.*: //'; ln -s b a; ln -s a b; cat a/x 2>&1 | sed 's/^.*: //'; ls -d a
+ln -s d ld; ls ld; ls -d ld; ls -l ld | cut -c1; cd ld/e; pwd | sed 's|.*/ld/|ld/|'; pwd -P | sed 's|.*/d/|d/|'
+ln -s "$PWD/d" abs; ls abs; cd abs/e && pwd -P | sed 's|.*/d/|d/|'; cd ../..; ls a.txt 2>&1 | sed 's/^.*: //'
+ln -s /usr/share/dict sys; wc -l < sys/connectives; ls sys | wc -l; ln -s /nowhere/at/all gone; cat gone/x 2>&1 | sed 's/^.*: //'
+ln -s ../a.txt d/up; cat d/up; ln -s ../../a.txt d/e/up2; cat d/e/up2; cat d/e/../../a.txt; cat d/e/../e/../../a.txt
+cat ./a.txt; cat .//a.txt; cat d/../a.txt; cat d/./e/../../a.txt; cat a.txt/ 2>&1 | sed 's/^.*: //'; cat a.txt/. 2>&1 | sed 's/^.*: //'; cat nothing/../a.txt 2>&1 | sed 's/^.*: //'
+ln -s d/e ld; echo deep > d/a.txt; cat ld/../a.txt; cat ld/../../a.txt; cat ld/../e/../a.txt; ls ld/.. | tr '\n' ' '; echo; cat a.txt/../a.txt 2>&1 | sed 's/^.*: //'
+ln -s /usr/share/dict sd; ls sd/.. | head -2 | tr '\n' ' '; echo; cat sd/../dict/connectives | wc -l; ls /tmp/.. | head -1; ls /nowhere/.. 2>&1 | sed 's/^.*: //'; cat /usr/nothing/../share/dict/README 2>&1 | sed 's/^.*: //'
+cd d/e; cat ../../a.txt; ls ..; ls ../..| wc -l; cd ../../../..; cd - > /dev/null; pwd | sed 's|.*/||'
+mkdir -p deep/1/2/3/4/5/6/7/8/9; echo bottom > deep/1/2/3/4/5/6/7/8/9/f; cat deep/1/2/3/4/5/6/7/8/9/f; find deep -type d | wc -l; find deep -name f
+realpath d/e/../../a.txt | sed 's|.*/||'; realpath nothing 2>&1 | sed 's/^.*: //'; realpath / /usr/../bin/ls /tmp /var /etc
+ls -d /tmp /var /etc /private/tmp | tr '\n' ' '; readlink /tmp /var /etc | tr '\n' ' '; echo; ls -ld /tmp | cut -c1-10
+touch /System/x 2>&1 | sed 's/^.*: //'; mkdir /usr/x 2>&1 | sed 's/^.*: //'; touch /x 2>&1 | sed 's/^.*: //'; ln -s a /usr/l 2>&1 | sed 's/^.*: //'; ln -s a /l 2>&1 | sed 's/^.*: //'
+mv a.txt /usr/a.txt 2>&1 | sed 's/^.*: //'; mv /usr/share/dict/README . 2>&1 | sed 's/^.*: //' | head -1; ls a.txt
+cp /usr/share/dict/README r; wc -l < r; cp a.txt /usr/share/dict/ 2>&1 | sed 's/^.*: //'; ln /usr/share/dict/README hard 2>&1 | sed 's/^.*: //'
+chmod 644 /usr/share/dict/README 2>&1 | sed 's/^.*: //'; touch /usr/share/dict/README 2>&1 | sed 's/^.*: //'; echo x >> /usr/share/dict/README 2>&1 | sed 's/^.*README: //'
+ls /private/var/root 2>&1 | sed 's/^.*: //'; cat /private/var/root/x 2>&1 | sed 's/^.*: //'; touch /private/var/root/x 2>&1 | sed 's/^.*: //'; cd /private/var/root 2>&1 | sed 's/^.*: //'; ls -ld /private/var/root | cut -c1-10
+test -e /private/var/root && echo there; test -r /private/var/root || echo unreadable; test -e /private/var/root/x || echo nothing to see; find /private/var/root 2>&1 | sed 's/^find: //'
+ls -d /Users/Shared /Users /Library /System /usr /bin /private | tr '\n' ' '; echo; stat -f '%Sp %Su' / /usr /System /bin | tr '\n' ' '; echo
+mkfifo /usr/p 2>&1 | sed 's/^.*: //'; mkfifo /p 2>&1 | sed 's/^.*: //'; mkfifo /usr 2>&1 | sed 's/^.*: //'; mkdir /usr 2>&1 | sed 's/^.*: //'; rmdir /usr 2>&1 | sed 's/^.*: //'
+mkdir t; cd t; touch f; ln f g; ln -s f s; ls -li | awk 'NR > 1 { print $1 }' | sort -u | wc -l; stat -f %l f; unlink g; stat -f %l f
+mkdir t; touch t/a t/b; mv t/a t/b; ls t; mv t u; ls u; mkdir v; mv u v/; ls v/u; mv v/u/b .; ls b
+mkdir t; touch f; mv f t/; mv t/f t/g; mv t t2; ls t2; mv t2 t2/inside 2>&1 | sed 's/^.*: //'; mkdir e1; mv e1 t2 && ls t2 | tr '\n' ' '; echo
+mkdir t u; touch t/f; mv t u; ls u/t; rmdir u 2>&1 | sed 's/^.*: //'; mkdir w; touch nd; mv w nd 2>&1 | sed 's/^.*: //'; mv nd w && ls w
+touch 'a b' 'q?' '-dash' 'ünï' 'tab	x'; ls | grep -c .; ls -- -dash; cat 'a b' 'ünï' | wc -c; unlink -- -dash; ls | grep -c dash
+long=$(printf 'n%.0s' $(seq 1 255)); touch $long && ls | grep -c nnnn; touch ${long}n 2>&1 | sed 's/^.*: //'; mkdir -p $long.d/$long.d 2>&1 | sed 's/^.*: //'; mkdir -p ${long%nnnn}.d/${long%nnnn}.d && echo two deep
+p=$(printf 'dd/%.0s' $(seq 1 120)); mkdir -p $p && echo made; ls -d $p | wc -c; (cd $p && echo in; touch f && ls) 2>&1 | sed 's/^.*: //'
+mkdir -p x/y; cd x/y; echo hi > f; ln -s f l; ln -s ../y/f up; chmod 000 ../../x; cat l; cat up 2>&1 | sed 's/^.*: //'; chmod 700 "$OLDPWD/x"
+mkdir -p x/y; chmod 000 x; rmdir x 2>&1 | sed 's/^.*: //'; stat -f %Sp x; ls x 2>&1 | sed 's/^.*: //'; chmod 700 x; ls x
+ls /private/var/root/Library/.. 2>&1 | sed 's/^.*: //'; ls /private/var/root/.. | grep -c root; cat /private/var/root/../root/x 2>&1 | sed 's/^.*: //'
+mkdir -p real/sub real/peer; touch real/marker; ln -s ../peer real/sub/up; ln -s real/sub short; ls short/up/.. | tr '\n' ' '; echo; ls short/.. | tr '\n' ' '; echo; cat short/../marker; echo $?
+mkdir x; echo in > x/f; ln -s x/f l2; ln -s l2 l1; cat l1; chmod 000 x; cat l1 2>&1 | sed 's/^.*: //'; cat l2 2>&1 | sed 's/^.*: //'; chmod 700 x
+mkdir -p d2/sub; rmdir d2/sub/. 2>&1 | sed 's/^.*: //'; rmdir d2/sub/../sub/. 2>&1 | sed 's/^.*: //'; rmdir d2/sub/.. 2>&1 | sed 's/^.*: //'; rmdir d2/sub/../sub; ls d2 | wc -l
