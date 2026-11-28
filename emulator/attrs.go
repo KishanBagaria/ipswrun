@@ -83,6 +83,23 @@ func (p *Process) describe(kind fdKind, path string, size int64, inode *Inode, h
 // describePath describes what a guest path names, following a final symbolic link or not. op is
 // the system call, for the note when the path names nothing.
 func (p *Process) describePath(op, path string, follow bool) (target, fileInfo, int64) {
+	if asDirectory(path) && !follow {
+		follow = true
+	}
+	if asDirectory(path) {
+		if _, isDescriptor := p.descriptorAt(path); !isDescriptor {
+			t, info, errno := p.describeNamed(op, path, true)
+			if errno == 0 && info.mode&syscall.S_IFMT != syscall.S_IFDIR {
+				return t, fileInfo{}, -eNOTDIR
+			}
+			return t, info, errno
+		}
+	}
+	return p.describeNamed(op, path, follow)
+}
+
+// describeNamed is describePath of a path as it is written, with no thought of how it ends.
+func (p *Process) describeNamed(op, path string, follow bool) (target, fileInfo, int64) {
 	if n, ok := p.descriptorAt(path); ok { // what the descriptor is, followed or not
 		f := p.fds[n]
 		if f == nil {

@@ -420,6 +420,15 @@ func (p *Process) absoluteLink(path string) string {
 	return pathpkg.Clean(path)
 }
 
+// asDirectory says whether a path is written to name a directory: it ends in a slash, or in a
+// dot after one. Such a path is of what a link leads to and never of the link, is ENOTDIR of
+// what is no directory, and of nothing is ENOENT even where something was to be made: as
+// measured of lstat, stat, readlink, open and access (macOS 27.2.1, by hand).
+func asDirectory(path string) bool {
+	path = strings.TrimSuffix(path, ".")
+	return strings.HasSuffix(path, "/") && strings.Trim(path, "/") != ""
+}
+
 // absolute is the canonical form of a guest path, relative to the working directory or not.
 func (p *Process) absolute(path string) string {
 	if !strings.HasPrefix(path, "/") {
@@ -738,18 +747,20 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 	}
 	const noFollow, symlink = 0x100, 0x200000 // O_NOFOLLOW, O_SYMLINK
 	t, ok := p.resolve(path)
-	if flags&(noFollow|symlink) == 0 {
+	if flags&(noFollow|symlink) == 0 || asDirectory(path) {
 		t, ok = p.followed(t, ok)
+	}
+	if asDirectory(path) {
+		if _, info, errno := p.describePath("open", path, true); errno != 0 {
+			return errno
+		} else if info.mode&syscall.S_IFMT != syscall.S_IFDIR {
+			return -eNOTDIR
+		}
 	}
 	if !ok {
 		if flags&0x200 != 0 { // to be made, where nothing is made: in a directory of the system volume, or of the devices
-			if dir, there := p.followed(p.resolve(pathpkg.Dir(p.absolute(path)))); there {
-				switch {
-				case dir.path == "/":
-					return -eROFS
-				case p.onSystem(dir), under(dir.path, "/dev"):
-					return -ePERM
-				}
+			if errno := p.unwritable(path, true); errno != 0 {
+				return errno
 			}
 		}
 		p.note("  ENOENT open %s", path)
@@ -1390,6 +1401,35 @@ func (p *Process) accessFor(path string, mode uint64, follow bool) int64 {
 	return 0
 }
 
+// unwritable is why a name where nothing is kept here is not removed, or not made: what is
+// there on the system volume or among the devices is not removed (EPERM), nothing is made in a
+// directory of those (EPERM; in the root EROFS), and what is there already is there (EEXIST).
+// As measured of rm /bin/ls, mkdir /usr/newdir, a file made in / and in /dev, and unlink and
+// mkdir of /dev/zero. Nothing where the place was not measured.
+func (p *Process) unwritable(path string, making bool) int64 {
+	if t, ok := p.resolve(path); ok {
+		switch {
+		case making:
+			return -eEXIST
+		case p.onSystem(t), under(t.path, "/dev"):
+			return -ePERM
+		}
+		return 0
+	}
+	if !making {
+		return 0
+	}
+	if dir, there := p.followed(p.resolve(pathpkg.Dir(p.absolute(path)))); there {
+		switch {
+		case dir.path == "/":
+			return -eROFS
+		case p.onSystem(dir), under(dir.path, "/dev"):
+			return -ePERM
+		}
+	}
+	return 0
+}
+
 // onSystem says whether what a path names is of the system volume, which nobody writes.
 func (p *Process) onSystem(t target) bool {
 	return t.root == nil && (t.kind == cacheFD || t.inode != nil) && t.path != dataMount && !under(t.path, "/dev") && p.volumeAt(t.path).mount == "/"
@@ -1552,9 +1592,40 @@ func hostCall(err error) int64 {
 
 func (p *Process) doUnlink(path string, dir bool) int64 {
 	p.note("  unlink %s", path)
+	if asDirectory(path) && !dir { // of what a link leads to: a directory, which is not unlinked, as measured
+		if _, _, errno := p.describePath("unlink", path, true); errno != 0 {
+			return errno
+		}
+		return -ePERM
+	}
 	t, ok := p.writableTarget(path)
 	if !ok {
+		if errno := p.unwritable(path, false); errno != 0 {
+			return errno
+		}
 		return -eNOENT
+	}
+	if asDirectory(path) {
+		if strings.HasSuffix(path, ".") { // rmdir of a directory by its own name in it, as measured
+			return -eINVAL
+		}
+		if fi, err := t.root.Lstat(t.rel); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			// A link written as a directory: the directory it leads to is removed and the
+			// link is left, as measured.
+			if _, _, errno := p.describePath("rmdir", path, true); errno != 0 {
+				return errno
+			}
+			to, err := t.root.Readlink(t.rel)
+			if err != nil {
+				return hostErrno(err)
+			}
+			if !strings.HasPrefix(to, "/") {
+				to = pathpkg.Join(pathpkg.Dir(p.absolute(path)), to)
+			}
+			if t, ok = p.writableTarget(to); !ok {
+				return -eNOENT
+			}
+		}
 	}
 	fi, err := t.root.Lstat(t.rel)
 	if err != nil {
@@ -1652,6 +1723,9 @@ func sysLinkat(p *Process, a []uint64) int64 {
 func (p *Process) doMkdir(path string, mode uint64) int64 {
 	t, ok := p.writableTarget(path)
 	if !ok {
+		if errno := p.unwritable(path, true); errno != 0 {
+			return errno
+		}
 		return -eACCES
 	}
 	if err := t.root.Mkdir(t.rel, os.FileMode(mode&0o777)); err != nil {
@@ -1689,6 +1763,11 @@ func sysMkdirat(p *Process, a []uint64) int64 {
 }
 
 func (p *Process) doRename(from, to string) int64 {
+	if asDirectory(to) { // which has to be a directory that is there, as measured
+		if _, _, errno := p.describePath("rename", to, true); errno != 0 {
+			return errno
+		}
+	}
 	t1, ok1 := p.writableTarget(from)
 	t2, ok2 := p.writableTarget(to)
 	if !ok1 || !ok2 {
@@ -1696,6 +1775,11 @@ func (p *Process) doRename(from, to string) int64 {
 	}
 	if !sameVolume(t1, t2) {
 		return -eXDEV
+	}
+	if to, err := t2.root.Lstat(t2.rel); err == nil && to.IsDir() { // a directory is not replaced by what is none, as measured
+		if from, err := t1.root.Lstat(t1.rel); err == nil && !from.IsDir() {
+			return -eISDIR
+		}
 	}
 	p.forgetFile(t2) // what it replaces, if anything
 	return p.renameHost(t1, t2)
@@ -1742,6 +1826,12 @@ func sysTruncate(p *Process, a []uint64) int64 {
 
 // doReadlink serves the links a guest makes under its home or a mount; nothing else is a symbolic link.
 func (p *Process) doReadlink(path string, buf, size uint64) int64 {
+	if asDirectory(path) { // of what the link leads to, which is no link
+		if _, _, errno := p.describePath("readlink", path, true); errno != 0 {
+			return errno
+		}
+		return -eINVAL
+	}
 	t, ok := p.resolve(path)
 	link := t.link // one of the system volume's
 	if root := p.rootLink(path); root != "" {

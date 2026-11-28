@@ -1,0 +1,17 @@
+dir/: by lstat a directory, by stat a directory; read as a link: Invalid argument; opened: yes; there: yes
+file/: by lstat Not a directory, by stat Not a directory; read as a link: Not a directory; opened: Not a directory; there: Not a directory
+todir: by lstat a link, by stat a directory; read as a link: yes; opened: yes; there: yes
+todir/: by lstat a directory, by stat a directory; read as a link: Invalid argument; opened: yes; there: yes
+tofile/: by lstat Not a directory, by stat Not a directory; read as a link: Not a directory; opened: Not a directory; there: Not a directory
+tonone/: by lstat No such file or directory, by stat No such file or directory; read as a link: No such file or directory; opened: No such file or directory; there: No such file or directory
+todir/.: by lstat a directory, by stat a directory; read as a link: Invalid argument; opened: yes; there: yes
+dir//: by lstat a directory, by stat a directory; read as a link: Invalid argument; opened: yes; there: yes
+todir//: by lstat a directory, by stat a directory; read as a link: Invalid argument; opened: yes; there: yes
+/etc/: by lstat a directory, by stat a directory; read as a link: Invalid argument; opened: yes; there: yes
+/etc/passwd/: by lstat Not a directory, by stat Not a directory; read as a link: Not a directory; opened: Not a directory; there: Not a directory
+/tmp/: by lstat a directory, by stat a directory; read as a link: Invalid argument; opened: yes; there: yes
+/System/Library/CoreServices/SystemVersion.plist/: by lstat Not a directory, by stat Not a directory; read as a link: Not a directory; opened: Not a directory; there: Not a directory
+/usr/lib/: by lstat a directory, by stat a directory; read as a link: Invalid argument; opened: yes; there: yes
+//: by lstat a directory, by stat a directory; read as a link: Invalid argument; opened: yes; there: yes
+a link to a directory, written as one, unlinked: Operation not permitted; removed as a directory by its own name in it: Invalid argument; removed as a directory: yes, and then the directory is No such file or directory and the link a link
+a directory made by such a name: yes; a file: No such file or directory; a file moved to such a name that is not there: No such file or directory; to one that is a directory: Is a directory
