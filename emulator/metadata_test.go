@@ -420,7 +420,7 @@ func TestIOPolicy(t *testing.T) {
 	})
 }
 
-// __mac_syscall answers as examples/macsyscall.c measured a Mac answering a process that is not
+// __mac_syscall answers as tests/kernel/macsyscall.c measured a Mac answering a process that is not
 // sandboxed, writes nothing it did not write, and stops on everything else.
 func TestMacSyscall(t *testing.T) {
 	p := newProcess(t)
@@ -570,7 +570,7 @@ func TestGuestOutput(t *testing.T) {
 	})
 }
 
-// A pipe's two ends, in the calls of one thread; examples/pipes.c has the rest, against a Mac.
+// A pipe's two ends, in the calls of one thread; tests/kernel/pipes.c has the rest, against a Mac.
 func TestPipe(t *testing.T) {
 	p := newProcess(t)
 	onMain(func() {

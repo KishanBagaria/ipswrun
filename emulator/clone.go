@@ -11,7 +11,7 @@ import (
 // A copy of a file made by the file system, as ditto and Finder make one. On a Mac's the copy
 // shares the first's blocks until one of them is written to, which nothing here can tell from a
 // copy of its bytes, so that is what is made: a file of its own with what the first held, and its
-// mode, its date of modification, its attributes and its owner, as measured (examples/clone.c).
+// mode, its date of modification, its attributes and its owner, as measured (tests/kernel/clone.c).
 
 const (
 	cloneNoFollow    = 0x1  // CLONE_NOFOLLOW: of a symbolic link, the link

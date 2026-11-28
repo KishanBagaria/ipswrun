@@ -132,7 +132,7 @@ func machVMProtect(p *Process, a []uint64) int64 {
 }
 
 // machPortType is mach_port_type(task, name, &type): what rights a name is, as a Mac's kernel
-// says them (examples/taskport.c). The bootstrap port is a right to send; a name that is
+// says them (tests/kernel/taskport.c). The bootstrap port is a right to send; a name that is
 // nothing is no name; and a semaphore's, which is no port here, stops the run.
 func machPortType(p *Process, a []uint64) int64 {
 	name := uint32(a[1])
@@ -509,7 +509,7 @@ func migTaskGetSpecialPort(p *Process, body []byte) migReply {
 }
 
 // migVMCopy is mach_vm_copy(task, from, size, to): so many bytes of the task's memory copied to
-// another place in it, as measured (examples/vmcopy.c). No bytes is no error, wherever from.
+// another place in it, as measured (tests/kernel/vmcopy.c). No bytes is no error, wherever from.
 // Memory that is not there, or that may not be read where it is read from or written where it
 // is written to, is KERN_INVALID_ADDRESS, and nothing is copied. Where the two overlap, what
 // is copied is what was there before.

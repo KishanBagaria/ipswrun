@@ -2,7 +2,7 @@ package emulator
 
 // Messages over a socket (sendmsg, recvmsg): what is sent from several places and received
 // into several, and the descriptors a program sends beside the bytes for another to have
-// (SCM_RIGHTS). As measured on macOS 27.2.1 (examples/passfd.c) and as the kernel's source has
+// (SCM_RIGHTS). As measured on macOS 27.2.1 (tests/kernel/passfd.c) and as the kernel's source has
 // it (unp_internalize and unp_externalize in bsd/kern/uipc_usrreq.c, soreceive in
 // uipc_socket.c): a descriptor sent is one more for the same open file, held by the socket
 // until it is received; whoever receives the first bytes of its message is given all of them

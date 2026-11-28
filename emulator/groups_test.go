@@ -4,7 +4,7 @@ import "testing"
 
 func TestKillGroupAsksWhoIsThere(t *testing.T) {
 	// With signal 0, kill of a group only says whether anyone in it can be sent a signal, as
-	// examples/groups.c prints natively: no one in it is ESRCH, and no one who can be sent one
+	// tests/kernel/groups.c prints natively: no one in it is ESRCH, and no one who can be sent one
 	// (another user's, or ended and not yet waited for) is EPERM.
 	m := &Machine{}
 	parent := &Process{m: m, pid: 10, uid: 501}

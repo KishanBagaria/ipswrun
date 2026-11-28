@@ -766,7 +766,7 @@ func (p *Process) materialize(addr uint64) bool {
 	b1 := min(b0+blockSize, r.end)
 	if !r.touched && r.data == nil && r.file == nil && r.shared == nil {
 		// Memory of no file gets something of its own to be when it is first touched, which
-		// starts where the region then does: as measured (examples/vmregion.c).
+		// starts where the region then does: as measured (tests/kernel/vmregion.c).
 		r.touched, r.into = true, 0
 	}
 	if r.kind == sharedRegion {
@@ -1226,7 +1226,7 @@ func (p *Process) load(argv, env []string) error {
 		apple = append(apple, "executable_cdhash="+cdhash)
 	}
 	apple = append(apple, "executable_boothash="+strings.Repeat("22", 20), fmt.Sprintf("th_port=%#x", mainThreadPort), "arm64e_abi=os", "ptrauth_disabled=1", "dyld_flags=0x0")
-	// The strings are at the top of the stack, as a Mac's kernel lays them (examples/stacktop.c):
+	// The strings are at the top of the stack, as a Mac's kernel lays them (tests/kernel/stacktop.c):
 	// the first of its own, which names the program, the arguments, the environment and the
 	// rest of its own, each run of them starting a multiple of 8 above the first and the last
 	// ending at the top. Below them are the pointers to them.

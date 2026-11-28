@@ -728,7 +728,7 @@ func sysFstat64(p *Process, a []uint64) (r int64) {
 // noFork marks a descriptor as one that a copy of the process (fork) and a program it starts
 // (posix_spawn) do not get, or takes the mark off. The program the process itself becomes
 // (execve) keeps it, and a duplicate is not marked. As measured on macOS 27.2.1
-// (examples/clofork.c); SQLite opens its files so.
+// (tests/kernel/clofork.c); SQLite opens its files so.
 func (p *Process) noFork(n uint64, marked bool) {
 	if !marked {
 		delete(p.clofork, n)
@@ -1299,7 +1299,7 @@ func sysLseek(p *Process, a []uint64) int64 {
 	if f.kind == dirFD || f.kind == hostFD && f.isDirectory() {
 		// A directory's place is the entry that is next, as getdirentries counts them. Back at
 		// the start it is read anew, so what was made or taken away since is seen: as measured
-		// of rewinddir (examples/devfdlist.c).
+		// of rewinddir (tests/kernel/devfdlist.c).
 		switch {
 		case a[2] == 0 && off >= 0:
 			if f.pos = off; off == 0 && (f.kind == hostFD || f.path == devFDs) { // the system volume's do not change
@@ -1384,7 +1384,7 @@ func (p *Process) doAccess(path string) int64 {
 // the rest by the others'. Purposes and flags there are not are not minded; a link that is not
 // followed may be anything; a descriptor's name is not to be run, whatever it is of. To write
 // what is on the system volume is EPERM, and the root itself EROFS. As measured on macOS 27.2.1
-// (examples/accessfor.c). From the source and not measured: root may read and write anything,
+// (tests/kernel/accessfor.c). From the source and not measured: root may read and write anything,
 // and run what anyone may run and any directory.
 func (p *Process) accessFor(path string, mode uint64, follow bool) int64 {
 	if n, ok := p.descriptorAt(path); ok && p.fds[n] != nil && mode&1 != 0 {
@@ -2158,7 +2158,7 @@ func (f *fd) plain() bool {
 }
 
 // fcntlCaching answers what is asked of how a file is read and written out, which a shell asks
-// of each script it reads and a database of each file it writes, as measured (examples/fileflags.c):
+// of each script it reads and a database of each file it writes, as measured (tests/kernel/fileflags.c):
 // not keeping it in memory and not reading ahead of it, which here are only said back by F_GETFL,
 // there being no such memory to keep it in; and writing it out to the disk, which is the host's
 // to do for a file of its own. A pipe is EBADF.
@@ -2186,7 +2186,7 @@ func (p *Process) fcntlCaching(f *fd, cmd, arg uint64, a []uint64) int64 {
 }
 
 // readAdvise is F_RDADVISE, by which a program says what part of a file it is about to read
-// ({from where, how much}), as measured (examples/fileflags.c): nothing is read ahead for it
+// ({from where, how much}), as measured (tests/kernel/fileflags.c): nothing is read ahead for it
 // here, and it is told what a Mac tells it. A part that starts at or past the file's end is
 // EFBIG, one from before its start or of less than nothing EINVAL, as is a directory; a pipe is
 // EBADF. Of a file that holds nothing it was not measured, and stops.
@@ -2228,7 +2228,7 @@ func (p *Process) readAdvise(f *fd, arg uint64, a []uint64) int64 {
 }
 
 // preallocate is F_PREALLOCATE, by which cp and the like ask for room for what they are about to
-// write, past the end of a file (examples/fileflags.c). The file is no longer for it, and the
+// write, past the end of a file (tests/kernel/fileflags.c). The file is no longer for it, and the
 // room is said to be had, all that was asked: none is kept for it on the host, so what stat says
 // the file takes on the disk does not grow as a Mac's does. Asked from anywhere but the end of
 // the file, or for less than nothing, it is EINVAL; of what is not a file open to write, EBADF.
@@ -2253,7 +2253,7 @@ func (p *Process) preallocate(f *fd, arg uint64, a []uint64) int64 {
 }
 
 // fcntlMeasured answers the requests SQLite and dyld make of every file they open, as a Mac's
-// kernel of macOS 27.2.1 was measured to answer a user's process (examples/rangelocks.c). What
+// kernel of macOS 27.2.1 was measured to answer a user's process (tests/kernel/rangelocks.c). What
 // was not measured, of a request or of a kind of descriptor, stops.
 func (p *Process) fcntlMeasured(f *fd, cmd, arg uint64, a []uint64) int64 {
 	file := f.plain()
@@ -2438,7 +2438,7 @@ func sysPathconf(p *Process, a []uint64) int64 {
 
 // saw notes where a file of a number is, for fsgetpath: every file a guest has looked at, which
 // is the machine's to know and so any process's to ask, as a Mac's kernel finds a file by its
-// number for whoever asks (examples/spawngroup.c). One no guest has looked at is not found here.
+// number for whoever asks (tests/kernel/spawngroup.c). One no guest has looked at is not found here.
 func (m *Machine) saw(id fileID, path string) {
 	if m.seen == nil {
 		m.seen = map[fileID]string{}

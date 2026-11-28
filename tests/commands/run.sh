@@ -20,7 +20,7 @@
 # print the same, and any listed one that now does or ends another way, fails the run.
 #
 # Downloads are kept in $IPSWRUN_CACHE (default ~/Library/Caches/ipswrun/matrix), as
-# examples/matrix.sh keeps them. Results are left in $RESULTS (default a temporary directory).
+# tests/matrix.sh keeps them. Results are left in $RESULTS (default a temporary directory).
 set -u
 cd "$(dirname "$0")/../.."
 here=tests/commands

@@ -90,7 +90,7 @@ func checkExecutable(path string) error {
 }
 
 // compiler is the command xcrun runs to build an executable for system (see osOf) from a single
-// source file, or nil for a path that is not one. The flags are those of examples/Makefile, and
+// source file, or nil for a path that is not one. The flags are those of tests/guests.mk, and
 // are to be kept the same as its. An iOS guest is built against the iOS SDK, which comes with
 // Xcode and not with the command line tools alone.
 func compiler(path, system string) []string {

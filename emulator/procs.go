@@ -12,7 +12,7 @@ import (
 // which answers with a struct kinfo_proc for each. They are those of the machine that run, or
 // have ended and are still to be waited for, and launchd, which is there to be asked of as on a
 // Mac. A Mac's list has the kernel too (pid 0) and whatever else it runs, which are not here.
-// What a record says was measured on macOS 27.2.1 (examples/procs.c); what was not read off a
+// What a record says was measured on macOS 27.2.1 (tests/kernel/procs.c); what was not read off a
 // real one (priorities, sizes of memory, the terminal's session) is left as zeros.
 
 const (
@@ -165,7 +165,7 @@ func (p *Process) sysctlProcs(mib []int32, oldp, oldlenp uint64, a []uint64) int
 
 // sysctlProcArgs answers kern.procargs2, {CTL_KERN, KERN_PROCARGS2, pid}: what a process of the
 // caller's user was started with, as ps shows it. It is how many arguments, and then the top of
-// the process's stack as it is now (examples/stacktop.c): the program's path and zeros after it
+// the process's stack as it is now (tests/kernel/stacktop.c): the program's path and zeros after it
 // to a multiple of 8, the arguments, the environment, and the kernel's own strings. Of another
 // user's process, of one that has ended, of none and into four bytes or fewer it is EINVAL, as
 // measured; into room for less than all of it, it is the count and zeros.
@@ -201,7 +201,7 @@ func (p *Process) sysctlProcArgs(mib []int32, oldp, oldlenp uint64, a []uint64) 
 // 0, even for a child of its own, as measured on macOS 27.2.1 of a program with no entitlement
 // asking of one that does not allow its task to be had; what one with either is told is not known); a pid there is no process of is
 // ESRCH, and a task that is not the caller's EINVAL. Its own is a second name for its task, a
-// right to send, the same name for as long as it has it (examples/taskport.c). What root is
+// right to send, the same name for as long as it has it (tests/kernel/taskport.c). What root is
 // given stops the run.
 func sysTaskReadForPID(p *Process, a []uint64) int64 {
 	pid := uint32(a[1])
@@ -310,7 +310,7 @@ func (p *Process) listFDs(about *Process, buf, size uint64, a []uint64) int64 {
 // listPIDs is proc_info's first call (PROC_INFO_CALL_LISTPIDS, which proc_listpids makes): the
 // numbers of the processes of a kind, the newest first, as the kernel's source has it
 // (proc_listpids in bsd/kern/proc_info.c) and as measured on macOS 27.2.1
-// (examples/listpids.c). All of them, those of a group, of a user, of a user as it really is
+// (tests/kernel/listpids.c). All of them, those of a group, of a user, of a user as it really is
 // (a process here has one user) and of a parent; a kind there is not has none. With no buffer
 // it says how much room they need, which a Mac says is for nineteen more than it then lists
 // (the source has twenty more than there are); with room for less than one number it is

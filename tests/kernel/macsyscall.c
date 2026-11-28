@@ -2,7 +2,7 @@
 // process that is not sandboxed: the emulator answers those, and only those, the same way (see
 // sysMacSyscall in emulator/bsd.go). It is run on a Mac, natively, not in ipswrun:
 //
-//   clang -o /tmp/macsyscall examples/macsyscall.c -lsandbox && /tmp/macsyscall
+//   clang -o /tmp/macsyscall tests/kernel/macsyscall.c -lsandbox && /tmp/macsyscall
 //
 // Each call is made directly, with the words the guests pass (as ipswrun's trace shows them), and
 // printed with what it returned, its errno and what it wrote. A few are also made through the

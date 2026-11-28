@@ -10,7 +10,7 @@ import (
 // listens, others connect to the path and are accepted, and each accepted end and the one that
 // connected are then as the two of a pair (see sockets.go). They are as the kernel's source has
 // them (unp_bind, unp_connect and unp_listen in bsd/kern/uipc_usrreq.c; solisten and sonewconn
-// in uipc_socket.c and uipc_socket2.c) and as measured on macOS 27.2.1 (examples/localsock.c).
+// in uipc_socket.c and uipc_socket2.c) and as measured on macOS 27.2.1 (tests/kernel/localsock.c).
 // Stream sockets only: a datagram socket, and a socket of any other domain but the system's
 // one for events, is refused as before, there being no network. The name is a file of the
 // host's under the home or a mount that the machine knows to be a socket, as a named pipe's

@@ -5,7 +5,7 @@ import "time"
 // Semaphores by name (sem_open): a count that as many waits pass as it holds before one has to
 // wait for it to be given back, made, found and taken away by a name, and held by a descriptor,
 // which is what the library hands out as the semaphore. A copy of a process shares its
-// semaphores with it. As measured on macOS 27.2.1 (examples/posixipc.c), and from the source
+// semaphores with it. As measured on macOS 27.2.1 (tests/kernel/posixipc.c), and from the source
 // (bsd/kern/posix_sem.c) where it says so.
 
 type namedSemaphore struct {

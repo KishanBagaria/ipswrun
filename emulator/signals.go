@@ -17,7 +17,7 @@ import (
 // the thread to go on where it was. A signal is taken by a thread when it comes back from the
 // kernel, and a thread that waits in a call a signal interrupts is brought back for it. No thread
 // is ever taken off the CPU, so one that makes no system call takes no signal either. What a
-// Mac's kernel does was measured with examples/signals.c and examples/handlers.c.
+// Mac's kernel does was measured with tests/kernel/signals.c and tests/kernel/handlers.c.
 
 const (
 	sigAbort = 6

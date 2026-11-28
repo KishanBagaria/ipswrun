@@ -100,7 +100,7 @@ On macOS with Xcode, pass a single C, Objective-C, or Swift file directly:
 ./ipswrun all examples/foundation.m
 ```
 
-ipswrun compiles the file once into a temporary arm64 executable for the system the `--device` runs, macOS 11 or iOS 14 and later, with the flags of [`examples/Makefile`](examples/Makefile): Objective-C guests get ARC and Foundation. The executable of an `--agent` or `--daemon` may be a source file too. For extra libraries, custom compiler flags, or entitlements, pass a prebuilt executable.
+ipswrun compiles the file once into a temporary arm64 executable for the system the `--device` runs, macOS 11 or iOS 14 and later, with the flags of [`tests/guests.mk`](tests/guests.mk): Objective-C guests get ARC and Foundation. The executable of an `--agent` or `--daemon` may be a source file too. For extra libraries, custom compiler flags, or entitlements, pass a prebuilt executable.
 
 The program you run, the guest, is an ordinary executable built on a Mac:
 
@@ -109,7 +109,7 @@ clang -arch arm64 -mmacosx-version-min=11.0 -Wl,-no_fixup_chains -o guest guest.
 xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=14.0 -Wl,-no_fixup_chains -o guest guest.c
 ```
 
-`-no_fixup_chains` is what lets every release's dyld load it. A binary with only arm64e code, as Apple's own are, is loaded too. [`examples/Makefile`](examples/Makefile) has the flags for Objective-C and Swift too; `make -C examples PLATFORM=ios` builds the examples for iOS into `examples/bin/ios`.
+`-no_fixup_chains` is what lets every release's dyld load it. A binary with only arm64e code, as Apple's own are, is loaded too. [`tests/guests.mk`](tests/guests.mk) has the flags for Objective-C and Swift too; `make -C examples PLATFORM=ios` builds the examples for iOS into `examples/bin/ios`.
 
 An executable can also be the release's own, by `system:` and its path there: `system:/usr/libexec/dirhelper`.
 
@@ -197,7 +197,7 @@ The run is the first guest's: its output and its exit status. When it exits, the
 
 ## What is tested
 
-Restore images from macOS 11.0.1 to 27.2.1 and from iOS 14.0 to 27.2.1, with the guests in [`examples`](examples): a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency, a file's mode, dates, extended attributes and locks with signal state and `mprotect`, Mach messages with what is built on them (libdispatch sources, `CFRunLoop`, XPC), a Mach service with its client in one process and in two, daemons of the release's own serving a client, the I/O Registry's device tree, the status of a port, pipes, by themselves and as libdispatch watches them, what a process has used, a process starting others, the release's shell among them, a kqueue of the guest's own, and signals with their handlers, faults and timers among them. [`examples/matrix.sh`](examples/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected); `--device=iPhone11,2` and `--device=iPhone15,2` do the same for iOS. `adi` is not run on iOS, where the only `adid` is FairPlay's.
+Restore images from macOS 11.0.1 to 27.2.1 and from iOS 14.0 to 27.2.1, with the guests in [`examples`](examples) and [`tests/kernel`](tests/kernel), which [`tests/guests.txt`](tests/guests.txt) lists: a private framework, SQLite, Foundation, the Swift and Objective-C runtimes, CommonCrypto and `SecKey`, POSIX threads, libdispatch and Swift concurrency, a file's mode, dates, extended attributes and locks with signal state and `mprotect`, Mach messages with what is built on them (libdispatch sources, `CFRunLoop`, XPC), a Mach service with its client in one process and in two, daemons of the release's own serving a client, the I/O Registry's device tree, the status of a port, pipes, by themselves and as libdispatch watches them, what a process has used, a process starting others, the release's shell among them, a kqueue of the guest's own, and signals with their handlers, faults and timers among them. [`tests/matrix.sh`](tests/matrix.sh) repeats each guest across the releases of `all` and diffs every run against [`examples/expected`](examples/expected); `--device=iPhone11,2` and `--device=iPhone15,2` do the same for iOS. `adi` is not run on iOS, where the only `adid` is FairPlay's.
 
 ## How it works
 

@@ -11,7 +11,7 @@ import (
 // as it was asked for; kevent takes changes to the notes and returns the ones that have
 // something to say, waiting for one if it is told to. libdispatch's kqueues, which have no
 // descriptor and hand their events to threads of the work queue, are in kevent.go. What a Mac's
-// kernel does was measured with examples/kqueue.c.
+// kernel does was measured with tests/kernel/kqueue.c.
 
 const (
 	noteControl = 0xC0000000 // of a user's event: what a change does with its flags

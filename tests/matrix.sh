@@ -1,23 +1,25 @@
 #!/bin/bash
 # Runs a guest against every release that "all" stands for (ipswrun --releases) and diffs what each run reported
-# against what is recorded for it in examples/expected/<guest>/<build>.json.
+# against what is recorded for it in <where>/expected/<guest>/<build>.json, <where> being the folder
+# tests/guests.txt says the guest is in.
 #
-#   examples/matrix.sh [--guest=NAME,...] [--device=PRODUCT] [--jobs=N] [--stream-compressed] [--update] [version prefix...]
+#   tests/matrix.sh [--guest=NAME,...] [--device=PRODUCT] [--jobs=N] [--stream-compressed] [--update] [version prefix...]
 #
-#   --guest=NAME,...     of GUESTS in examples/Makefile, instead of guest; all for every one
-#   --device=PRODUCT     an iPhone or iPad (iPhone11,2) to run the iOS guests of examples/bin/ios
-#                        against its releases, recorded in examples/expected/ios (default: macOS)
+#   --guest=NAME,...     of tests/guests.txt, instead of guest; all for every one
+#   --device=PRODUCT     an iPhone or iPad (iPhone11,2) to run the iOS guests (<where>/bin/ios)
+#                        against its releases, recorded in <where>/expected/ios (default: macOS)
 #   --jobs=N             runs at once, of any guest and release (default: one per processor)
 #   --stream-compressed  also run macOS 13 and 14, or iOS 16 and 17, which download a 1.1–4.5 GB member each
-#   --update             write the results to examples/expected instead of diffing against it
+#   --update             write the results to <where>/expected instead of diffing against it
 #   version prefix       only the builds whose version starts with one of these (e.g. 15. 27.2)
 #
 # Downloads are kept per build in $IPSWRUN_CACHE (default ~/Library/Caches/ipswrun/matrix), so a
 # second run fetches nothing. Each run's report, output and diagnostics are left in $RESULTS/<guest>
 # (default a temporary directory). Needs jq. Exits 1 if any build differs from what is expected.
-# The guests are built on a Mac; anywhere else they have to be in examples/bin already.
+# The guests are built on a Mac; anywhere else they have to be in <where>/bin already.
 set -u
 cd "$(dirname "$0")/.."
+list=tests/guests.txt
 
 guests=guest device= jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1) stream= update= prefixes=()
 for arg; do
@@ -36,11 +38,12 @@ cache=${IPSWRUN_CACHE:-$HOME/Library/Caches/ipswrun/matrix}
 results=${RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/ipswrun-matrix.XXXXXX")} || exit
 mkdir -p "$results/bin" || exit
 go build -o "$results/bin/ipswrun" ./cmd/ipswrun || exit
-[ "$guests" != all ] || guests=$(sed -n 's/^GUESTS = //p' examples/Makefile)
+# all is every guest of the list that is run by itself.
+[ "$guests" != all ] || guests=$(awk -F'\t' '$2 != "" && $1 !~ /^#/ && $4 != "beside" { print $1 }' $list | sort -u | tr '\n' ' ')
 
 # An iPhone or iPad runs iOS: its own guests, expectations and releases.
-platform=macos bin=examples/bin expected_root=examples/expected device_flags=()
-case $device in iPhone* | iPad* | iPod*) platform=ios bin=examples/bin/ios expected_root=examples/expected/ios ;; esac
+platform=macos sub= device_flags=()
+case $device in iPhone* | iPad* | iPod*) platform=ios sub=/ios ;; esac
 [ -z "$device" ] || device_flags=(--device "$device")
 
 # compressed says whether a version keeps its shared cache in a deflated member, which only
@@ -110,59 +113,31 @@ run_one() {
 # none idle: at most $jobs at once, and when that many are running, wait for the oldest.
 pids=()
 for guest in ${guests//,/ }; do
-	# adi asks the release's adid, which on iOS is another daemon, of FairPlay's, that needs more
-	# of an iPhone than there is.
-	[ "$platform" != ios ] || [ "$guest" != adi ] || continue
-	# shell runs /bin/sh and /bin/echo, which iOS has not.
-	[ "$platform" != ios ] || [ "$guest" != shell ] || continue
-	# shellpty drives /bin/sh, which iOS has not.
-	[ "$platform" != ios ] || [ "$guest" != shellpty ] || continue
-	# datavolume and oslog need a data volume, which only a macOS release says how to make.
-	[ "$platform" != ios ] || { [ "$guest" != datavolume ] && [ "$guest" != oslog ]; } || continue
-	# volumes prints how a Mac's volumes are mounted, which is not known of an iPhone's.
-	[ "$platform" != ios ] || [ "$guest" != volumes ] || continue
-	# profiles asks for a profile a Mac's kernel has by name, which is no iPhone's.
-	[ "$platform" != ios ] || [ "$guest" != profiles ] || continue
-	# procinfo is built against a header the iOS SDK does not have.
-	[ "$platform" != ios ] || [ "$guest" != procinfo ] || continue
-	# taskpolicy says what kind of program it is, which the kernel's source refuses on an iPhone and none was there to measure.
-	[ "$platform" != ios ] || [ "$guest" != taskpolicy ] || continue
-	# procwatch has its child become /bin/sleep, which an iPhone does not have.
-	[ "$platform" != ios ] || [ "$guest" != procwatch ] || continue
-	# power registers for the system's power by a library an iPhone's SDK does not give, and none was there to measure.
-	[ "$platform" != ios ] || [ "$guest" != power ] || continue
-	# detach asks launchd to leave the console's session, which was measured on a Mac only.
-	[ "$platform" != ios ] || [ "$guest" != detach ] || continue
+	# Where the list has the guest, for this platform, and how it says to run it: ipswrun's flags,
+	# and after -- the guest's own arguments. A guest it has not for the platform is not run.
+	line=$(awk -F'\t' -v name="$guest" -v platform=$platform '$1 == name && index($3, platform) && $4 != "beside" { print $2 "\t" $4; exit }' $list)
+	[ -n "$line" ] || continue
+	where=${line%%$'\t'*} how=${line#*$'\t'}
+	bin=$where/bin$sub
 	if [ "$(uname)" = Darwin ]; then
-		make -s -C examples PLATFORM=$platform "${bin#examples/}/$guest" || exit
+		make -s -C "$where" PLATFORM=$platform "bin$sub/$guest" || exit
 	elif [ ! -x "$bin/$guest" ]; then
 		echo "$bin/$guest is not there, and is built on a Mac" >&2
 		exit 1
 	fi
-	out=$results/$guest expected=$expected_root/$guest args=() options=()
+	out=$results/$guest expected=$where/expected$sub/$guest args=() options=()
 	mkdir -p "$out" || exit
-	# objcinfo describes the frameworks it is given: one that only exists as a private framework.
-	[ "$guest" != objcinfo ] || args=(/System/Library/PrivateFrameworks/IMCore.framework/IMCore)
-	# service is run as the process that provides the service it then uses.
-	[ "$guest" != service ] || options=(--service com.example.ipswrun.echo)
-	# client is run beside the server whose services it uses, and prefs beside the release's own
-	# cfprefsd, in both of its roles.
-	[ "$guest" != client ] || options=(--agent com.example.ipswrun.echo,com.example.ipswrun.reverse=$bin/server)
-	# adi is run beside the release's adid, the daemon it asks.
-	[ "$guest" != adi ] || options=(--daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid)
-	# Two variables of ipswrun's keep CoreFoundation from asking for cfprefsd, and go. On macOS
-	# cfprefsd is started when it is first looked up, in both of its roles, as its launchd plists
-	# say; on iOS, where the agent has no plist of its own, both are started by hand. cfprefsd
-	# reads its sandbox profile, which every guest may.
-	# notify asks the release's own notifyd, started when it is first looked up.
-	# datavolume is given a new data volume, and oslog one for the release's own logd to keep
-	# its files on, with the notifyd logd asks.
-	[ "$guest" != datavolume ] || options=(--data "$out/data-{build}")
-	[ "$guest" != oslog ] || options=(--data "$out/data-{build}" --on-demand 'com.apple.logd*' --on-demand com.apple.system.notification_center)
-	[ "$guest" != notify ] || options=(--on-demand com.apple.system.notification_center)
-	[ "$guest" != prefs ] || options=(--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME --on-demand 'com.apple.cfprefsd.*')
-	[ "$guest" != prefs ] || [ "$platform" != ios ] || options=(--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME
-		--agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon')
+	eval "words=($how)"
+	past=
+	for word in ${words[@]+"${words[@]}"}; do
+		if [ -z "$past" ] && [ "$word" = -- ]; then
+			past=1
+		elif [ -n "$past" ]; then
+			args+=("$word")
+		else
+			options+=("$word")
+		fi
+	done
 
 	for release in ${releases[@]+"${releases[@]}"}; do
 		if [ ${#pids[@]} -ge "$jobs" ]; then
@@ -177,8 +152,9 @@ wait
 
 failed=0
 for guest in ${guests//,/ }; do
-	if [ "$platform" = ios ] && { [ "$guest" = adi ] || [ "$guest" = shell ] || [ "$guest" = shellpty ] || [ "$guest" = datavolume ] || [ "$guest" = oslog ] || [ "$guest" = volumes ] || [ "$guest" = profiles ] || [ "$guest" = procinfo ] || [ "$guest" = taskpolicy ]; }; then
-		echo "== $guest: not run on iOS"
+	if [ -z "$(awk -F'\t' -v name="$guest" -v platform=$platform '$1 == name && index($3, platform) && $4 != "beside" { print 1; exit }' $list)" ]; then
+		[ -n "$(awk -F'\t' -v name="$guest" '$1 == name { print 1; exit }' $list)" ] || { echo "== $guest: not in $list"; failed=1; continue; }
+		echo "== $guest: not run on $platform"
 		continue
 	fi
 	[ "$guests" = "$guest" ] || echo "== $guest"

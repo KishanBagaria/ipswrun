@@ -11,7 +11,7 @@ import (
 // The descriptors a process has, as files: /dev/fd/3 is what descriptor 3 is, and /dev/stdin,
 // /dev/stdout and /dev/stderr are 0, 1 and 2. Opening one is duplicating the descriptor, for no
 // more than the descriptor may do, and asking of one is asking of the descriptor, as a Mac's
-// kernel was measured to answer (examples/devfd.c).
+// kernel was measured to answer (tests/kernel/devfd.c).
 
 const devFDs = "/dev/fd"
 
@@ -88,7 +88,7 @@ func (p *Process) openDescriptor(n, flags uint64) int64 {
 	return p.dupFD(n, 0, false)
 }
 
-// A descriptor's name given to a call that takes a path (examples/devfdpaths.c). A few act on
+// A descriptor's name given to a call that takes a path (tests/kernel/devfdpaths.c). A few act on
 // the open file, as the call that takes the descriptor does; the rest are told of a file of the
 // device file system that is no directory and no link, that is there already, and that is not
 // to be run, renamed, linked or removed. Of a descriptor that is not open all are EBADF.

@@ -1,0 +1,137 @@
+# The guests: one line each, of four parts with a tab between.
+#
+#   name       the program, built from <where>/<name>.c, .m or .swift into <where>/bin (for iOS, <where>/bin/ios)
+#   where      examples for the programs that show what ipswrun runs, tests/kernel for those that hold the
+#              kernel it stands in for against a Mac's
+#   platforms  macos, ios or both: what it is built for and run on
+#   how        the flags ipswrun runs it with, and after -- the guest's own arguments; $bin is where the
+#              guests of its folder are built and $out where the run's results go. The one word beside
+#              is for what is built to be run beside another, and never by itself.
+#
+# A guest with two lines is run differently on each platform. What it prints is recorded in
+# <where>/expected/<name>/<build>.json (for iOS, <where>/expected/ios/<name>). tests/matrix.sh and
+# the Makefiles read this file, and nothing else says which guests there are.
+
+# Programs that show what ipswrun runs.
+# adi asks the release's adid, which on iOS is another daemon, of FairPlay's, that needs more of an iPhone than there is.
+adi	examples	macos	--daemon com.apple.adid=system:/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid
+# client is run beside the server whose services it uses.
+client	examples	macos,ios	--agent com.example.ipswrun.echo,com.example.ipswrun.reverse=$bin/server
+crypto	examples	macos,ios
+foundation	examples	macos,ios
+guest	examples	macos,ios
+# objcinfo describes the frameworks it is given: one that only exists as a private framework.
+objcinfo	examples	macos,ios	-- /System/Library/PrivateFrameworks/IMCore.framework/IMCore
+# prefs is run beside the release's own cfprefsd, in both of its roles. Two variables of ipswrun's keep CoreFoundation from asking for cfprefsd, and go. On macOS cfprefsd is started when it is first looked up, as its launchd plists say; on iOS, where the agent has no plist of its own, both are started by hand.
+prefs	examples	macos	--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME --on-demand 'com.apple.cfprefsd.*'
+prefs	examples	ios	--env __CFPREFERENCES_AVOID_DAEMON --env CFFIXED_USER_HOME --agent 'com.apple.cfprefsd.agent=system:/usr/sbin/cfprefsd agent' --daemon 'com.apple.cfprefsd.daemon=system:/usr/sbin/cfprefsd daemon'
+# server gives client its services.
+server	examples	macos,ios	beside
+# service is run as the process that provides the service it then uses.
+service	examples	macos,ios	--service com.example.ipswrun.echo
+# shell runs /bin/sh and /bin/echo, which iOS has not.
+shell	examples	macos
+swiftasync	examples	macos,ios
+swiftrt	examples	macos,ios
+
+# Guests that hold the emulated kernel against a Mac's.
+accessfor	tests/kernel	macos,ios
+acls	tests/kernel	macos,ios
+boot	tests/kernel	macos,ios
+bsdflags	tests/kernel	macos,ios
+clofork	tests/kernel	macos,ios
+clone	tests/kernel	macos,ios
+copied	tests/kernel	macos,ios
+ctty	tests/kernel	macos,ios
+daemonasks	tests/kernel	macos,ios
+# datavolume needs a data volume, which only a macOS release says how to make; it is given a new one.
+datavolume	tests/kernel	macos	--data "$out/data-{build}"
+# detach asks launchd to leave the console's session, which was measured on a Mac only.
+detach	tests/kernel	macos
+devfd	tests/kernel	macos,ios
+devfdlist	tests/kernel	macos,ios
+devfdpaths	tests/kernel	macos,ios
+devnames	tests/kernel	macos,ios
+devzero	tests/kernel	macos,ios
+everyday	tests/kernel	macos,ios
+faults	tests/kernel	macos,ios
+fifo	tests/kernel	macos,ios
+fileflags	tests/kernel	macos,ios
+files	tests/kernel	macos,ios
+fork	tests/kernel	macos,ios
+groups	tests/kernel	macos,ios
+handlers	tests/kernel	macos,ios
+inherit	tests/kernel	macos,ios
+input	tests/kernel	macos,ios
+ipc	tests/kernel	macos,ios
+jobs	tests/kernel	macos,ios
+kernevents	tests/kernel	macos,ios
+kqueue	tests/kernel	macos,ios
+links	tests/kernel	macos,ios
+listpids	tests/kernel	macos,ios
+localdgram	tests/kernel	macos,ios
+localsock	tests/kernel	macos,ios
+locklist	tests/kernel	macos,ios
+machports	tests/kernel	macos,ios
+mapfile	tests/kernel	macos,ios
+# notify asks the release's own notifyd, started when it is first looked up.
+notify	tests/kernel	macos,ios	--on-demand com.apple.system.notification_center
+openfds	tests/kernel	macos,ios
+openmay	tests/kernel	macos,ios
+openpty	tests/kernel	macos,ios
+# oslog needs a data volume too, for the release's own logd to keep its files on, with the notifyd logd asks.
+oslog	tests/kernel	macos	--data "$out/data-{build}" --on-demand 'com.apple.logd*' --on-demand com.apple.system.notification_center
+owners	tests/kernel	macos,ios
+passfd	tests/kernel	macos,ios
+pipeevents	tests/kernel	macos,ios
+pipes	tests/kernel	macos,ios
+poll	tests/kernel	macos,ios
+portsets	tests/kernel	macos,ios
+portstatus	tests/kernel	macos,ios
+posixipc	tests/kernel	macos,ios
+# power registers for the system's power by a library an iPhone's SDK does not give, and none was there to measure.
+power	tests/kernel	macos
+procargs	tests/kernel	macos,ios
+procctl	tests/kernel	macos,ios
+# procinfo is built against a header the iOS SDK does not have.
+procinfo	tests/kernel	macos
+proclocks	tests/kernel	macos,ios
+procs	tests/kernel	macos,ios
+# procwatch has its child become /bin/sleep, which an iPhone does not have.
+procwatch	tests/kernel	macos
+# profiles asks for a profile a Mac's kernel has by name, which is no iPhone's.
+profiles	tests/kernel	macos
+pty	tests/kernel	macos,ios
+rangelocks	tests/kernel	macos,ios
+reclaimring	tests/kernel	macos,ios
+registered	tests/kernel	macos,ios
+registry	tests/kernel	macos,ios
+script	tests/kernel	macos,ios
+semaphore	tests/kernel	macos,ios
+sessions	tests/kernel	macos,ios
+# shellpty drives /bin/sh, which iOS has not.
+shellpty	tests/kernel	macos
+signals	tests/kernel	macos,ios
+socketpair	tests/kernel	macos,ios
+sockleast	tests/kernel	macos,ios
+spawn	tests/kernel	macos,ios
+spawngroup	tests/kernel	macos,ios
+sqlitewal	tests/kernel	macos,ios
+stacktop	tests/kernel	macos,ios
+stops	tests/kernel	macos,ios
+sysdirs	tests/kernel	macos,ios
+taskinfo	tests/kernel	macos,ios
+taskname	tests/kernel	macos,ios
+# taskpolicy says what kind of program it is, which the kernel's source refuses on an iPhone and none was there to measure.
+taskpolicy	tests/kernel	macos
+taskport	tests/kernel	macos,ios
+threadinfo	tests/kernel	macos,ios
+threads	tests/kernel	macos,ios
+trailing	tests/kernel	macos,ios
+unique	tests/kernel	macos,ios
+usage	tests/kernel	macos,ios
+vmcopy	tests/kernel	macos,ios
+vmregion	tests/kernel	macos,ios
+# volumes prints how a Mac's volumes are mounted, which is not known of an iPhone's.
+volumes	tests/kernel	macos
+workloops	tests/kernel	macos,ios

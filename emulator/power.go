@@ -8,7 +8,7 @@ import (
 // The kernel's own service for the system's power (IOPMrootDomain), which every Mac and iPhone
 // has and which a daemon that must know before the machine sleeps registers with as it starts
 // (diskarbitrationd gives up without it). It is here as measured of a user's program on macOS
-// 27.2.1 (examples/power.c): found by its path in the plane of power, by where it is among the
+// 27.2.1 (tests/kernel/power.c): found by its path in the plane of power, by where it is among the
 // services and by its class; a service and an entry of the registry; openable; and taking the
 // registration of a program that wants to be told of the system's power or of the service's own
 // state, which it never is, as this machine does not sleep and the service does not change. Its properties are a machine's state (what woke it, whether its

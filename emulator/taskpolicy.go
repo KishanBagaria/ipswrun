@@ -4,7 +4,7 @@ import "github.com/KishanBagaria/ipswrun/dyldcache"
 
 // What a task asks of how it is run, and is told back (task_policy_set and task_policy_get), as
 // the kernel's source has them (xnu's task_policy.c) and as macOS 27.2.1 was measured to answer
-// a user's process (examples/taskpolicy.c): the kind of program it says it is, and the tiers it
+// a user's process (tests/kernel/taskpolicy.c): the kind of program it says it is, and the tiers it
 // asks for its timers and its work. Nothing here runs a task sooner or later for it, so what is
 // asked is kept and said back, and no more. A copy of a process has none of it, and the program
 // a process becomes has the kind of program it said it was and not the tiers, as measured.

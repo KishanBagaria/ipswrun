@@ -10,7 +10,7 @@ import (
 // The standard input a run was started with is the host's, and where it is no terminal the host
 // is asked whether it can be read: a file always can, a pipe when something is in it or nobody
 // is left to write, and of nothing (/dev/null) poll says it is no descriptor to ask of while
-// select finds it ready both ways. As measured on macOS 27.2.1 (examples/input.c, and by hand
+// select finds it ready both ways. As measured on macOS 27.2.1 (tests/kernel/input.c, and by hand
 // of a file and of pipes). A pipe with nothing in it yet is not known to be ready, and a wait
 // for it stops the run: nothing here wakes a thread when the host's input comes.
 

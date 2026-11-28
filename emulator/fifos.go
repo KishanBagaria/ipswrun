@@ -3,7 +3,7 @@ package emulator
 import "time"
 
 // A named pipe (mkfifo) opened: a pipe between whoever opens the name, as the kernel's source
-// has it (bsd/miscfs/fifofs/fifo_vnops.c) and as measured on macOS 27.2.1 (examples/fifo.c). An
+// has it (bsd/miscfs/fifofs/fifo_vnops.c) and as measured on macOS 27.2.1 (tests/kernel/fifo.c). An
 // open to read waits for one to write and an open to write for one to read, unless it is told
 // not to wait: then reading opens at once, and writing with nobody reading is ENXIO. An open
 // to do both waits for nobody. What is written is read by any reader; with no writer left a
