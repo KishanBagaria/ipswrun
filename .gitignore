@@ -1,4 +1,5 @@
 /ipswrun
 /examples/bin/
 /tests/kernel/*/bin/
+/tests/kernel/*/obj/
 .DS_Store

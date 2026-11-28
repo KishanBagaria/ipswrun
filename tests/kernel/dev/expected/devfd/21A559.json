@@ -1,7 +1,0 @@
-{
-  "build": "21A559",
-  "cache_uuid": "A6162D66-93E3-3251-93CC-B11F7C8C830E",
-  "exit_code": 0,
-  "output": "a file's descriptor opened by its name: a descriptor of its own 1; it reads \"cd\" from where the first was, and the first is then at 4\nit is a file of 6 bytes; itself, not followed, a file of 6 bytes; there to be asked of: 0\nopened to be closed in a new program: marked so 1, and the first is not 0\none that only reads, opened to write: -1 (Permission denied); to read and write: -1 (Permission denied); to read: 1\nwhat each says it was opened for (fcntl): the first 2, the one that only reads 0\nopened to be emptied: 1; the file is then a file of 6 bytes\nof a descriptor that is not open: -1 (Bad file descriptor); asked of: -1 (Bad file descriptor); of no number: -1 (No such file or directory); the directory: a directory of 0 bytes\na pipe's end for writing, opened by its name and written to: the other end reads \"piped\"; the name is a pipe of 0 bytes; opened to read: -1 (Permission denied)\n/dev/stdout, /dev/stderr and /dev/stdin opened: 1 1 1\nwritten to /dev/stdout\ntidied: 0\n",
-  "version": "12.0.1"
-}

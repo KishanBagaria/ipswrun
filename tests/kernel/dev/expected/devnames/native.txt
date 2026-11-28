@@ -1,9 +1,0 @@
-/dev/fd: listed 1, as kind 0; by lstat a directory; followed: -; read as a link: Invalid argument
-/dev/null: listed 1, as kind 2; by lstat a device of characters; followed: -; read as a link: Invalid argument
-/dev/random: listed 1, as kind 2; by lstat a device of characters; followed: -; read as a link: Invalid argument
-/dev/stderr: listed 1, as kind 10; by lstat a link; followed: there; read as a link: fd/2
-/dev/stdin: listed 1, as kind 10; by lstat a link; followed: there; read as a link: fd/0
-/dev/stdout: listed 1, as kind 10; by lstat a link; followed: there; read as a link: fd/1
-/dev/tty: listed 1, as kind 2; by lstat a device of characters; followed: -; read as a link: Invalid argument
-/dev/urandom: listed 1, as kind 2; by lstat a device of characters; followed: -; read as a link: Invalid argument
-/dev/zero: listed 1, as kind 2; by lstat a device of characters; followed: -; read as a link: Invalid argument

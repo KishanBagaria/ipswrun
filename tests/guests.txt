@@ -48,11 +48,8 @@ daemonasks	tests/kernel/proc	macos,ios
 datavolume	tests/kernel/files	macos	--data "$out/data-{build}"
 # detach asks launchd to leave the console's session, which was measured on a Mac only.
 detach	tests/kernel/proc	macos
-devfd	tests/kernel/dev	macos,ios
-devfdlist	tests/kernel/dev	macos,ios
-devfdpaths	tests/kernel/dev	macos,ios
-devnames	tests/kernel/dev	macos,ios
-devzero	tests/kernel/dev	macos,ios
+# dev is devnames, devzero, devfd, devfdlist and devfdpaths, each a part of it (tests/suite.h).
+dev	tests/kernel/dev	macos,ios
 everyday	tests/kernel/files	macos,ios
 faults	tests/kernel/signals	macos,ios
 fifo	tests/kernel/io	macos,ios

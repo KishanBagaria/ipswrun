@@ -38,5 +38,19 @@ $(BIN)/%: %.m | $(BIN)
 $(BIN)/%: %.swift | $(BIN)
 	$(XCRUN) swiftc -target $(SWIFT_TARGET) -O -Xlinker -no_fixup_chains -o $@ $<
 
+# A suite (SUITE, of PARTS: see tests/suite.h) is one guest of several programs of its folder,
+# each built with its main under its own name.
+ifdef SUITE
+OBJ = $(BIN:bin%=obj%)
+$(OBJ)/%.o: %.c | $(OBJ)
+	$(XCRUN) clang $(TARGET) -I$(ROOT)/examples -Dmain=$*_main -c -o $@ $<
+
+$(BIN)/$(SUITE): $(SUITE).c $(PARTS:%=$(OBJ)/%.o) $(ROOT)/tests/suite.h | $(BIN)
+	$(XCRUN) clang $(TARGET) -I$(ROOT)/tests -o $@ $(SUITE).c $(PARTS:%=$(OBJ)/%.o) $(LIBS)
+
+$(OBJ):
+	mkdir -p $@
+endif
+
 $(BIN):
 	mkdir -p $@

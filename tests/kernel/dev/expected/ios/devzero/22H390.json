@@ -1,7 +1,0 @@
-{
-  "build": "22H390",
-  "cache_uuid": "EF0E3993-EA01-3DB0-82D5-F671453A1235",
-  "exit_code": 0,
-  "output": "/dev/zero opened: 1; 70000 bytes read: 70000, zeroes among them 70000; written: 7; where it is then: 70007, moved to 1000: 1000, to its end: 0\nread at a place: 16, a zero 1; written at one: 1; what it is: 0, a device of characters 1, of size 0, the same by its name: 0 1, mode 666\npoll: 1, events 0x20; select: 2, to read 1, to write 1; cut to nothing: 0; fsync: 0; a terminal: 0; may be read 0, written 0\nmapped for oneself: failed (Operation not supported by device); to be shared: failed (Operation not supported by device); opened to be emptied: 1, to be made anew alone: -1 (File exists)\n/dev/null opened: 1; 70000 bytes read: 0, zeroes among them 0; written: 7; where it is then: 7, moved to 1000: 1000, to its end: 0\nread at a place: 0, a zero 0; written at one: 1; what it is: 0, a device of characters 1, of size 0, the same by its name: 0 1, mode 666\npoll: 1, events 0x20; select: 2, to read 1, to write 1; cut to nothing: 0; fsync: 0; a terminal: 0; may be read 0, written 0\nmapped for oneself: failed (Operation not supported by device); to be shared: failed (Operation not supported by device); opened to be emptied: 1, to be made anew alone: -1 (File exists)\n",
-  "version": "18.7.12"
-}
