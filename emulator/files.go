@@ -461,20 +461,20 @@ func (p *Process) lookupThrough(path string, links int) (target, bool) {
 			}
 			return t, true
 		case under(m.guest, path): // on the way to it
-			return target{kind: dirFD, inode: p.systemInode(path)}, true
+			return p.onTheWay(path), true
 		}
 	}
 	switch {
 	case path == "/dev/null" || path == "/dev/zero" || path == "/dev/urandom" || path == "/dev/random":
 		return target{kind: hostFD, host: path}, true
 	case under(p.cacheDir, path):
-		return target{kind: dirFD, inode: p.systemInode(path)}, true
+		return p.onTheWay(path), true
 	}
 	switch path {
 	case devFDs: // a directory of root's that nobody writes, as measured
 		return target{kind: dirFD, inode: p.madeUp(0o555)}, true
 	case "/", "/System/Volumes", dataMount, "/System", "/System/Library", "/usr", "/usr/lib", "/private", "/private/var", "/private/etc", "/var", "/var/root", "/private/var/root", "/tmp", "/private/tmp", "/emu":
-		return target{kind: dirFD, inode: p.systemInode(path)}, true
+		return p.onTheWay(path), true
 	}
 	switch f := p.systemFile(path); {
 	case f.Dir:
@@ -493,6 +493,19 @@ func (p *Process) lookupThrough(path string, links int) (target, bool) {
 		return target{kind: dirFD}, true
 	}
 	return target{}, false
+}
+
+// onTheWay is a directory that is answered here without the system volume being asked whether
+// it is there (the root, the directories every release has, those on the way to a mount or to
+// the shared cache): with the owner and permissions the volume has for it, and its names there
+// if the volume has it, so that it lists what a Mac's does.
+func (p *Process) onTheWay(path string) target {
+	f := p.systemFile(path)
+	t := target{kind: dirFD, inode: f.Inode}
+	if f.Dir {
+		t.readDir = f.ReadDir
+	}
+	return t
 }
 
 // systemFile is what the release's system volume has at a path, if a guest may read it there.
@@ -1780,6 +1793,15 @@ func (p *Process) list(f *fd) int64 {
 	names, ok := p.dirNames(t)
 	if !ok {
 		return -eNOTDIR
+	}
+	for _, m := range p.mounts { // what is on the way to a mount is there, though the volume has no such name
+		if dir := pathpkg.Clean(f.path); f.kind == dirFD && m.guest != dir && under(m.guest, dir) {
+			name, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(m.guest, dir), "/"), "/")
+			if !slices.Contains(names, name) {
+				names = append(names, name)
+				slices.Sort(names)
+			}
+		}
 	}
 	f.names = append([]string{".", ".."}, names...)
 	if pathpkg.Clean(f.path) == "/dev" {

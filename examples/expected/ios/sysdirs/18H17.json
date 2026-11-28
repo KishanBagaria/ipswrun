@@ -1,0 +1,7 @@
+{
+  "build": "18H17",
+  "cache_uuid": "3C01FCEA-4C63-3553-8C06-31731FDB76A7",
+  "exit_code": 0,
+  "output": "/ has System: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n/ has usr: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n/ has private: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n/ has dev: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n/System has Library: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n/System/Library has CoreServices: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n/System/Library/CoreServices has SystemVersion.plist: 1, of kind file; itself: 1, the one above: 1; more besides: 1\n/usr has lib: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n/usr/lib has dyld: 1, of kind file; itself: 1, the one above: 1; more besides: 1\n/private has var: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n/private has etc: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n/private/var has root: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n/private/var has tmp: 1, of kind directory; itself: 1, the one above: 1; more besides: 1\n",
+  "version": "14.8"
+}

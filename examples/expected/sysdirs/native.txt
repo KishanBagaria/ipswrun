@@ -1,0 +1,13 @@
+/ has System: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
+/ has usr: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
+/ has private: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
+/ has dev: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
+/System has Library: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
+/System/Library has CoreServices: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
+/System/Library/CoreServices has SystemVersion.plist: 1, of kind file; itself: 1, the one above: 1; more besides: 1
+/usr has lib: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
+/usr/lib has dyld: 1, of kind file; itself: 1, the one above: 1; more besides: 1
+/private has var: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
+/private has etc: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
+/private/var has root: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
+/private/var has tmp: 1, of kind directory; itself: 1, the one above: 1; more besides: 1
