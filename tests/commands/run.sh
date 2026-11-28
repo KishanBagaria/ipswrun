@@ -98,7 +98,9 @@ for list in "${lists[@]}"; do
 			ended=differs
 			! grep -q '^ipswrun: ' "$results/$list/$h.txt" || ended=stops
 		fi
-		expected=$(awk -F'\t' -v l="$list" -v c="$line" '$1 == l && $4 == c { print $2 }' $here/known.tsv)
+		# By the environment, which awk takes as it is: a command with a backslash in it is not
+		# the same once -v has read it.
+		expected=$(l="$list" c="$line" awk -F'\t' '$1 == ENVIRON["l"] && $4 == ENVIRON["c"] { print $2 }' $here/known.tsv)
 		if [ "$ended" = "${expected:-same}" ]; then
 			[ "$ended" = same ] && same=$((same + 1)) || known=$((known + 1))
 			continue

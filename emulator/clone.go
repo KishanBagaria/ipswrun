@@ -30,6 +30,12 @@ func (p *Process) clone(from, to string, flags uint64, a []uint64) int64 {
 		p.unimplemented("clonefile told to follow no link in the path, or to keep beneath a directory", a)
 		return -eNOSYS
 	}
+	if s := p.placeOf(from); !s.there && p.blocked == 0 { // what is to be copied is asked of first
+		return -eNOENT
+	}
+	if flags&cloneNoFollow == 0 && p.lastLinkClosed(from) {
+		return -eACCES
+	}
 	t1, ok1 := p.resolve(from)
 	t2, ok2 := p.writableTarget(to)
 	switch {

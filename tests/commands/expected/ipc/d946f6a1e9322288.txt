@@ -1,0 +1,2 @@
+ONLY PATH PWD SHLVL _ 
+unset

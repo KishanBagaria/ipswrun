@@ -218,7 +218,7 @@ func sysConnect(p *Process, a []uint64) int64 {
 	case !to.listening, len(to.pending) >= to.backlog: // as many wait as may, as measured
 		return -eCONNREFUSED
 	}
-	end := &socket{pair: s.pair, second: true, name: to.name, peer: s}
+	end := &socket{pair: s.pair, second: true, name: to.name, peer: s, sends: to.sends, takes: to.takes} // with the sizes of the one that listens, as measured
 	s.peer, s.lone = end, false
 	to.pending = append(to.pending, end)
 	p.socketChanged(to)

@@ -8,17 +8,19 @@ import (
 
 // fileInfo is what the emulator knows about a file, however the guest asks: stat or getattrlist.
 type fileInfo struct {
-	dev   uint32
-	mode  uint16
-	size  int64
-	ino   uint64
-	mtime int64
-	times [4]int64 // when it was last read, written, changed and made, in nanoseconds: of a host file, and of a file of the system volume as the image has them
-	timed bool     // times says them; mtime, in seconds, is all four otherwise
-	links uint16   // the names it has, if more than the one
-	owner *Owner   // if it is not the guests' user's (see Machine.owners)
-	flags uint32   // those it carries beside its mode (see chflags)
-	acl   bool     // it has an access control list (see acls.go)
+	dev     uint32
+	mode    uint16
+	size    int64
+	ino     uint64
+	mtime   int64
+	times   [4]int64 // when it was last read, written, changed and made, in nanoseconds: of a host file, and of a file of the system volume as the image has them
+	timed   bool     // times says them; mtime, in seconds, is all four otherwise
+	blocks  int64    // of a host file, the 512-byte blocks the host has set aside for it
+	counted bool     // blocks says them; they are reckoned from its size otherwise
+	links   uint16   // the names it has, if more than the one
+	owner   *Owner   // if it is not the guests' user's (see Machine.owners)
+	flags   uint32   // those it carries beside its mode (see chflags)
+	acl     bool     // it has an access control list (see acls.go)
 }
 
 // describe looks at a resolved path or an open descriptor. Paths with a pinned inode number
@@ -43,6 +45,7 @@ func (p *Process) describe(kind fdKind, path string, size int64, inode *Inode, h
 			fallthrough
 		case syscall.S_IFREG:
 			info.links = uint16(st.Nlink)
+			info.blocks, info.counted = int64(st.Blocks), true
 		}
 		id := hostFileOf(&st)
 		if p.m.fifos[id] { // a named pipe, which the host keeps as a file (see sysMkfifo)
@@ -248,7 +251,12 @@ var (
 	attrFSID  = func(c *attrContext) []byte { return le32(c.dev, fsTypeAPFS) }
 	attrDevID = func(c *attrContext) []byte { return le32(c.dev) }
 	attrSize  = func(c *attrContext) []byte { return le64(uint64(c.size)) }
-	attrAlloc = func(c *attrContext) []byte { return le64(align(uint64(c.size), volumeBlockSize)) }
+	attrAlloc = func(c *attrContext) []byte {
+		if c.counted { // what the host has set aside for it, as stat says it
+			return le64(uint64(c.blocks) * 512)
+		}
+		return le64(align(uint64(c.size), volumeBlockSize))
+	}
 	attrBlock = always(le32(volumeBlockSize))
 	attrOne   = always(le32(1)) // link count
 	attrIno   = func(c *attrContext) []byte { return le64(c.ino) }

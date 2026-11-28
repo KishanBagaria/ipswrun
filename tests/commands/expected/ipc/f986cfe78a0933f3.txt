@@ -1,0 +1,4 @@
+pages
+descriptors
+no terminal
+not a terminal

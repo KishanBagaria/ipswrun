@@ -64,7 +64,7 @@ func (p *Process) fileToRun(path string) ([]byte, int64) {
 	if errno := p.refusals[abs]; errno != 0 { // a step up in its path could not be taken (see upward)
 		return nil, -errno
 	}
-	if p.blockedAt(abs) { // from the source and not measured: a program is found as any name is
+	if p.blockedAt(abs) || p.lastLinkClosed(abs) { // from the source and not measured: a program is found as any name is
 		return nil, -eACCES
 	}
 	var image []byte

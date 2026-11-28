@@ -277,7 +277,7 @@ func (p *Process) followed(t target, ok bool) (target, bool) {
 			}
 			to, closed := p.leadsBehind(link, text)
 			if closed {
-				p.blocked = eACCES
+				p.block(eACCES)
 				return t, false
 			}
 			var there bool
@@ -428,11 +428,11 @@ func (p *Process) resolve(path string) (target, bool) {
 	}
 	path = p.absolute(path)
 	if errno := p.refusals[path]; errno != 0 { // a step up in it could not be taken (see upward)
-		p.blocked = errno
+		p.block(errno)
 		return target{path: path}, false
 	}
 	if p.blockedAt(path) {
-		p.blocked = eACCES
+		p.block(eACCES)
 		return target{path: path}, false
 	}
 	t, ok := p.lookup(path)
@@ -440,6 +440,26 @@ func (p *Process) resolve(path string) (target, bool) {
 		t.path = path
 	}
 	return t, ok
+}
+
+// block is the call being answered having come upon what refuses it: the first such is what it
+// is answered with, as measured of a call given two names.
+func (p *Process) block(errno int64) {
+	if p.blocked == 0 {
+		p.blocked = errno
+	}
+}
+
+// lastLinkClosed says whether a path names a link that leads behind a directory which may
+// not be searched: for the calls that leave following the last link to the host.
+func (p *Process) lastLinkClosed(path string) bool {
+	t, ok := p.resolve(path)
+	if !ok {
+		return false
+	}
+	was := p.blocked
+	_, ok = p.followed(t, true)
+	return !ok && p.blocked != was
 }
 
 // blockedAt says whether a directory on the way to a path may not be searched by who asks, so
@@ -526,10 +546,14 @@ func (p *Process) searchable(dir string) bool {
 		return true
 	}
 	m.pass[key] = true
-	was := p.blocked
+	was, starts := p.blocked, p.starts
 	p.blocked = 0
 	p.searching++
+	// Its own mode and nothing of what leads to it, which each call asks for itself: what is
+	// kept here is the same whoever asks from wherever.
+	p.starts = []string{dir}
 	_, info, errno := p.describePath("search", dir, true)
+	p.starts = starts
 	// A link on the way is passed by the way to what it leads to: one under the home or a
 	// mount, which the host follows with nothing said, as measured, and one that leads out of
 	// there.
@@ -891,7 +915,9 @@ func statBuf(i fileInfo, owner user) []byte {
 	}
 	le.PutUint64(b[96:], uint64(i.size))
 	if i.mode&syscall.S_IFMT != syscall.S_IFDIR { // a directory's names take no blocks of its own
-		le.PutUint64(b[104:], align(uint64(i.size), volumeBlockSize)/512)
+		if le.PutUint64(b[104:], align(uint64(i.size), volumeBlockSize)/512); i.counted {
+			le.PutUint64(b[104:], uint64(i.blocks)) // what the host has set aside for it, which is less for a file with a hole
+		}
 	}
 	le.PutUint32(b[112:], volumeBlockSize)
 	le.PutUint32(b[116:], i.flags)
@@ -1085,7 +1111,7 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 	}
 	const noFollow, symlink = 0x100, 0x200000 // O_NOFOLLOW, O_SYMLINK
 	t, ok := p.resolve(path)
-	if flags&(noFollow|symlink) == 0 || asDirectory(path) {
+	if (flags&(noFollow|symlink) == 0 || asDirectory(path)) && flags&0xA00 != 0xA00 { // to be made and only if nothing is there: the link is there, wherever it leads, as measured
 		t, ok = p.followed(t, ok)
 	}
 	if asDirectory(path) {
@@ -1980,7 +2006,9 @@ func (p *Process) directory(path string) (string, int64) {
 	if !p.permits(info, 1) { // to be in a directory is to search it, as measured
 		return "", -eACCES
 	}
-	return t.path, 0
+	// Where it is, and not the link it was reached by: a process goes on there whatever
+	// becomes of what the link leads through, as measured.
+	return p.physical(t.path), 0
 }
 
 // workingDirectory is the directory the calling thread is in: the process's, unless the thread
@@ -2160,6 +2188,12 @@ func sysSymlinkat(p *Process, a []uint64) int64 {
 // doLink gives a file a second name. Of a symbolic link it is the link that gets it, unless the
 // link is to be followed first.
 func (p *Process) doLink(from, to string, follow bool) int64 {
+	if s := p.placeOf(from); !s.there && p.blocked == 0 { // what is to be named is asked of first, as measured
+		return -eNOENT
+	}
+	if follow && p.lastLinkClosed(from) { // as measured
+		return -eACCES
+	}
 	t1, ok1 := p.writableTarget(from)
 	t2, ok2 := p.writableTarget(to)
 	if !ok1 || !ok2 {
@@ -2198,18 +2232,10 @@ func (p *Process) doLink(from, to string, follow bool) int64 {
 	return p.linkHost(t1, t2)
 }
 
-// sysLink is link(a file, another name for it). What a Mac's kernel does when the file is a
-// symbolic link was measured for linkat only.
-func sysLink(p *Process, a []uint64) int64 {
-	from := p.cstr(a[0])
-	if t, ok := p.writableTarget(from); ok {
-		if _, err := t.root.Readlink(t.rel); err == nil {
-			p.unimplemented("link of a symbolic link", a)
-			return -eNOSYS
-		}
-	}
-	return p.doLink(from, p.cstr(a[1]), false)
-}
+// sysLink is link(a file, another name for it). Of a symbolic link it is what the link leads
+// to that is named, as measured (tests/commands/paths.list): a link that leads to nothing is
+// ENOENT, and one to a directory EPERM, as a directory is.
+func sysLink(p *Process, a []uint64) int64 { return p.doLink(p.cstr(a[0]), p.cstr(a[1]), true) }
 
 // sysLinkat is linkat(directory, path, directory, path, flags): AT_SYMLINK_FOLLOW has a
 // symbolic link followed.
@@ -2274,6 +2300,9 @@ func (p *Process) doRename(from, to string) int64 {
 			return errno
 		}
 	}
+	if s := p.placeOf(from); !s.there && p.blocked == 0 { // what is to be renamed is asked of first, as measured
+		return -eNOENT
+	}
 	t1, ok1 := p.writableTarget(from)
 	t2, ok2 := p.writableTarget(to)
 	if !ok1 || !ok2 {
@@ -2328,6 +2357,9 @@ func sysRenameatx(p *Process, a []uint64) int64 {
 func sysTruncate(p *Process, a []uint64) int64 {
 	if errno := p.tooLarge(a[1]); errno != 0 { // before the name is looked at, as measured
 		return errno
+	}
+	if p.lastLinkClosed(p.cstr(a[0])) { // as measured
+		return -eACCES
 	}
 	t, ok := p.writableTarget(p.cstr(a[0]))
 	if !ok {

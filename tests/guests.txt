@@ -120,6 +120,7 @@ shellpty	tests/kernel/workloads	macos
 signals	tests/kernel/signals	macos,ios
 socketpair	tests/kernel/sockets	macos,ios
 sockleast	tests/kernel/sockets	macos,ios
+socksize	tests/kernel/sockets	macos,ios
 spawn	tests/kernel/proc	macos,ios
 spawngroup	tests/kernel/proc	macos,ios
 sqlitewal	tests/kernel/workloads	macos,ios

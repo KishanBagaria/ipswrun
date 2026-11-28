@@ -53,6 +53,9 @@ type socket struct {
 	// least is the room there has to be before part of what is sent is taken and before the
 	// socket is said to be one that can be written (SO_SNDLOWAT), where it was set.
 	least int
+	// How much it sends before the other has received any, and how much it says it takes, if
+	// they were set (SO_SNDBUF, SO_RCVBUF): socketSize otherwise.
+	sends, takes int
 	// Of a socket made by socket() and not as one of a pair (see localsockets.go): that it is
 	// connected to no other yet, the address it was bound to as it was given, and, of one
 	// that listens, for how many and the ends made for those who connected and were not yet
@@ -79,11 +82,20 @@ func (s *socket) sendLeast() int {
 	return socketLeast
 }
 
-// space is how much can be sent from a socket before the other has received any.
+// size is one of a socket's two sizes: what it was set to, or what a socket is made with.
+func (s *socket) size(set int) int {
+	if set != 0 {
+		return set
+	}
+	return socketSize
+}
+
+// space is how much can be sent from a socket before the other has received any: as much as
+// the sender's own size for sending, whatever the other's for receiving, as measured.
 // What came beside the bytes takes room too until it is received, as measured: a descriptor
 // sent with all a socket holds leaves 16 bytes unsent.
 func (s *socket) space() int {
-	room := socketSize - len(s.peer.data)
+	room := s.size(s.sends) - len(s.peer.data)
 	for _, r := range s.peer.rights {
 		room -= r.size
 	}
@@ -522,7 +534,7 @@ func (p *Process) socketStat(f *fd) []byte {
 	le.PutUint32(b[16:], p.uid)
 	le.PutUint32(b[20:], p.gid)
 	le.PutUint64(b[96:], uint64(len(s.data)))
-	le.PutUint32(b[112:], socketSize)
+	le.PutUint32(b[112:], uint32(s.size(s.sends))) // as measured: what it sends at once
 	return b
 }
 
@@ -631,7 +643,7 @@ func sysGetsockopt(p *Process, a []uint64) int64 {
 	}
 	var value uint32
 	switch {
-	case a[1] != levelSocket || p.u32(a[4]) != 4:
+	case a[1] != levelSocket:
 	case a[2] == optionType && f.sock.events != nil:
 		value = socketRaw
 	case a[2] == optionReceiveSize && f.sock.events != nil:
@@ -648,8 +660,10 @@ func sysGetsockopt(p *Process, a []uint64) int64 {
 	case f.sock.datagram != nil:
 		p.unimplemented("getsockopt of a datagram socket other than its kind and its sizes", a)
 		return -eNOSYS
-	case a[2] == optionSendSize, a[2] == optionReceiveSize:
-		value = socketSize
+	case a[2] == optionSendSize:
+		value = uint32(f.sock.size(f.sock.sends))
+	case a[2] == optionReceiveSize:
+		value = uint32(f.sock.size(f.sock.takes))
 	case a[2] == optionSendLeast:
 		value = uint32(f.sock.sendLeast())
 	case a[2] == optionReceiveLeast:
@@ -665,11 +679,18 @@ func sysGetsockopt(p *Process, a []uint64) int64 {
 	default:
 		a[1] = 0
 	}
-	if a[1] != levelSocket || p.u32(a[4]) != 4 {
+	if a[1] != levelSocket {
 		p.unimplemented("getsockopt of an option that was not measured", a)
 		return -eNOSYS
 	}
-	p.write(a[3], le32(value))
+	// As much of the four bytes an option is as there is room for, and how much that was: all
+	// four into more room (perl asks with 256), fewer into less, as measured.
+	room := min(p.u32(a[4]), 4)
+	if a[3] == 0 { // nowhere to write it: none of it is written, and that is said, as measured
+		room = 0
+	}
+	p.write(a[3], le32(value)[:room])
+	p.write(a[4], le32(room))
 	return 0
 }
 
@@ -707,8 +728,32 @@ func sysSetsockopt(p *Process, a []uint64) int64 {
 		if a[4] != 4 || int32(p.u32(a[3])) < 1 {
 			return -eINVAL
 		}
-		f.sock.least = min(int(p.u32(a[3])), socketSize)
+		f.sock.least = min(int(p.u32(a[3])), f.sock.size(f.sock.sends))
 		p.socketChanged(f.sock)
+		return 0
+	case a[1] == levelSocket && (a[2] == optionSendSize || a[2] == optionReceiveSize) && f.sock.datagram == nil:
+		// How much a stream socket sends before the other receives, and how much it says it
+		// takes: at least one byte (EINVAL), and no more than the machine's most, which was
+		// 8 MB on the Mac measured, where more is made that: more stops here. What it sends
+		// is what it then holds for the other; what it takes changes nothing but what it
+		// says, as measured (a pair filled with each set to 4096 and 65536).
+		size := int32(p.u32(a[3]))
+		switch {
+		case a[4] != 4 || size < 1:
+			return -eINVAL
+		case size > 8<<20:
+			p.unimplemented("setsockopt of a size past 8 MB, which is cut to the machine's own most", a)
+			return -eNOSYS
+		case a[2] == optionSendSize:
+			// The least room it wants is no more than it sends, and stays so when the size
+			// grows again: as measured.
+			if f.sock.sends = int(size); f.sock.sendLeast() > int(size) {
+				f.sock.least = int(size)
+			}
+			p.socketChanged(f.sock) // a thread that waits to send may now have room
+		default:
+			f.sock.takes = int(size)
+		}
 		return 0
 	case a[1] != levelSocket || a[2] != optionNoSignal || a[4] != 4:
 		p.unimplemented("setsockopt of an option that was not measured", a)

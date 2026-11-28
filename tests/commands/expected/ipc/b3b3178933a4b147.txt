@@ -1,0 +1,3 @@
+sigpipe
+Broken pipe
+0 read at the end

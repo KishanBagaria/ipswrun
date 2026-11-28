@@ -1,0 +1,4 @@
+/bin/sh: lf: cannot overwrite existing file
+File exists
+the link is seen
+c/f

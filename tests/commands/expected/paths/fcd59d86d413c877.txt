@@ -1,0 +1,5 @@
+No such file or directory
+No such file or directory
+Not a directory
+Permission denied
+       0
