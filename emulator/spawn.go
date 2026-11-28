@@ -16,7 +16,7 @@ import (
 // A process starts another with posix_spawn: a program of the build's, of the home or of a
 // mount, or its own, as a process of its own on the machine, with the descriptors it is left by
 // its parent and what it is told to do with them. The parent learns how it ended with wait4.
-// What a Mac's kernel does was measured with tests/kernel/spawn.c. fork and execve, which make a
+// What a Mac's kernel does was measured with tests/kernel/proc/spawn.c. fork and execve, which make a
 // process of a running one's memory or put a program in its place, are not here.
 
 const (
@@ -193,7 +193,7 @@ func sysPosixSpawn(p *Process, a []uint64) int64 {
 	if a[2] != 0 && flags&(spawnSetPgroup|spawnSetSigdef|spawnSetSigmask) != 0 {
 		attr := p.read(p.u64(a[2]+8), 16)
 		if flags&spawnSetPgroup != 0 {
-			// As setpgid has it, and as measured (tests/kernel/spawngroup.c): a group below zero
+			// As setpgid has it, and as measured (tests/kernel/proc/spawngroup.c): a group below zero
 			// is EINVAL, and one that no process of the session is in EPERM; nothing is started.
 			group = le.Uint32(attr[12:])
 			switch ownGroup = group == 0; {
@@ -524,7 +524,7 @@ func (p *Process) exec(abs string, image []byte, argv, env []string) int64 {
 // handOn gives a process what every process that comes of p has of it, whether a copy (fork), a
 // program p starts (posix_spawn) or the one p becomes (execve): who it is, where its output
 // goes, the mask for the files it makes, its limits, its priority and its I/O policies, as a
-// Mac's kernel was measured to hand them on (tests/kernel/inherit.c). The policies of single
+// Mac's kernel was measured to hand them on (tests/kernel/proc/inherit.c). The policies of single
 // threads go with them only to a copy, which has the thread.
 func (p *Process) handOn(to *Process, threads bool) {
 	to.uid, to.gid, to.stdio, to.session = p.uid, p.gid, p.stdio, p.sessionOf()

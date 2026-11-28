@@ -1,8 +1,8 @@
 # The guests: one line each, of four parts with a tab between.
 #
 #   name       the program, built from <where>/<name>.c, .m or .swift into <where>/bin (for iOS, <where>/bin/ios)
-#   where      examples for the programs that show what ipswrun runs, tests/kernel for those that hold the
-#              kernel it stands in for against a Mac's
+#   where      examples for the programs that show what ipswrun runs, and a folder of tests/kernel,
+#              one for each part of the kernel, for those that hold it against a Mac's
 #   platforms  macos, ios or both: what it is built for and run on
 #   how        the flags ipswrun runs it with, and after -- the guest's own arguments; $bin is where the
 #              guests of its folder are built and $out where the run's results go. The one word beside
@@ -35,103 +35,103 @@ swiftasync	examples	macos,ios
 swiftrt	examples	macos,ios
 
 # Guests that hold the emulated kernel against a Mac's.
-accessfor	tests/kernel	macos,ios
-acls	tests/kernel	macos,ios
-boot	tests/kernel	macos,ios
-bsdflags	tests/kernel	macos,ios
-clofork	tests/kernel	macos,ios
-clone	tests/kernel	macos,ios
-copied	tests/kernel	macos,ios
-ctty	tests/kernel	macos,ios
-daemonasks	tests/kernel	macos,ios
+accessfor	tests/kernel/files	macos,ios
+acls	tests/kernel/files	macos,ios
+boot	tests/kernel/system	macos,ios
+bsdflags	tests/kernel/files	macos,ios
+clofork	tests/kernel/io	macos,ios
+clone	tests/kernel/files	macos,ios
+copied	tests/kernel/files	macos,ios
+ctty	tests/kernel/tty	macos,ios
+daemonasks	tests/kernel/proc	macos,ios
 # datavolume needs a data volume, which only a macOS release says how to make; it is given a new one.
-datavolume	tests/kernel	macos	--data "$out/data-{build}"
+datavolume	tests/kernel/files	macos	--data "$out/data-{build}"
 # detach asks launchd to leave the console's session, which was measured on a Mac only.
-detach	tests/kernel	macos
-devfd	tests/kernel	macos,ios
-devfdlist	tests/kernel	macos,ios
-devfdpaths	tests/kernel	macos,ios
-devnames	tests/kernel	macos,ios
-devzero	tests/kernel	macos,ios
-everyday	tests/kernel	macos,ios
-faults	tests/kernel	macos,ios
-fifo	tests/kernel	macos,ios
-fileflags	tests/kernel	macos,ios
-files	tests/kernel	macos,ios
-fork	tests/kernel	macos,ios
-groups	tests/kernel	macos,ios
-handlers	tests/kernel	macos,ios
-inherit	tests/kernel	macos,ios
-input	tests/kernel	macos,ios
-ipc	tests/kernel	macos,ios
-jobs	tests/kernel	macos,ios
-kernevents	tests/kernel	macos,ios
-kqueue	tests/kernel	macos,ios
-links	tests/kernel	macos,ios
-listpids	tests/kernel	macos,ios
-localdgram	tests/kernel	macos,ios
-localsock	tests/kernel	macos,ios
-locklist	tests/kernel	macos,ios
-machports	tests/kernel	macos,ios
-mapfile	tests/kernel	macos,ios
+detach	tests/kernel/proc	macos
+devfd	tests/kernel/dev	macos,ios
+devfdlist	tests/kernel/dev	macos,ios
+devfdpaths	tests/kernel/dev	macos,ios
+devnames	tests/kernel/dev	macos,ios
+devzero	tests/kernel/dev	macos,ios
+everyday	tests/kernel/files	macos,ios
+faults	tests/kernel/signals	macos,ios
+fifo	tests/kernel/io	macos,ios
+fileflags	tests/kernel/files	macos,ios
+files	tests/kernel/files	macos,ios
+fork	tests/kernel/proc	macos,ios
+groups	tests/kernel/signals	macos,ios
+handlers	tests/kernel/signals	macos,ios
+inherit	tests/kernel/proc	macos,ios
+input	tests/kernel/io	macos,ios
+ipc	tests/kernel/mach	macos,ios
+jobs	tests/kernel/tty	macos,ios
+kernevents	tests/kernel/sockets	macos,ios
+kqueue	tests/kernel/io	macos,ios
+links	tests/kernel/files	macos,ios
+listpids	tests/kernel/proc	macos,ios
+localdgram	tests/kernel/sockets	macos,ios
+localsock	tests/kernel/sockets	macos,ios
+locklist	tests/kernel/locks	macos,ios
+machports	tests/kernel/mach	macos,ios
+mapfile	tests/kernel/memory	macos,ios
 # notify asks the release's own notifyd, started when it is first looked up.
-notify	tests/kernel	macos,ios	--on-demand com.apple.system.notification_center
-openfds	tests/kernel	macos,ios
-openmay	tests/kernel	macos,ios
-openpty	tests/kernel	macos,ios
+notify	tests/kernel/system	macos,ios	--on-demand com.apple.system.notification_center
+openfds	tests/kernel/io	macos,ios
+openmay	tests/kernel/files	macos,ios
+openpty	tests/kernel/tty	macos,ios
 # oslog needs a data volume too, for the release's own logd to keep its files on, with the notifyd logd asks.
-oslog	tests/kernel	macos	--data "$out/data-{build}" --on-demand 'com.apple.logd*' --on-demand com.apple.system.notification_center
-owners	tests/kernel	macos,ios
-passfd	tests/kernel	macos,ios
-pipeevents	tests/kernel	macos,ios
-pipes	tests/kernel	macos,ios
-poll	tests/kernel	macos,ios
-portsets	tests/kernel	macos,ios
-portstatus	tests/kernel	macos,ios
-posixipc	tests/kernel	macos,ios
+oslog	tests/kernel/system	macos	--data "$out/data-{build}" --on-demand 'com.apple.logd*' --on-demand com.apple.system.notification_center
+owners	tests/kernel/files	macos,ios
+passfd	tests/kernel/sockets	macos,ios
+pipeevents	tests/kernel/io	macos,ios
+pipes	tests/kernel/io	macos,ios
+poll	tests/kernel/io	macos,ios
+portsets	tests/kernel/mach	macos,ios
+portstatus	tests/kernel/mach	macos,ios
+posixipc	tests/kernel/memory	macos,ios
 # power registers for the system's power by a library an iPhone's SDK does not give, and none was there to measure.
-power	tests/kernel	macos
-procargs	tests/kernel	macos,ios
-procctl	tests/kernel	macos,ios
+power	tests/kernel/mach	macos
+procargs	tests/kernel/proc	macos,ios
+procctl	tests/kernel/proc	macos,ios
 # procinfo is built against a header the iOS SDK does not have.
-procinfo	tests/kernel	macos
-proclocks	tests/kernel	macos,ios
-procs	tests/kernel	macos,ios
+procinfo	tests/kernel/proc	macos
+proclocks	tests/kernel/locks	macos,ios
+procs	tests/kernel/proc	macos,ios
 # procwatch has its child become /bin/sleep, which an iPhone does not have.
-procwatch	tests/kernel	macos
+procwatch	tests/kernel/proc	macos
 # profiles asks for a profile a Mac's kernel has by name, which is no iPhone's.
-profiles	tests/kernel	macos
-pty	tests/kernel	macos,ios
-rangelocks	tests/kernel	macos,ios
-reclaimring	tests/kernel	macos,ios
-registered	tests/kernel	macos,ios
-registry	tests/kernel	macos,ios
-script	tests/kernel	macos,ios
-semaphore	tests/kernel	macos,ios
-sessions	tests/kernel	macos,ios
+profiles	tests/kernel/system	macos
+pty	tests/kernel/tty	macos,ios
+rangelocks	tests/kernel/locks	macos,ios
+reclaimring	tests/kernel/memory	macos,ios
+registered	tests/kernel/mach	macos,ios
+registry	tests/kernel/mach	macos,ios
+script	tests/kernel/proc	macos,ios
+semaphore	tests/kernel/mach	macos,ios
+sessions	tests/kernel/proc	macos,ios
 # shellpty drives /bin/sh, which iOS has not.
-shellpty	tests/kernel	macos
-signals	tests/kernel	macos,ios
-socketpair	tests/kernel	macos,ios
-sockleast	tests/kernel	macos,ios
-spawn	tests/kernel	macos,ios
-spawngroup	tests/kernel	macos,ios
-sqlitewal	tests/kernel	macos,ios
-stacktop	tests/kernel	macos,ios
-stops	tests/kernel	macos,ios
-sysdirs	tests/kernel	macos,ios
-taskinfo	tests/kernel	macos,ios
-taskname	tests/kernel	macos,ios
+shellpty	tests/kernel/workloads	macos
+signals	tests/kernel/signals	macos,ios
+socketpair	tests/kernel/sockets	macos,ios
+sockleast	tests/kernel/sockets	macos,ios
+spawn	tests/kernel/proc	macos,ios
+spawngroup	tests/kernel/proc	macos,ios
+sqlitewal	tests/kernel/workloads	macos,ios
+stacktop	tests/kernel/proc	macos,ios
+stops	tests/kernel/signals	macos,ios
+sysdirs	tests/kernel/files	macos,ios
+taskinfo	tests/kernel/mach	macos,ios
+taskname	tests/kernel/mach	macos,ios
 # taskpolicy says what kind of program it is, which the kernel's source refuses on an iPhone and none was there to measure.
-taskpolicy	tests/kernel	macos
-taskport	tests/kernel	macos,ios
-threadinfo	tests/kernel	macos,ios
-threads	tests/kernel	macos,ios
-trailing	tests/kernel	macos,ios
-unique	tests/kernel	macos,ios
-usage	tests/kernel	macos,ios
-vmcopy	tests/kernel	macos,ios
-vmregion	tests/kernel	macos,ios
+taskpolicy	tests/kernel/mach	macos
+taskport	tests/kernel/mach	macos,ios
+threadinfo	tests/kernel/mach	macos,ios
+threads	tests/kernel/mach	macos,ios
+trailing	tests/kernel/files	macos,ios
+unique	tests/kernel/proc	macos,ios
+usage	tests/kernel/proc	macos,ios
+vmcopy	tests/kernel/memory	macos,ios
+vmregion	tests/kernel/memory	macos,ios
 # volumes prints how a Mac's volumes are mounted, which is not known of an iPhone's.
-volumes	tests/kernel	macos
-workloops	tests/kernel	macos,ios
+volumes	tests/kernel/files	macos
+workloops	tests/kernel/mach	macos,ios

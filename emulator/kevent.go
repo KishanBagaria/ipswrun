@@ -160,7 +160,7 @@ func sysKeventQos(p *Process, a []uint64) int64 {
 // workloop made by name with how its thread is to be scheduled, or destroyed, as a program
 // that plays sound makes one for each of its queues. It is as the kernel's own source has it
 // (xnu's kqueue_workloop_ctl_internal) and as macOS 27.2.1 was measured to do each thing
-// (tests/kernel/workloops.c). The parameters say their own size, and what they do not reach is
+// (tests/kernel/mach/workloops.c). The parameters say their own size, and what they do not reach is
 // nothing. A name is not 0 or all ones. One is made with at least one of a priority from 1 to
 // 63, a policy that is 1, 2 or 4, and a share of a processor from 1 to 100 hundredths over up
 // to 0xffffff thousandths of a second; a workloop that is there, made so or by an event asked

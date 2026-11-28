@@ -169,7 +169,7 @@ func sysMmap(p *Process, a []uint64) int64 {
 		}
 		if flags&mapShared != 0 && length > 0 {
 			// Memory of no file that is shared: a copy of the process has the same memory and
-			// not a copy of it, as measured (tests/kernel/vmregion.c).
+			// not a copy of it, as measured (tests/kernel/memory/vmregion.c).
 			shared := p.m.newShared(align(length, pageSize))
 			if shared == nil {
 				return -eNOMEM
@@ -805,7 +805,7 @@ func sysGettimeofday(p *Process, a []uint64) int64 {
 }
 
 // sysMacSyscall answers the __mac_syscall calls guests make as a Mac's kernel answers them for a
-// process that is not sandboxed, as tests/kernel/macsyscall.c measures: AMFI's dyld policy, sandbox
+// process that is not sandboxed, as tests/kernel/system/macsyscall.c measures: AMFI's dyld policy, sandbox
 // checks, which allow everything, the sandbox's queries of a process, which find nothing and
 // expect no container, and quarantine, which it takes. Applying a sandbox profile succeeds and
 // confines nothing, by choice (see limits.md). Anything not measured stops.
@@ -1186,7 +1186,7 @@ func (r procRecord) shortInfo(flags uint32) []byte {
 
 const launchdPath = "/sbin/launchd"
 
-// launchdInfo is proc_pidinfo of launchd, as a Mac's answers a user (tests/kernel/procinfo.c): the
+// launchdInfo is proc_pidinfo of launchd, as a Mac's answers a user (tests/kernel/proc/procinfo.c): the
 // short record, the unique one and the path of its program; the full record, with or without
 // the unique one, and its architecture are EPERM. Root is given those too, as measured in a
 // virtual machine (macOS 27.2, 26B123): the full record says it leads its session and has the

@@ -7,7 +7,7 @@ import (
 )
 
 func TestProcRecords(t *testing.T) {
-	// The processes ps is told of (tests/kernel/procs.c prints the same natively): the newest first,
+	// The processes ps is told of (tests/kernel/proc/procs.c prints the same natively): the newest first,
 	// those that have ended and are still to be waited for among them as zombies, those that
 	// were waited for not, and launchd last.
 	m := &Machine{clock: &clock{boot: time.Unix(1000, 0)}}

@@ -8,7 +8,7 @@ import (
 
 func TestOneDataVolume(t *testing.T) {
 	// The home and the paths of the data volume are one volume, as on a Mac: a file is moved
-	// and linked between them (tests/kernel/datavolume.c). A mount that is neither is its own.
+	// and linked between them (tests/kernel/files/datavolume.c). A mount that is neither is its own.
 	home, tmp, other := t.TempDir(), t.TempDir(), t.TempDir()
 	p := testMountsProcess(t, "", []Mount{
 		{Guest: GuestHome, Host: home, Data: true},

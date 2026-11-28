@@ -7,7 +7,7 @@ import "slices"
 // of the process has it, how far into what it maps it starts, and how it was said it would be
 // read. Of its kinds only the basic one in 64 bits (9) is answered; one there is not, and room
 // for fewer than its nine words, are KERN_INVALID_ARGUMENT. As measured on macOS 27.2.1
-// (tests/kernel/vmregion.c):
+// (tests/kernel/memory/vmregion.c):
 //
 //   - at most everything, but what was opened to read only and mapped to be shared: to read
 //     and to run;

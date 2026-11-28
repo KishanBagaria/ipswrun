@@ -3,7 +3,7 @@ package emulator
 import "testing"
 
 func TestHandOn(t *testing.T) {
-	// What every process that comes of another has of it (tests/kernel/inherit.c prints the same
+	// What every process that comes of another has of it (tests/kernel/proc/inherit.c prints the same
 	// natively): its limits and policies are its own copies, and a thread's policy stays behind.
 	p := &Process{uid: 501, gid: 20, cmask: 0o27, cmaskSet: true, nice: 5,
 		rlimits:    map[uint64][2]uint64{8: {200, 300}},                    // RLIMIT_NOFILE
@@ -27,7 +27,7 @@ func TestHandOn(t *testing.T) {
 }
 
 func TestSessionsAndGroups(t *testing.T) {
-	// As tests/kernel/sessions.c prints natively: the first of a group stays in its session, a copy
+	// As tests/kernel/proc/sessions.c prints natively: the first of a group stays in its session, a copy
 	// of it may leave for its own, and a process is moved between the groups of its session by
 	// itself or by its parent while it is still the program its parent was.
 	m := &Machine{}

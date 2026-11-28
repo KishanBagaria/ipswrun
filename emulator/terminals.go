@@ -18,7 +18,7 @@ import (
 // the second a line at a time, or as it comes once the second is told to leave bytes alone.
 // What the second writes is read at the first, a newline made a return and a newline. As the
 // kernel's source has it (bsd/kern/tty.c, tty_pty.c, tty_ptmx.c) and as measured on macOS
-// 27.2.1 (tests/kernel/pty.c).
+// 27.2.1 (tests/kernel/tty/pty.c).
 //
 // Not here yet, and stopping the run when asked for: a terminal as a session's own (signals
 // from the keys that interrupt, quit and suspend, the group in front, hanging up), flow

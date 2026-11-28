@@ -10,7 +10,7 @@ import (
 
 // What a process tells the kernel of itself through proc_info, as the kernel's own source has
 // it (xnu's proc_setcontrol, proc_dirtycontrol and memorystatus_dirty_*) and as macOS 27.2.1
-// was measured to answer each thing (tests/kernel/procctl.c).
+// was measured to answer each thing (tests/kernel/proc/procctl.c).
 
 // procSetControl is proc_info's call 5, of which the one thing asked is a name for the thread
 // that asks (pthread_setname_np): of up to 63 bytes (ENAMETOOLONG), and of the caller's own
@@ -112,7 +112,7 @@ func (p *Process) procDirtyControl(pid uint32, flavor, arg uint64, a []uint64) i
 
 // sysProcRlimitControl is proc_rlimit_control(pid, kind, argument), by which a daemon asked for
 // a limit on how often it may be woken: the kernel takes that and keeps nothing, its source
-// says, and as measured (tests/kernel/daemonasks.c). The pid is -1 for the caller; another user's
+// says, and as measured (tests/kernel/proc/daemonasks.c). The pid is -1 for the caller; another user's
 // process is EACCES, none ESRCH, and a kind there is not EINVAL. The kinds that do something
 // (how much of a processor it may use, and its memory over a time) stop.
 func sysProcRlimitControl(p *Process, a []uint64) int64 {

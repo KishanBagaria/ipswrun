@@ -9,7 +9,7 @@ import (
 // them each way: what is sent into one waits to be received from the other. A receiver with
 // nothing to receive waits for a sender, and a sender with no room for a receiver, as with a
 // pipe, and either can say that it will send no more. What a Mac's kernel does was measured with
-// tests/kernel/socketpair.c, for a pair of stream sockets of the local domain. There is no other
+// tests/kernel/sockets/socketpair.c, for a pair of stream sockets of the local domain. There is no other
 // socket here: no datagrams, no names to connect to, no network.
 
 const (
@@ -119,7 +119,7 @@ const (
 // that lets it reach nobody. The kernel's own socket is another matter: on one of the system's
 // domain, raw, of the events protocol, the kernel tells a program what happens to the machine (a
 // network interface coming up, a volume mounted), and configd, which opens one as it starts, has
-// no way on without it. It is given as measured on macOS 27.2.1 (tests/kernel/kernevents.c): a
+// no way on without it. It is given as measured on macOS 27.2.1 (tests/kernel/sockets/kernevents.c): a
 // program may say which events it wants and is told back, and nothing is ever there to read, as
 // nothing of the kind happens here. A stream of that protocol is EPROTOTYPE and a protocol there
 // is not EPROTONOSUPPORT, as measured; any other socket of the system's domain (a control

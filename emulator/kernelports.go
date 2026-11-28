@@ -9,7 +9,7 @@ import (
 // voucher's. Each is a port like any other to the process that holds a right to it, named and
 // counted as its other rights are, and each answers what is asked of its kind: a request of
 // another kind is KERN_INVALID_ARGUMENT, as a Mac's kernel was measured to answer the time asked
-// of a task and what a task holds asked of the host (tests/kernel/machports.c).
+// of a task and what a task holds asked of the host (tests/kernel/mach/machports.c).
 
 type portKind int
 
@@ -180,7 +180,7 @@ func migPortGetRefs(p *Process, body []byte) migReply {
 
 // The three ports a task keeps for whoever asks, as a shell keeps the port it found launchd by
 // (mach_ports_register and mach_ports_lookup), as the kernel's source has them and as measured
-// (tests/kernel/registered.c): what is kept replaces what was, and is given back as rights to send,
+// (tests/kernel/mach/registered.c): what is kept replaces what was, and is given back as rights to send,
 // one more each time, under the names the task has for them. A copy of the process is given
 // its parent's. A library asks in one of two forms, and is answered in the one it asked in:
 // three ports in the message itself, or (before macOS 14 and iOS 17) an array of up to three
@@ -294,7 +294,7 @@ func (p *Process) inheritRegistered(from *Process) {
 
 // migThreadInfo is thread_info(thread, kind, &info, &count), of a thread of the process: in
 // short (THREAD_BASIC_INFO) and at length (THREAD_EXTENDED_INFO), as the kernel's source has
-// them and as measured (tests/kernel/threadinfo.c). The time is what the process used while the
+// them and as measured (tests/kernel/mach/threadinfo.c). The time is what the process used while the
 // thread ran; a thread that waits says so (state 3, and the flag that it is swapped out) and
 // any other is running (1); it is scheduled as a Mac schedules the threads of a program
 // started plainly, by sharing time (policy 1) at priority 31 of at most 63, which is said and

@@ -10,7 +10,7 @@ import (
 // (F_GETFL) and sets it (F_SETFL): whether writes go to the end, whether it waits, and the like,
 // and whether it has been written. It is the open file's and not a descriptor's, so a duplicate
 // and a copy of the process have the same one, as a Mac's kernel was measured to keep it
-// (tests/kernel/fileflags.c). A pipe's and a socket's are their own (see pipes.go).
+// (tests/kernel/files/fileflags.c). A pipe's and a socket's are their own (see pipes.go).
 type status struct {
 	flags       uint32
 	descriptors int // of a file of the host's: how many descriptors it has, in every process (see rangelocks.go)

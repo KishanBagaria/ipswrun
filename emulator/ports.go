@@ -586,7 +586,7 @@ func machPortDestruct(p *Process, a []uint64) int64 {
 }
 
 // migPortDestroy is mach_port_destroy(task, name): every right the process has under a name is
-// given up, and the name is nothing after (tests/kernel/machports.c). Of a name that is nothing
+// given up, and the name is nothing after (tests/kernel/mach/machports.c). Of a name that is nothing
 // already, and of a port that is guarded, which a Mac's kernel ends the process for, it stops.
 func migPortDestroy(p *Process, body []byte) migReply {
 	name := le.Uint32(body[32:])

@@ -2,7 +2,7 @@
 // ipswrun serves it from the restore image's device tree for the --device, so what this prints
 // is what the image says of that device, and on that device itself it prints the same.
 //
-//   ipswrun --device Mac15,9 latest tests/kernel/registry.c
+//   ipswrun --device Mac15,9 latest tests/kernel/mach/registry.c
 //
 // It prints only what a restore image holds. What the boot loader fills in on a device (its
 // serial number, what is in its NVRAM) is not in the image, and ipswrun leaves it out.

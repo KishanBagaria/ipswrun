@@ -19,11 +19,11 @@ jobs:
       # The same guests for iOS, against the iOS SDK that comes with Xcode, into each folder's bin/ios.
       - run: make -C examples PLATFORM=ios && make -C tests/kernel PLATFORM=ios
       - run: |
-          guests=$(find examples/bin tests/kernel/bin -type f | sort)
+          guests=$(find examples/bin tests/kernel/*/bin -type f | sort)
           file $guests && shasum -a 256 $guests
       # What these guests print on a real Mac, which is what they should print under ipswrun.
       - run: |
-          for guest in tests/kernel/threads examples/swiftasync tests/kernel/ipc; do
+          for guest in tests/kernel/mach/threads examples/swiftasync tests/kernel/mach/ipc; do
             where=$(dirname $guest) guest=$(basename $guest)
             $where/bin/$guest | tee native.txt && diff native.txt $where/expected/$guest/native.txt || exit
             # And every recorded run that got to the end printed exactly that.
@@ -36,7 +36,7 @@ jobs:
           name: guests
           path: |
             examples/bin/
-            tests/kernel/bin/
+            tests/kernel/*/bin/
           if-no-files-found: error
 
   # Runs the guests against two releases of macOS and three of iOS on both kinds of host, with the
@@ -57,7 +57,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: guests
-      - run: chmod +x examples/bin/* examples/bin/ios/* tests/kernel/bin/* tests/kernel/bin/ios/*
+      - run: chmod +x examples/bin/* examples/bin/ios/* tests/kernel/*/bin/* tests/kernel/*/bin/ios/*
       # What ipswrun fetched of the releases, kept between runs: without it every run downloads
       # a few hundred megabytes of each from Apple. A cache is only saved when its key is new, so the
       # key changes with what decides what is fetched: the guests, the releases this file names and
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/ipswrun-matrix
-          key: matrix-packed-${{ runner.os }}-${{ hashFiles('examples/*.c', 'examples/*.m', 'examples/*.swift', 'tests/kernel/*.c', 'tests/guests.mk', 'tests/guests.txt', 'tests/commands/*.list', '.github/workflows/guests.yml', 'rangefs/cache.go') }}
+          key: matrix-packed-${{ runner.os }}-${{ hashFiles('examples/*.c', 'examples/*.m', 'examples/*.swift', 'tests/kernel/*/*.c', 'tests/guests.mk', 'tests/guests.txt', 'tests/commands/*.list', '.github/workflows/guests.yml', 'rangefs/cache.go') }}
           restore-keys: matrix-packed-${{ runner.os }}-
       - run: tests/matrix.sh --guest=crypto,threads,swiftasync,ipc,service,client,prefs,adi,shellpty,sqlitewal 15.0 27.2
         env:

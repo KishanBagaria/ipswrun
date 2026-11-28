@@ -12,7 +12,7 @@ import (
 // at once, for every mapping of it in every process. The mapping is memory of the machine's
 // own, one for the file, which every mapping of the file is a window on; it is written to the
 // file before the file is read, and read from the file after the file is written, cut or
-// grown, so that nobody finds the two apart. As measured on macOS 27.2.1 (tests/kernel/mapfile.c).
+// grown, so that nobody finds the two apart. As measured on macOS 27.2.1 (tests/kernel/memory/mapfile.c).
 //
 // A mapping may reach past the file's end: the pages past the one its last byte is in fault
 // (SIGBUS), and are taken back from whoever has them when the file is cut. A gigabyte of the

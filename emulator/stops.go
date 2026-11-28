@@ -12,7 +12,7 @@ import (
 // until then, and what would end it ends it at once. SIGCONT is told to a parent that asks
 // (WCONTINUED), whether the process was stopped or not, and not by SIGCHLD. The three a
 // terminal sends are not sent at all to a group with nobody to see to it. As measured on macOS
-// 27.2.1 (tests/kernel/stops.c) and as the source has it (kern_sig.c).
+// 27.2.1 (tests/kernel/signals/stops.c) and as the source has it (kern_sig.c).
 
 const (
 	sigTerminalStop  = 18 // SIGTSTP

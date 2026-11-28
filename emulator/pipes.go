@@ -11,7 +11,7 @@ import (
 // A pipe is bytes in the kernel between two descriptors of one process: what is written to one
 // end waits to be read from the other. A reader with nothing to read waits for a writer, and a
 // writer with no room waits for a reader, each a thread off the engine until the other end has
-// done its part or has gone. What a Mac's kernel does was measured with tests/kernel/pipes.c.
+// done its part or has gone. What a Mac's kernel does was measured with tests/kernel/io/pipes.c.
 
 const (
 	pipeSize    = 16384 // what a pipe holds to begin with (PIPE_SIZE), and

@@ -9,7 +9,7 @@ import (
 
 func TestClone(t *testing.T) {
 	// A clone is a file of its own with what the first held, its mode, its date and its
-	// attributes, and the owner it was given (tests/kernel/clone.c prints the same natively).
+	// attributes, and the owner it was given (tests/kernel/files/clone.c prints the same natively).
 	p := newProcess(t)
 	onMain(func() {
 		home := p.mounts[0].root.Name()

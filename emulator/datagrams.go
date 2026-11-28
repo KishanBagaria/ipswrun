@@ -9,7 +9,7 @@ import (
 // to the other of a pair, to the socket it was connected to, or to the one bound to a path it
 // names. As the kernel's source has them (uipc_send, unp_connect, unp_disconnect and unp_drop
 // in bsd/kern/uipc_usrreq.c; sosend, soreceive and soconnectlock in uipc_socket.c; sbappendaddr
-// in uipc_socket2.c) and as measured on macOS 27.2.1 (tests/kernel/localdgram.c).
+// in uipc_socket2.c) and as measured on macOS 27.2.1 (tests/kernel/sockets/localdgram.c).
 //
 // How many messages a socket holds is the one thing here not known for every release. A
 // message is taken while there is room for its bytes and its sender's address both in the

@@ -8,7 +8,7 @@ import (
 )
 
 // lineage is what tells a process from every other the machine has had, as a Mac's kernel was
-// measured to keep it (tests/kernel/unique.c): the UUID of its program, a number of its own that no
+// measured to keep it (tests/kernel/proc/unique.c): the UUID of its program, a number of its own that no
 // later process is given, and a version that moves on with every new process and every program
 // one becomes, with its parent's number and the version its parent had when it was made.
 type lineage struct {

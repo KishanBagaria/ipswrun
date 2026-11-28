@@ -12,8 +12,8 @@ import (
 
 // Locks on parts of a file (fcntl): an open file's (F_OFD_SETLK and its kin, which SQLite takes
 // on every database it opens) and a process's own (F_SETLK and its kin, which most other
-// programs take), as a Mac's kernel was measured to keep them (tests/kernel/rangelocks.c,
-// tests/kernel/proclocks.c) and as its source has them (bsd/kern/kern_lockf.c). An open file's is
+// programs take), as a Mac's kernel was measured to keep them (tests/kernel/locks/rangelocks.c,
+// tests/kernel/locks/proclocks.c) and as its source has them (bsd/kern/kern_lockf.c). An open file's is
 // held by the open file, so a duplicate and a copy of the process hold it too; a process's is
 // held by the process whatever descriptor took it, is no copy's, and goes when the process
 // closes any descriptor of the file or ends. Whoever else asks for what conflicts with one, an
@@ -471,7 +471,7 @@ func (r descriptorReader) ReadAt(b []byte, at int64) (int, error) {
 // holder's: unlocking the whole leaves those, and unlocking those leaves it. Asked both to
 // share and to write it is to write; asked neither it is EBADF. One that shares the file and
 // waits to write it gives up its share before it waits, and one that does not wait keeps it.
-// As measured on macOS 27.2.1 (tests/kernel/locklist.c). A file of the host's can be locked, a
+// As measured on macOS 27.2.1 (tests/kernel/locks/locklist.c). A file of the host's can be locked, a
 // directory and a device among them, a file or directory of the system volume, and either end
 // of a terminal; of what is no file (a pipe, a socket, a kqueue, memory with a name) it is not
 // supported; of the rest it is not there.
