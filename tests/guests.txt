@@ -68,7 +68,8 @@ links	tests/kernel/files	macos,ios
 listpids	tests/kernel/proc	macos,ios
 localdgram	tests/kernel/sockets	macos,ios
 localsock	tests/kernel/sockets	macos,ios
-locklist	tests/kernel/locks	macos,ios
+# locks is rangelocks, proclocks and locklist, each a part of it (tests/suite.h).
+locks	tests/kernel/locks	macos,ios
 machports	tests/kernel/mach	macos,ios
 mapfile	tests/kernel/memory	macos,ios
 # notify asks the release's own notifyd, started when it is first looked up.
@@ -92,14 +93,12 @@ procargs	tests/kernel/proc	macos,ios
 procctl	tests/kernel/proc	macos,ios
 # procinfo is built against a header the iOS SDK does not have.
 procinfo	tests/kernel/proc	macos
-proclocks	tests/kernel/locks	macos,ios
 procs	tests/kernel/proc	macos,ios
 # procwatch has its child become /bin/sleep, which an iPhone does not have.
 procwatch	tests/kernel/proc	macos
 # profiles asks for a profile a Mac's kernel has by name, which is no iPhone's.
 profiles	tests/kernel/system	macos
 pty	tests/kernel/tty	macos,ios
-rangelocks	tests/kernel/locks	macos,ios
 reclaimring	tests/kernel/memory	macos,ios
 registered	tests/kernel/mach	macos,ios
 registry	tests/kernel/mach	macos,ios
