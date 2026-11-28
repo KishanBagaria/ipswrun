@@ -61,6 +61,24 @@ func (k kernelPort) request(p *Process, id uint32, body []byte) (migReply, bool)
 		}
 		return migRoutines[id](p, body), true
 	}
+	if id == 412 && k.kind == kindHost && len(body) >= 40 {
+		// host_get_special_port(host, node, which): the ports the host keeps for root. A user is
+		// refused them all (KERN_INVALID_ARGUMENT), as measured. Root gets the host's port for
+		// which 1 and 2, as measured in a virtual machine (macOS 27.2): there the second is the
+		// very port root's mach_host_self names and the first another, and here both are the
+		// one port the host has. Of none set (4) it is no port and no error, and of 0
+		// KERN_INVALID_ARGUMENT, as measured. The rest (the one IOKit starts from, and those
+		// daemons set) are not answered here.
+		switch which := le.Uint32(body[36:]); {
+		case p.uid != 0 || which == 0:
+			return migCode(kernInvalidArg), true
+		case which == 1 || which == 2:
+			return migPort(p.kernelSelf(&p.m.host, kindHost)), true
+		case which == 4:
+			return migPort(0), true
+		}
+		return migReply{}, false
+	}
 	switch {
 	case kind == 0, kind == kindHostPriv && p.uid == 0, k.of != nil && k.of != p:
 		// What root's host port answers is not known, nor what another process's task does.

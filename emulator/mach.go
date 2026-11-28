@@ -306,6 +306,10 @@ func (p *Process) send(m message) int64 {
 			return reply.refused
 		}
 		if !ok || reply.none {
+			// What the kernel is asked that is not answered here stops the run and names
+			// itself, as a system call does: a Mac's kernel knows the request, and whatever was
+			// answered instead would be made up. A survey goes on, with the message refused.
+			p.unimplemented(fmt.Sprintf("Mach request %d to the kernel (a port of kind %T)", m.id, q.object), []uint64{uint64(m.remote), uint64(m.sendSize)})
 			p.unknown[unknownMIG{m.id, m.remote, p.uc.reg(regLR)}]++
 			return sendInvalidDest
 		}
@@ -459,6 +463,7 @@ func init() {
 		3240: func(*Process, []byte) migReply { return migData(le64(0)) }, // mach_port_is_connection_for_service: it is, under no sandbox filter
 		3409: migTaskGetSpecialPort,
 		3410: ok, // task_set_special_port
+		3413: migTaskSetExceptionPorts,
 		3418: migSemaphoreCreate,
 		3419: migSemaphoreDestroy,
 		4807: migVMCopy,
@@ -470,6 +475,27 @@ func init() {
 		8000: ok, // task_restartable_ranges_register
 		8001: ok,
 	}
+}
+
+// migTaskSetExceptionPorts is task_set_exception_ports(task, kinds, port, behaviour, flavour):
+// where the kernel is to send word of what goes wrong in the task. It is kept for the kinds
+// nothing here ever raises of itself: a limit on what the task uses that was passed
+// (EXC_RESOURCE), a guard that was broken (EXC_GUARD), and what is left of the task after it
+// has died (EXC_CORPSE_NOTIFY), which _vprocmgr_detach_from_console sets to the system's
+// reporter of crashes, as nohup does. Nothing is sent to it when a guest dies. For the kinds
+// that a thread's own fault raises (a bad address, an instruction that is none, a breakpoint
+// and the like), a port would have to be told before the signal is raised, which is not
+// there: setting one stops the run. To no port at all it takes away what was set.
+func migTaskSetExceptionPorts(p *Process, body []byte) migReply {
+	const resource, guard, corpse = 1 << 11, 1 << 12, 1 << 13
+	if len(body) < 60 || le.Uint32(body[24:]) != 1 {
+		return migReply{none: true}
+	}
+	port, kinds := le.Uint32(body[28:]), le.Uint32(body[48:])
+	if port != 0 && kinds&^(resource|guard|corpse) != 0 {
+		return migReply{none: true}
+	}
+	return migCode(0)
 }
 
 // migTaskGetSpecialPort hands out only the bootstrap port, which leads to launchd (see launchd.go).
