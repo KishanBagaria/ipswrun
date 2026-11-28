@@ -57,8 +57,10 @@ fifo	tests/kernel/io	macos,ios
 fileflags	tests/kernel/files	macos,ios
 files	tests/kernel/files	macos,ios
 fork	tests/kernel/proc	macos,ios
+waitid	tests/kernel/proc	macos,ios
 groups	tests/kernel/signals	macos,ios
 handlers	tests/kernel/signals	macos,ios
+sigdiscard	tests/kernel/signals	macos,ios
 inherit	tests/kernel/proc	macos,ios
 input	tests/kernel/io	macos,ios
 ipc	tests/kernel/mach	macos,ios

@@ -86,13 +86,31 @@ func (w *waiting4) changed(child *Process) (uint32, bool) {
 	switch {
 	case child.exited:
 	case w.options&waitStopped != 0 && child.stopped && !child.stopTold:
-		child.stopTold = true
+		child.stopTold = !w.leave
 		return uint32(child.stopSignal)<<8 | 0x7f, true
 	case w.options&waitContinued != 0 && child.continued:
-		child.continued = false
+		child.continued = w.leave
 		return sigCont<<8 | 0x7f, true
 	}
 	return 0, false
+}
+
+// tellChanged writes what changed says of a child where the one that waits wants it: wait4's
+// status, or waitid's siginfo, which says the signal that stopped it, or SIGCONT of one set
+// going, as measured.
+func (p *Process) tellChanged(child *Process, w *waiting4, status uint32) int64 {
+	if w.id {
+		code := uint32(cldStopped)
+		if status>>8 == sigCont {
+			code = cldContinued
+		}
+		p.write(w.info, childInfo(child, code, status>>8))
+		return 0
+	}
+	if w.status != 0 {
+		p.write(w.status, le32(status))
+	}
+	return int64(child.pid)
 }
 
 // childChanged gives the threads of a parent that wait for a child one that was stopped or set
@@ -108,11 +126,8 @@ func (m *Machine) childChanged(child *Process) {
 			continue
 		}
 		if status, ok := w.changed(child); ok {
-			if w.status != 0 {
-				parent.write(w.status, le32(status))
-			}
 			t.waiting4 = nil
-			t.answer = &result{x0: uint64(child.pid)}
+			t.answer = &result{x0: uint64(parent.tellChanged(child, w, status))}
 			t.wake()
 		}
 	}

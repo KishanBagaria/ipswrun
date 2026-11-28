@@ -1,6 +1,9 @@
 package emulator
 
 import (
+	"bytes"
+	"os"
+	"strconv"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -101,4 +104,40 @@ const utimeOmit = (1 << 30) - 2
 // hostTimes are a host file's times of access and change, in nanoseconds.
 func hostTimes(st *syscall.Stat_t) (access, change int64) {
 	return st.Atim.Nano(), st.Mtim.Nano()
+}
+
+// fileTimes are a host file's four times, in nanoseconds: when it was last read, written and
+// changed, and for when it was made, which this host's stat does not say, when it was written.
+func fileTimes(st *syscall.Stat_t) [4]int64 {
+	return [4]int64{st.Atim.Nano(), st.Mtim.Nano(), st.Ctim.Nano(), st.Mtim.Nano()}
+}
+
+// hostDirKinds is the kind (DT_*) the host's listing has by each name of an open directory,
+// read from its start. Nothing if it cannot be read so.
+func hostDirKinds(f *os.File) map[string]byte {
+	if _, err := f.Seek(0, 0); err != nil {
+		return nil
+	}
+	kinds := map[string]byte{}
+	buf := make([]byte, 1<<16)
+	for {
+		n, err := syscall.ReadDirent(int(f.Fd()), buf)
+		if err != nil || n <= 0 {
+			return kinds
+		}
+		for b := buf[:n]; len(b) >= 19; { // a dirent: number, position, its length, kind, name up to a zero
+			length := int(le.Uint16(b[16:]))
+			if length < 19 || length > len(b) {
+				return kinds
+			}
+			name, _, _ := bytes.Cut(b[19:length], []byte{0})
+			kinds[string(name)] = b[18]
+			b = b[length:]
+		}
+	}
+}
+
+// setFileTimes sets an open host file's times of access and change, in nanoseconds.
+func setFileTimes(fd int, access, change int64) {
+	unix.UtimesNanoAt(unix.AT_FDCWD, "/proc/self/fd/"+strconv.Itoa(fd), []unix.Timespec{unix.NsecToTimespec(access), unix.NsecToTimespec(change)}, 0)
 }

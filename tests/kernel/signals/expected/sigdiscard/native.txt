@@ -1,0 +1,11 @@
+SIGUSR1 sent to the process, nothing changed: waits 1; after the change 1; with a handler again 1; taken when let in: 1
+SIGUSR1 sent to the process, then ignored: waits 1; after the change 0; with a handler again 0; taken when let in: 0
+SIGUSR1 sent to the thread, then ignored: waits 1; after the change 0; with a handler again 0; taken when let in: 0
+SIGUSR1 sent to the process, then its usual end (to end the process): waits 1; after the change 1; with a handler again 1; taken when let in: 1
+SIGTERM sent to the process, then ignored: waits 1; after the change 0; with a handler again 0; taken when let in: 0
+SIGURG sent to the process, then its usual end (to be ignored): waits 1; after the change 1; with a handler again 1; taken when let in: 1
+SIGCHLD sent to the thread, then its usual end (to be ignored): waits 1; after the change 1; with a handler again 1; taken when let in: 1
+SIGCONT sent to the process, then ignored: waits 1; after the change 0; with a handler again 0; taken when let in: 0
+SIGCONT sent to the process, then its usual end: waits 1; after the change 1; with a handler again 1; taken when let in: 1
+SIGTSTP sent to the process, then ignored: waits 1; after the change 0; with a handler again 0; taken when let in: 0
+SIGUSR2 sent to the process and to the thread, then ignored: waits 0; taken when let in: 0

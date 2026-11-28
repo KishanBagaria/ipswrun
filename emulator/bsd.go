@@ -51,7 +51,7 @@ func init() {
 		"shared_region_check_np":           {1, sysSharedRegionCheck},
 		"shared_region_map_and_slide_2_np": {4, sysSharedRegionMap}, "map_with_linking_np": {4, constant(-eNOTSUP)},
 		// process
-		"exit": {1, sysExit}, "getpid": {0, sysGetpid}, "getppid": {0, sysGetppid}, "posix_spawn": {5, sysPosixSpawn}, "wait4": {4, sysWait4}, "fork": {0, sysFork}, "__pthread_chdir": {1, sysPthreadChdir}, "__pthread_fchdir": {1, sysPthreadFchdir}, "execve": {3, sysExecve}, "getuid": {0, sysGetuid},
+		"exit": {1, sysExit}, "getpid": {0, sysGetpid}, "getppid": {0, sysGetppid}, "posix_spawn": {5, sysPosixSpawn}, "wait4": {4, sysWait4}, "waitid": {4, sysWaitid}, "fork": {0, sysFork}, "__pthread_chdir": {1, sysPthreadChdir}, "__pthread_fchdir": {1, sysPthreadFchdir}, "execve": {3, sysExecve}, "getuid": {0, sysGetuid},
 		"geteuid": {0, sysGetuid}, "getgid": {0, sysGetgid}, "getegid": {0, sysGetgid}, "gettid": {2, constant(-eSRCH)},
 		"setuid": {1, sysSetuid}, "seteuid": {1, sysSetuid}, "setgid": {1, sysSetgid}, "setegid": {1, sysSetgid},
 		"getrusage": {2, sysGetrusage}, "getlogin": {2, sysGetlogin}, "getdtablesize": {0, sysGetdtablesize},
@@ -357,6 +357,7 @@ func sysSharedRegionMap(p *Process, a []uint64) int64 {
 
 func sysExit(p *Process, a []uint64) int64 {
 	code := int(a[0] & 0xFF)
+	p.exitWhole = uint32(a[0])
 	if f := p.leaderDrains(); f != nil {
 		t := p.current
 		t.leaving, t.pipeOp = &code, &pipeOp{f: f, closing: true, flags: 1}
@@ -494,6 +495,13 @@ func sysSigaction(p *Process, a []uint64) int64 {
 	if act != 0 {
 		b := p.read(act, 24)
 		p.sigactions[sig] = sigAction{handler: le.Uint64(b), tramp: le.Uint64(b[8:]), mask: le.Uint32(b[16:]), flags: le.Uint32(b[20:]) & saUser}
+		// One that waits, for the process or for a thread, is gone when it is set to be
+		// ignored, and is not taken when a handler is set again: as measured, and how timeout
+		// takes back the signal it sent its own group. The source has it gone too when one
+		// whose usual end is to be ignored is set back to that; the Mac measured kept it.
+		if p.sigactions[sig].handler == sigIgnore {
+			p.pending = slices.DeleteFunc(p.pending, func(w pendingSignal) bool { return uint64(w.sig) == sig })
+		}
 	}
 	return 0
 }
@@ -609,6 +617,9 @@ func sysCsops(p *Process, a []uint64) int64 {
 		}
 		return blob(0xFADE7171, []byte(about.entitlements))
 	case csOpsEntitlementsDER:
+		if about.entitlementsDER == nil && about.entitlements == "" {
+			return 0 // a program with none is told nothing and no error, as of the property list: as measured of itself and of /bin/sleep
+		}
 		if about.entitlementsDER == nil {
 			return -eNOENT
 		}

@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"unsafe"
 
 	"github.com/KishanBagaria/ipswrun/dyldcache"
 )
@@ -325,28 +324,7 @@ func readDirInRoot(root *os.Root, rel string) ([]string, map[string]byte, error)
 	if err != nil || syscall.Fstat(int(f.Fd()), &st) != nil || st.Mode&0o100 != 0 {
 		return names, nil, err
 	}
-	// The host's own getdirentries64, which Go has no call for: its libraries read a directory
-	// by opening it again by name, which one that is not searched does not let them.
-	if _, err := f.Seek(0, 0); err != nil {
-		return names, nil, nil
-	}
-	kinds := map[string]byte{}
-	buf := make([]byte, 1<<16)
-	for {
-		var position int64
-		n, _, errno := syscall.Syscall6(344, f.Fd(), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), uintptr(unsafe.Pointer(&position)), 0, 0)
-		if errno != 0 || int(n) <= 0 || int(n) > len(buf) {
-			return names, kinds, nil
-		}
-		for b := buf[:n]; len(b) >= 21; { // a dirent: number, position, its length, its name's, kind, name
-			length, named := int(le.Uint16(b[16:])), int(le.Uint16(b[18:]))
-			if length < 21 || length > len(b) || 21+named > length {
-				return names, kinds, nil
-			}
-			kinds[string(b[21:21+named])] = b[20]
-			b = b[length:]
-		}
-	}
+	return names, hostDirKinds(f), nil
 }
 
 func closeHost(fd int) { syscall.Close(fd) }
@@ -600,9 +578,10 @@ func statBuf(i fileInfo, owner user) []byte {
 	le.PutUint32(b[16:], owner.uid)
 	le.PutUint32(b[20:], owner.gid)
 	for n, at := 0, 32; at < 96; n, at = n+1, at+16 { // access, modification, change and birth times
-		if le.PutUint64(b[at:], uint64(i.mtime)); i.times[1] != 0 {
-			le.PutUint64(b[at:], uint64(i.times[n]/1e9))
-			le.PutUint64(b[at+8:], uint64(i.times[n]%1e9))
+		if le.PutUint64(b[at:], uint64(i.mtime)); i.timed {
+			seconds, nanos := timespec(i.times[n])
+			le.PutUint64(b[at:], seconds)
+			le.PutUint64(b[at+8:], nanos)
 		}
 	}
 	le.PutUint64(b[96:], uint64(i.size))
@@ -912,6 +891,16 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 	n := p.newFD(opened)
 	p.note("  open %s -> %d", path, n)
 	return int64(n)
+}
+
+// timespec is a time in nanoseconds as seconds and the nanoseconds past them, which are never
+// below zero, whatever the time.
+func timespec(ns int64) (seconds, nanos uint64) {
+	s, n := ns/1e9, ns%1e9
+	if n < 0 {
+		s, n = s-1, n+1e9
+	}
+	return uint64(s), uint64(n)
 }
 
 const maxFD = 10240
@@ -2071,7 +2060,7 @@ func sysGetdirentries64(p *Process, a []uint64) int64 {
 						if p.m.sockets[hostFileOf(&st)] != nil {
 							kind = syscall.DT_SOCK
 						}
-					} else if k, ok := f.kinds[name]; ok { // not to be looked at: the directory may not be searched
+					} else if k := f.kinds[name]; k != 0 { // a host that does not say a kind says none // not to be looked at: the directory may not be searched
 						kind = k
 					}
 				case t.kind == cacheFD || t.kind == dataFD:

@@ -44,6 +44,14 @@ type waiting4 struct {
 	status, rusage uint64
 	options        uint64
 	group          uint32 // of one that waits for the children of a group: which
+	// Of waitid, which says more and may ask for less: where its siginfo goes, whether it
+	// asks of children that ended at all, and whether what it is told is left to be told
+	// again (WNOWAIT).
+	info       uint64
+	id         bool
+	unended    bool
+	leave      bool
+	noChildren bool // it asks of a group or a child that no child is
 }
 
 // program is the executable at a path, and the name to run it under; or the error posix_spawn
@@ -360,6 +368,12 @@ func sysWait4(p *Process, a []uint64) int64 {
 	case pid < -1:
 		w.group = uint32(-pid)
 	}
+	return p.waitFor(w)
+}
+
+// waitFor answers a wait4 or a waitid with a child that has something to tell, or waits for
+// one, unless told not to.
+func (p *Process) waitFor(w *waiting4) int64 {
 	found := false
 	children := p.children()
 	slices.Reverse(children)
@@ -367,20 +381,17 @@ func sysWait4(p *Process, a []uint64) int64 {
 		if !w.wants(child) {
 			continue
 		}
-		if found = true; child.exited {
+		if found = true; child.exited && !w.unended {
 			return p.reapChild(child, w)
 		}
 		if status, ok := w.changed(child); ok { // one that was stopped, or set going: what it has used is not said
-			if w.status != 0 {
-				p.write(w.status, le32(status))
-			}
-			return int64(child.pid)
+			return p.tellChanged(child, w, status)
 		}
 	}
 	switch {
 	case !found:
 		return -eCHILD
-	case a[2]&waitNoHang != 0:
+	case w.options&waitNoHang != 0:
 		return 0
 	}
 	p.current.waiting4 = w
@@ -389,6 +400,9 @@ func sysWait4(p *Process, a []uint64) int64 {
 }
 
 func (w *waiting4) wants(child *Process) bool {
+	if w.noChildren {
+		return false
+	}
 	if w.group != 0 {
 		return child.group() == w.group
 	}
@@ -397,6 +411,18 @@ func (w *waiting4) wants(child *Process) bool {
 
 // reapChild tells a parent how a child ended, which is the last that is heard of it.
 func (p *Process) reapChild(child *Process, w *waiting4) int64 {
+	if w.id {
+		// As measured: the signal that ended it, or all of the status it left with but its
+		// top byte, which wait4 says the low byte of.
+		code, status := uint32(cldExited), child.exitWhole&0xFFFFFF
+		if child.endSignal != 0 {
+			code, status = cldKilled, uint32(child.endSignal)
+		}
+		p.write(w.info, childInfo(child, code, status))
+		if w.leave {
+			return 0
+		}
+	}
 	if w.status != 0 {
 		p.write(w.status, le32(child.status()))
 	}
@@ -407,7 +433,76 @@ func (p *Process) reapChild(child *Process, w *waiting4) int64 {
 	p.childrenUsed.add(its)
 	p.childrenUsed.add(child.childrenUsed)
 	child.reaped = true
+	// Another thread that waits for what there is now no child to tell of is told so, as the
+	// source has it (the wait is begun again, and finds none): not measured.
+	for _, t := range p.waiters(waitChild, 0) {
+		if o := t.waiting4; o != nil && o != w && !slices.ContainsFunc(p.children(), o.wants) {
+			t.waiting4 = nil
+			t.answer = &result{x0: eCHILD, carry: true}
+			t.wake()
+		}
+	}
+	if w.id {
+		return 0
+	}
 	return int64(child.pid)
+}
+
+const (
+	cldExited    = 1 // CLD_EXITED
+	cldKilled    = 2 // CLD_KILLED
+	cldStopped   = 5 // CLD_STOPPED
+	cldContinued = 6 // CLD_CONTINUED
+
+	waitExited    = 0x4  // WEXITED
+	waitIDStopped = 0x8  // WSTOPPED
+	waitNoWait    = 0x20 // WNOWAIT
+)
+
+// childInfo is the siginfo waitid fills for a child: SIGCHLD, why, the child and its status,
+// and nothing else, the user among what is left zero, as measured.
+func childInfo(child *Process, code, status uint32) []byte {
+	info := make([]byte, 104)
+	le.PutUint32(info[0:], sigChild)
+	le.PutUint32(info[8:], code)
+	le.PutUint32(info[12:], child.pid)
+	le.PutUint32(info[20:], status)
+	return info
+}
+
+// sysWaitid is waitid(kind, id, &siginfo, options): of any child (P_ALL), one (P_PID) or those
+// of a group (P_PGID), what wait4 tells and more of it, of the kinds asked for and no others:
+// those that ended (WEXITED), were stopped (WSTOPPED) or set going again (WCONTINUED), left to
+// be told again if asked (WNOWAIT). It answers 0, and writes nothing when told not to wait
+// and there is nothing to tell. As measured on macOS 27.2.1 (tests/kernel/proc/waitid.c) and
+// as the source has it: a kind that is none of the three is any child; a group or a child
+// below zero, nothing asked for, and a bit that names nothing are EINVAL. The Mac took the
+// bit 0x40, which the source does not have: it stops here.
+func sysWaitid(p *Process, a []uint64) int64 {
+	kind, id, options := uint32(a[0]), int32(a[1]), a[3]&0xFFFFFFFF
+	switch {
+	case options == 0, options&^(waitNoHang|waitExited|waitIDStopped|waitContinued|waitNoWait|0x40) != 0:
+		return -eINVAL
+	case (kind == 1 || kind == 2) && id < 0:
+		return -eINVAL
+	case options&0x40 != 0:
+		p.unimplemented("waitid with the option 0x40", a)
+		return -eNOSYS
+	case a[2] == 0:
+		p.unimplemented("waitid with nowhere to say what it finds", a)
+		return -eNOSYS
+	}
+	w := &waiting4{pid: -1, info: a[2], options: options & (waitNoHang | waitContinued), id: true, unended: options&waitExited == 0, leave: options&waitNoWait != 0}
+	if options&waitIDStopped != 0 {
+		w.options |= waitStopped
+	}
+	switch kind {
+	case 1: // P_PID
+		w.pid, w.noChildren = id, id == 0
+	case 2: // P_PGID
+		w.group, w.noChildren = uint32(id), id == 0
+	}
+	return p.waitFor(w)
 }
 
 // childExited gives the threads of a parent that wait for a child the one that has just ended.
@@ -417,7 +512,7 @@ func (m *Machine) childExited(child *Process) {
 		return
 	}
 	for _, t := range parent.waiters(waitChild, 0) {
-		if w := t.waiting4; w != nil && w.wants(child) && !child.reaped {
+		if w := t.waiting4; w != nil && w.wants(child) && !child.reaped && !w.unended {
 			t.waiting4 = nil
 			t.answer = &result{x0: uint64(parent.reapChild(child, w))}
 			t.wake()

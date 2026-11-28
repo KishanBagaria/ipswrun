@@ -1,0 +1,4 @@
+same
+1a2
+> more
+cmp: EOF on t

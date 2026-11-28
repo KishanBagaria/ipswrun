@@ -320,6 +320,7 @@ type Process struct {
 	detached                     bool // it had launchd move it to the background's session (see routineSession)
 	demanded                     bool // launchd started it when a service of its was first looked up (see onDemand)
 	exitCode                     int
+	exitWhole                    uint32          // all of the status it left with, which waitid says more of than the low byte
 	endSignal                    int             // the signal that ended it, if one did (see signals.go)
 	pending                      []pendingSignal // the signals no thread has taken yet
 	guestFault                   *pendingSignal  // the fault the thread that has the CPU just made, on its way out of the hook

@@ -250,5 +250,5 @@ func sysMsync(p *Process, a []uint64) int64 {
 // restoreTimes sets a file's times of access and change back to what a stat of it said.
 func restoreTimes(host int, st *syscall.Stat_t) {
 	access, change := hostTimes(st)
-	unix.Futimes(host, []unix.Timeval{unix.NsecToTimeval(access), unix.NsecToTimeval(change)})
+	setFileTimes(host, access, change)
 }

@@ -1,0 +1,68 @@
+# Text tools on files of one's own and of the system, archives, and tools that start and watch processes. See run.sh.
+sort -r /usr/share/dict/propernames | head -3
+sort /usr/share/dict/connectives | uniq -c | sort -rn | head -2 | wc -l
+wc -l /usr/share/dict/words /usr/share/dict/propernames
+grep -c '^z' /usr/share/dict/words
+grep -ic 'ipsum' /usr/share/dict/words; grep -n '^zebra$' /usr/share/dict/words | wc -l
+look zym | head -3
+tr a-z A-Z < /usr/share/dict/connectives | head -2
+cut -c1-3 /usr/share/dict/propernames | sort -u | wc -l
+rev /usr/share/dict/connectives | head -2
+fold -w 20 /usr/share/dict/connectives | head -3
+nl /usr/share/dict/connectives | tail -1
+awk 'length > 20' /usr/share/dict/words | wc -l
+awk '{ n += length } END { print n, NR }' /usr/share/dict/propernames
+sed -n '100p;200p' /usr/share/dict/words
+sed -e 's/a/A/g' -e '3q' /usr/share/dict/connectives
+head -c 64 /bin/ls | od -An -tx1 | head -1
+tr -cd '[:print:]' < /bin/echo | wc -c | awk '{ print $1 > 1000 }'
+md5 -q /usr/share/dict/connectives; shasum -a 256 /usr/share/dict/connectives | cut -c1-16
+cksum /usr/share/dict/propernames
+printf 'b 2\na 1\nc 3\n' > t; sort t; sort -k2 -rn t | head -1
+printf 'a\tb\nc\td\n' > t; cut -f2 t; paste -s -d, t
+printf 'one\ntwo\nthree\n' > t; tail -r t; tail -n +2 t | head -1
+printf 'x y\nx z\n' > t; awk '{ a[$1] = a[$1] " " $2 } END { for (k in a) print k a[k] }' t
+printf 'a\nb\na\n' | sort | uniq -d; printf 'a\nb\n' | grep -v a
+printf '3\n1\n2\n' | sort -n | tr '\n' ' '; echo; seq 1 5 | paste -sd+ - | bc
+seq -w 8 11 | tr '\n' ' '; echo; jot 3 10 | tr '\n' ' '; echo
+printf 'hello world\n' | sed 's/\(hello\) \(world\)/\2 \1/'; printf 'ab\n' | tr -d a
+printf 'a,b,c\n' | awk -F, '{ print NF, $2 }'; printf '1 2\n' | awk '{ printf "%05.1f\n", $1 / $2 }'
+echo hello | xxd | cut -c1-40; echo aGVsbG8K | base64 -D
+echo hello | base64; echo hello | openssl dgst -sha1 | sed 's/.*= //'
+printf 'line\n' > t; cp t u; diff t u && echo same; echo more >> u; diff t u | head -2; cmp t u
+printf 'a\nb\nc\n' > t; printf 'a\nc\nd\n' > u; comm -12 t u; diff -u t u | sed -n '3,$p'
+printf 'a\nb\n' > t; patch -s t <<< "$(printf '2c2\n< b\n---\n> B\n')"; cat t
+xargs -n 2 echo < /usr/share/dict/connectives | head -2
+find /usr/share/dict -type f | sort | xargs wc -c | tail -1
+find . -name '*.txt' -newer d | sort; find . -type d -empty | sort
+find /usr/share/zoneinfo/Etc -name 'GMT+1*' | sort | xargs -n 1 basename | tr '\n' ' '; echo
+tar cf t.tar a.txt d; tar tf t.tar | sort; tar tvf t.tar a.txt | awk '{ print $1, $5 }'
+tar czf t.tgz a.txt d; mkdir x; tar xzf t.tgz -C x; cat x/a.txt; ls x
+tar cjf t.tbz a.txt; tar xjOf t.tbz; tar cf - a.txt | tar tf -
+gzip -k a.txt; ls a.txt*; gzip -dc a.txt.gz; gzip -l a.txt.gz | tail -1 | awk '{ print $2 }'
+echo hello | gzip | gunzip; echo hello | bzip2 | bunzip2
+zip -q z.zip a.txt d/e; unzip -l z.zip | tail -1 | awk '{ print $2 }'; unzip -p z.zip a.txt
+zip -qr z.zip d a.txt; mkdir x; unzip -q z.zip -d x; ls x | tr '\n' ' '; echo; zipinfo -1 z.zip | sort | head -2
+echo data > f; cpio -o <<< f 2>/dev/null | cpio -it 2>/dev/null
+ditto -c -k a.txt k.zip; ditto -x -k k.zip out; cat out/a.txt
+compress -c a.txt | uncompress -c; echo hello | zcat -f
+mkdir s; echo one > s/1; echo two > s/2; cp -Rp s s2; diff -r s s2 && echo same; cat s2/*
+sleep 0.2 & wait $!; echo $?; sleep 5 & kill -9 $!; wait $! 2>/dev/null; echo $?
+sh -c 'sleep 5 & echo started; kill $!; wait; echo ended' 2>/dev/null
+( sleep 0.1; echo late ) & echo early; wait
+command time -p true 2>&1 | awk '{ print $1 }' | tr '\n' ' '; echo
+timeout 1 sleep 5 2>&1; echo $?; timeout 2 true; echo $?; x=$(timeout -s KILL 1 sleep 5 2>&1); echo $?
+sh -c 'exec 2>/dev/null; kill -0 $$ && echo alive; kill -0 99999 || echo none'
+sh -c 'trap "echo caught" USR1; kill -USR1 $$; echo after'
+sh -c 'trap "echo bye" EXIT; exit 4'; echo $?
+sh -c 'sleep 5 & p=$!; kill -STOP $p; kill -CONT $p; kill -TERM $p; wait $p; echo $?' 2>/dev/null
+nohup echo kept > /dev/null 2>&1; echo $?
+env A=1 B=2 sh -c 'echo $A$B'; env -u HOME sh -c 'echo ${HOME:-unset}'
+yes no | head -2; yes | head -1000 | wc -l
+seq 1 100 | xargs -P 4 -n 10 echo | wc -l
+mkfifo p; ( echo through > p & ); cat p; ls -l p | cut -c1
+mkfifo p; cat p & echo to-reader > p; wait
+echo in | tee /dev/stderr 2>&1 | wc -l
+lockf -t 0 lock echo locked; shlock -f l2 -p $$ && echo held
+getconf ARG_MAX; getconf PAGESIZE; getconf PATH
+printf '%s\n' "$((1 << 40))" "$(printf %x 255)" "$(printf %o 8)" "$(printf %.3f 1.5)"

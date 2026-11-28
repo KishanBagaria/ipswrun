@@ -104,7 +104,7 @@ func TestProcesses(t *testing.T) {
 		if _, carry, _ := r.trap(csops, uint64(p.pid), csOpsEntitlementsDER, in_, 64); carry || !bytes.Equal(r.read(in_, 13), []byte{0xFA, 0xDE, 0x71, 0x72, 0, 0, 0, 13, 0x70, 0x03, 0x02, 0x01, 0x01}) {
 			t.Errorf("entitlements: carry %v, % x", carry, r.read(in_, 13))
 		}
-		if x0, carry, _ := p.trap(csops, uint64(r.pid), csOpsEntitlementsDER, in_, 64); !carry || x0 != eNOENT {
+		if x0, carry, _ := p.trap(csops, uint64(r.pid), csOpsEntitlementsDER, in_, 64); carry || x0 != 0 {
 			t.Errorf("entitlements of a process with none: %d carry %v", x0, carry)
 		}
 		if x0, carry, _ := p.trap(csops, 999, csOpsStatus, in_, 4); !carry || x0 != eSRCH {

@@ -13,7 +13,8 @@ type fileInfo struct {
 	size  int64
 	ino   uint64
 	mtime int64
-	times [4]int64 // of a file of the system volume: when it was last read, written, changed and made, as the image has them
+	times [4]int64 // when it was last read, written, changed and made, in nanoseconds: of a host file, and of a file of the system volume as the image has them
+	timed bool     // times says them; mtime, in seconds, is all four otherwise
 	links uint16   // the names it has, if more than the one
 	owner *Owner   // if it is not the guests' user's (see Machine.owners)
 	flags uint32   // those it carries beside its mode (see chflags)
@@ -35,7 +36,7 @@ func (p *Process) describe(kind fdKind, path string, size int64, inode *Inode, h
 		if err := hostStat(&st); err != nil {
 			return fileInfo{}, hostErrno(err)
 		}
-		info.mode, info.size, info.mtime = uint16(st.Mode), st.Size, mtimeSeconds(&st)
+		info.mode, info.size, info.mtime, info.times, info.timed = uint16(st.Mode), st.Size, mtimeSeconds(&st), fileTimes(&st), true
 		switch st.Mode & syscall.S_IFMT {
 		case syscall.S_IFLNK:
 			info.mode = modeLink // as a Mac's file system has every link, whatever the host's says
@@ -81,7 +82,7 @@ func (p *Process) describe(kind fdKind, path string, size int64, inode *Inode, h
 			when = p.systemTime()
 		}
 		if when != 0 {
-			info.times, info.mtime = [4]int64{when, when, when, when}, when/1e9
+			info.times, info.timed, info.mtime = [4]int64{when, when, when, when}, true, when/1e9
 		}
 	}
 	if info.ino == 0 {
@@ -238,10 +239,10 @@ var (
 	// attrTimeOf is one of a file's four times, where the image has them.
 	attrTimeOf = func(which int) func(c *attrContext) []byte {
 		return func(c *attrContext) []byte {
-			if c.times[1] == 0 {
+			if !c.timed {
 				return attrTime(c)
 			}
-			return le64(uint64(c.times[which]/1e9), uint64(c.times[which]%1e9))
+			return le64(timespec(c.times[which]))
 		}
 	}
 	attrFSID  = func(c *attrContext) []byte { return le32(c.dev, fsTypeAPFS) }
@@ -561,7 +562,7 @@ func sysGetattrlistbulk(p *Process, a []uint64) int64 {
 	count := int64(0)
 	for ; f.pos < int64(len(f.names)); f.pos++ {
 		t, info, errno := p.describePath("getattrlistbulk", pathpkg.Join(f.path, f.names[f.pos]), false)
-		if kind, ok := f.kinds[f.names[f.pos]]; !searched && ok { // by what the listing says, nothing inside being looked at
+		if kind := f.kinds[f.names[f.pos]]; !searched && kind != 0 { // by what the listing says, nothing inside being looked at
 			t, info, errno = target{path: pathpkg.Join(f.path, f.names[f.pos])}, fileInfo{mode: uint16(kind) << 12}, 0
 		}
 		if errno == -eACCES {

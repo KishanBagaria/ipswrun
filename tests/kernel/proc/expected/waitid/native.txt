@@ -1,0 +1,25 @@
+with no child: No child processes
+with no child and nothing asked for: Invalid argument
+asked of nothing: Invalid argument
+asked of what there is not: Invalid argument
+a child of a number below zero: Invalid argument
+a group of a number below zero: Invalid argument
+a child that is not one's own: No child processes
+a child that ended with 7, to be left to be asked of again: of the child, signal 20, code 1, status 0x7, user 0, errno 0, address none
+the same again, asked of those stopped and not of those that ended, and not to wait: of as it was, signal 77, code 77, status 0x4d, user as it was, errno 0, address none
+the same again: of the child, signal 20, code 1, status 0x7, user 0, errno 0, address none
+and once more: No child processes
+a child that ended with 0x12345: of the child, signal 20, code 1, status 0x12345, user 0, errno 0, address none
+a child that goes on, not to wait: of as it was, signal 77, code 77, status 0x4d, user as it was, errno 0, address none
+stopped: of the child, signal 20, code 5, status 0x11, user 0, errno 0, address none
+stopped, asked again: of the child, signal 20, code 5, status 0x11, user 0, errno 0, address none
+stopped, asked a third time and not to wait: of as it was, signal 77, code 77, status 0x4d, user as it was, errno 0, address none
+set going again: of the child, signal 20, code 6, status 0x13, user 0, errno 0, address none
+set going again, asked again: of the child, signal 20, code 6, status 0x13, user 0, errno 0, address none
+set going again, asked a third time and not to wait: of as it was, signal 77, code 77, status 0x4d, user as it was, errno 0, address none
+ended by SIGTERM, any kind of child asked of (9): of the child, signal 20, code 2, status 0xf, user 0, errno 0, address none
+of the group 0, of two children that go on: No child processes
+a child in a group of its own, by the group, ended by SIGKILL: of the child, signal 20, code 2, status 0x9, user 0, errno 0, address none
+that group again: No child processes
+any child: of the other child, signal 20, code 2, status 0x9, user 0, errno 0, address none
+any child again: No child processes

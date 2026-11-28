@@ -1,0 +1,3 @@
+  235976 /usr/share/dict/words
+    1308 /usr/share/dict/propernames
+  237284 total

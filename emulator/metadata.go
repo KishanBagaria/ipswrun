@@ -86,13 +86,19 @@ func (p *Process) changeable(path string, follow bool) (target, hostFile, int64)
 // be unlinked: root sets it and still removes the file, as measured in a virtual machine (macOS
 // 27.2, with SIP off there; with it on, whether root still may was not measured).
 func (p *Process) chflags(id hostFile, flags uint32, a []uint64) int64 {
-	const user, acted = 0xffff, 0x2 | 0x4 | 0x20 | 0x40 | 0x80 // UF_SETTABLE; UF_IMMUTABLE, UF_APPEND, UF_COMPRESSED, UF_TRACKED, UF_DATAVAULT
+	const user, compressed, acted = 0xffff, 0x20, 0x2 | 0x4 | 0x40 | 0x80 // UF_SETTABLE; UF_COMPRESSED; UF_IMMUTABLE, UF_APPEND, UF_TRACKED, UF_DATAVAULT
 	switch {
 	case p.uid != 0 && p.m.owned(id).UID != p.uid:
 		return -ePERM
 	case flags&^user != 0 && p.uid != 0:
 		return -ePERM
-	case flags&^(user|flagNoUnlink) != 0 || flags&acted != 0:
+	case flags&compressed != 0 && p.m.xattrs[id]["com.apple.decmpfs"] != nil:
+		p.unimplemented(fmt.Sprintf("chflags to %#x, of a file that says how it is compressed", flags), a)
+		return -eNOSYS
+	}
+	// Compressed, of a file with nothing to say how it is, is taken and not kept, as measured
+	// of a file and a directory: it is how tar unpacks every file.
+	if flags &^= compressed; flags&^(user|flagNoUnlink) != 0 || flags&acted != 0 {
 		p.unimplemented(fmt.Sprintf("chflags to %#x, flags the kernel acts on", flags), a)
 		return -eNOSYS
 	}

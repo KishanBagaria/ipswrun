@@ -1,0 +1,7 @@
+{
+  "build": "19H117",
+  "cache_uuid": "375B6D72-3337-3608-BE0C-E434918EB3A3",
+  "exit_code": 0,
+  "output": "SIGUSR1 sent to the process, nothing changed: waits 1; after the change 1; with a handler again 1; taken when let in: 1\nSIGUSR1 sent to the process, then ignored: waits 1; after the change 0; with a handler again 0; taken when let in: 0\nSIGUSR1 sent to the thread, then ignored: waits 1; after the change 0; with a handler again 0; taken when let in: 0\nSIGUSR1 sent to the process, then its usual end (to end the process): waits 1; after the change 1; with a handler again 1; taken when let in: 1\nSIGTERM sent to the process, then ignored: waits 1; after the change 0; with a handler again 0; taken when let in: 0\nSIGURG sent to the process, then its usual end (to be ignored): waits 1; after the change 1; with a handler again 1; taken when let in: 1\nSIGCHLD sent to the thread, then its usual end (to be ignored): waits 1; after the change 1; with a handler again 1; taken when let in: 1\nSIGCONT sent to the process, then ignored: waits 1; after the change 0; with a handler again 0; taken when let in: 0\nSIGCONT sent to the process, then its usual end: waits 1; after the change 1; with a handler again 1; taken when let in: 1\nSIGTSTP sent to the process, then ignored: waits 1; after the change 0; with a handler again 0; taken when let in: 0\nSIGUSR2 sent to the process and to the thread, then ignored: waits 0; taken when let in: 0\n",
+  "version": "15.7.1"
+}

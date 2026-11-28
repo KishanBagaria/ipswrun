@@ -83,6 +83,14 @@ int main(void) {
 	printf("with the Finder's own, of a directory: %s", said(setattrlist(dir, &list, &both, sizeof both, 0)));
 	printf(", then %#x\n", flags(dir));
 
+	// Compressed, of a file that has nothing to say how it is: taken and not kept, which is
+	// how tar unpacks every file.
+	chflags(file, 0);
+	printf("compressed, of a file that is not: %s", said(fchflags(fd, UF_COMPRESSED)));
+	printf(", then %#x; with hidden: %s", flags(file), said(chflags(file, UF_COMPRESSED | UF_HIDDEN)));
+	printf(", then %#x; of a directory: %s", flags(file), said(chflags(dir, UF_COMPRESSED)));
+	printf(", then %#x\n", flags(dir));
+
 	chflags(file, 0);
 	chflags(dir, 0);
 	lchflags(link, 0);

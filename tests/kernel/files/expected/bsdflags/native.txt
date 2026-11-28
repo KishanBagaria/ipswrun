@@ -5,4 +5,5 @@ through the link: 0, then the link 0x8000 and its file 0x1
 the system's, archived: -1 (Operation not permitted); a user's that there is not (0x100): 0, then 0x100; of a file that is not there: -1 (No such file or directory); of a descriptor that is not open: -1 (Bad file descriptor)
 set as an attribute, hidden: 0, then 0x8000; the system's: -1 (Operation not permitted), then 0x8000; none: 0, then 0
 with the Finder's own, of a directory: 0, then 0x8000
+compressed, of a file that is not: 0, then 0; with hidden: 0, then 0x8000; of a directory: 0, then 0
 tidied: 0 0 0
