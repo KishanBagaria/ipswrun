@@ -384,6 +384,7 @@ type Process struct {
 	reaped  bool
 	stdio   *Process
 	cloexec map[uint64]bool // the descriptors a program it starts is not to have
+	ring    *reclaimRing    // the ring for memory to be given back later, if it has asked for one (see reclaim.go)
 	clofork map[uint64]bool // the descriptors a copy of it, and a program it starts, are not to have (O_CLOFORK; see noFork)
 
 	cacheDir   string

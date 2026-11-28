@@ -15,6 +15,7 @@ var machNames = map[int64]string{
 	27: "thread_self", 28: "task_self", 29: "host_self", 31: "mach_msg", 32: "mach_msg_overwrite", 33: "semaphore_signal",
 	34: "semaphore_signal_all", 36: "semaphore_wait", 37: "semaphore_wait_signal", 38: "semaphore_timedwait", 40: "port_get_attributes", 41: "port_guard", 42: "port_unguard", 43: "generate_activity_id",
 	44: "task_name_for_pid", 46: "pid_for_task", 47: "mach_msg2", 50: "thread_get_special_reply_port", 59: "swtch_pri", 60: "swtch", 61: "thread_switch",
+	63: "vm_reclaim_update_kernel_accounting",
 	70: "host_create_mach_voucher", 76: "port_type", 77: "port_request_notification", 88: "exclaves_ctl_trap", 89: "timebase_info", 90: "mach_wait_until",
 	91: "mk_timer_create", 92: "mk_timer_destroy", 93: "mk_timer_arm", 94: "mk_timer_cancel", 95: "mk_timer_arm_leeway",
 }
@@ -58,6 +59,7 @@ func init() {
 		"semaphore_signal_all": {1, machSemaphoreSignalAll}, "semaphore_wait": {1, machSemaphoreWait},
 		"semaphore_timedwait": {3, machSemaphoreTimedwait}, "semaphore_wait_signal": {2, machSemaphoreWaitSignal}, "pid_for_task": {2, machPidForTask}, "task_name_for_pid": {3, machTaskNameForPid},
 		"mach_msg": {7, machMsg}, "mach_msg_overwrite": {8, machMsgOverwrite}, "mach_msg2": {8, machMsg2},
+		"vm_reclaim_update_kernel_accounting": {3, machReclaimAccounting},
 	}
 }
 
@@ -463,8 +465,8 @@ func init() {
 		4811: migVMMap,
 		4817: migMakeMemoryEntry,
 		4813: migVMRemap,
-		4822: func(*Process, []byte) migReply { return migCode(kernNotSupported) }, // mach_vm_reclaim_ring_allocate: malloc frees at once instead
-		8000: ok,                                                                   // task_restartable_ranges_register
+		4822: migReclaimAllocate, 4823: migReclaimFlush, 4826: migReclaimResize, 4828: migReclaimQuery, // the ring for memory to be given back later (see reclaim.go)
+		8000: ok, // task_restartable_ranges_register
 		8001: ok,
 	}
 }

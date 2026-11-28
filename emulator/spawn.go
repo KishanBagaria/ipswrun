@@ -751,6 +751,10 @@ func (p *Process) fork() *Process {
 	child.parent, child.ppid, child.pgroup = p, p.pid, p.group()
 	child.lineage = m.descend(p.lineage, p.uuid)
 	child.cwd, child.brk = p.workingDirectory(), p.brk
+	if p.ring != nil { // its ring is the copy of the parent's, where the parent's is, as measured
+		ring := *p.ring
+		child.ring = &ring
+	}
 	child.identity, child.entitlements, child.entitlementsDER = p.identity, p.entitlements, p.entitlementsDER
 	child.started, child.argc = p.started, p.argc // a copy has its parent's stack
 	p.handOn(child, true)

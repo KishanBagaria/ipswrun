@@ -36,7 +36,7 @@ var cacheLocations = []struct{ volume, dir string }{
 // need address space or kernel support the emulator lacks, and the emulated home (see HomeOf). A
 // run that has what one of these stands in for takes it out again (see Run.Env).
 func BaseEnv(home string) []string {
-	return []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "MallocDeferredReclaim=0", "HOME=" + home,
+	return []string{"__CFPREFERENCES_AVOID_DAEMON=1", "MallocNanoZone=0", "HOME=" + home,
 		"CFFIXED_USER_HOME=" + home, "TMPDIR=" + home + "/tmp/"}
 }
 

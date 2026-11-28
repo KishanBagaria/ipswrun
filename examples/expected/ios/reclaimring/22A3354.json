@@ -1,0 +1,7 @@
+{
+  "build": "22A3354",
+  "cache_uuid": "4D95BD3E-6831-3A99-A66C-B4DDB316E2E0",
+  "exit_code": 0,
+  "output": "malloc has no ring here\n",
+  "version": "18.0"
+}
