@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io/fs"
+	"maps"
 	"os"
 	pathpkg "path"
 	"path/filepath"
@@ -722,10 +723,6 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 	if n, ok := p.openTerminal(path, flags); ok {
 		return n
 	}
-	if p.absolute(path) == devFDs {
-		p.unimplemented("open of /dev/fd, to list a process's descriptors", []uint64{flags, mode})
-		return -eNOSYS
-	}
 	const noFollow, symlink = 0x100, 0x200000 // O_NOFOLLOW, O_SYMLINK
 	t, ok := p.resolve(path)
 	if flags&(noFollow|symlink) == 0 {
@@ -1256,6 +1253,22 @@ func sysLseek(p *Process, a []uint64) int64 {
 	if f.kind == dataFD && f.shared != nil || f.kind == semFD { // as measured
 		return -eSPIPE
 	}
+	if f.kind == dirFD || f.kind == hostFD && f.isDirectory() {
+		// A directory's place is the entry that is next, as getdirentries counts them. Back at
+		// the start it is read anew, so what was made or taken away since is seen: as measured
+		// of rewinddir (examples/devfdlist.c).
+		switch {
+		case a[2] == 0 && off >= 0:
+			if f.pos = off; off == 0 && (f.kind == hostFD || f.path == devFDs) { // the system volume's do not change
+				f.names = nil
+			}
+			return off
+		case a[2] == 1 && off == 0:
+			return f.pos
+		}
+		p.unimplemented("lseek of a directory from where it is or from its end", a)
+		return -eNOSYS
+	}
 	switch f.kind {
 	case hostFD:
 		pos, err := syscall.Seek(f.host, off, hostWhence(int(int32(a[2]))))
@@ -1748,6 +1761,18 @@ func (p *Process) list(f *fd) int64 {
 	if f.names != nil {
 		return 0
 	}
+	if f.path == devFDs {
+		// The process's descriptors by their numbers, this one among them, and no names for
+		// the directory itself or the one above: as measured.
+		numbers := slices.Sorted(maps.Keys(p.fds))
+		f.names = make([]string, 0, len(numbers))
+		for _, n := range numbers {
+			if p.fds[n] != nil {
+				f.names = append(f.names, strconv.FormatUint(n, 10))
+			}
+		}
+		return 0
+	}
 	t := target{kind: f.kind, path: f.path, readDir: f.readDir}
 	if f.kind == hostFD {
 		t, _ = p.writableTarget(f.path)
@@ -1812,7 +1837,9 @@ func sysGetdirentries64(p *Process, a []uint64) int64 {
 		}
 		kind := byte(syscall.DT_DIR)
 		child := pathpkg.Join(f.path, name)
-		if f.pos >= 2 && p.terminalNamed(child) != nil {
+		if f.path == devFDs {
+			kind = 0 // of no kind that is said (DT_UNKNOWN), as measured
+		} else if f.pos >= 2 && p.terminalNamed(child) != nil {
 			kind = syscall.DT_CHR
 		} else if f.pos >= 2 {
 			if t, ok := p.resolve(child); ok {

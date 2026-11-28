@@ -153,7 +153,20 @@ func sysMmap(p *Process, a []uint64) int64 {
 	if fixed && addr&tbiMask+length > vaLimit {
 		return -eNOMEM
 	}
-	if flags&0x1000 != 0 || fdn >= 1<<31 { // MAP_ANON, or no descriptor
+	if flags&0x1000 != 0 { // MAP_ANON
+		// What is given for a descriptor is read as how the memory is to be had, if it is not
+		// -1: a tag to know it by, and nothing else here; a bit that names nothing is EINVAL,
+		// as the source has it and as measured of 99.
+		if how := uint32(fdn); int32(how) != -1 {
+			const tag, purgeable, chunk, superpage = 0xFF000000, 0x2, 0x4, 0x70000
+			switch {
+			case how&^(tag|purgeable|chunk|superpage) != 0:
+				return -eINVAL
+			case how&^tag != 0:
+				p.unimplemented("mmap of memory that can be emptied, or of large pages", a)
+				return -eNOSYS
+			}
+		}
 		start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, name: "mmap", deny: deny})
 		if !ok {
 			return -eNOMEM

@@ -1,0 +1,7 @@
+{
+  "build": "18A373",
+  "cache_uuid": "697D6E36-0D7B-3237-9F15-4777E3A773AE",
+  "exit_code": 0,
+  "output": "/dev/fd lists a descriptor: 1, its duplicate: 1, the one it is read through: 1; names that are no number: 0, for itself and the one above: 0; entries that say a kind: 0; in order: 1\nread again from the start after the duplicate was closed: the descriptor 1, the duplicate 0; what it is read through is a directory\nmmap of no descriptor and no word that it is no file's, for oneself: Bad file descriptor, shared: Bad file descriptor; of a descriptor that is none: Bad file descriptor; of no file, with -1: mapped, with 0: mapped, with 99: Invalid argument, with 1: Invalid argument, with a tag to know it by: mapped; neither for oneself nor shared: Invalid argument; both: mapped\n",
+  "version": "14.0"
+}

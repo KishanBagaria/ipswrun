@@ -2,6 +2,7 @@ package emulator
 
 import (
 	pathpkg "path"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -468,13 +469,21 @@ func sysGetattrlistbulk(p *Process, a []uint64) int64 {
 	if errno := p.list(f); errno != 0 {
 		return errno
 	}
-	f.pos = max(f.pos, 2) // "." and ".." are not entries here
+	if f.path != devFDs { // which has no names for itself and the one above (see list)
+		f.pos = max(f.pos, 2) // "." and ".." are not entries here
+	}
 	var out []byte
 	count := int64(0)
 	for ; f.pos < int64(len(f.names)); f.pos++ {
 		t, info, errno := p.describePath("getattrlistbulk", pathpkg.Join(f.path, f.names[f.pos]), false)
 		if errno != 0 {
 			continue // gone since the directory was read
+		}
+		if f.path == devFDs { // a descriptor's name there is its number, whatever it is of
+			if f.names[f.pos] == strconv.FormatUint(a[0], 10) {
+				continue // the one the list is read through is left out here, as measured of ls, though getdirentries has it
+			}
+			t.path = pathpkg.Join(f.path, f.names[f.pos])
 		}
 		entry, ok := packAttrs(&attrContext{info, p, t.path}, want, a[4])
 		if !ok {
