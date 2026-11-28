@@ -1,0 +1,5 @@
+Symbolic Link
+Directory
+Symbolic Link
+Character Device
+Regular File

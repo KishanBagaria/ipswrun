@@ -1,0 +1,4 @@
+/bin/ls: Mach-O universal bina
+/bin/ls (for architecture x86_
+/bin/ls (for architecture arm6
+/bin/ls (for architecture arm6

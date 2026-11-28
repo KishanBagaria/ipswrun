@@ -4,7 +4,7 @@ name: Guests
 # running under ipswrun anywhere else.
 on:
   push:
-    paths: [examples/**, emulator/**, .github/workflows/guests.yml]
+    paths: [examples/**, tests/**, emulator/**, .github/workflows/guests.yml]
   workflow_dispatch:
 
 permissions:
@@ -64,7 +64,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/ipswrun-matrix
-          key: matrix-packed-${{ runner.os }}-${{ hashFiles('examples/*.c', 'examples/*.m', 'examples/*.swift', 'examples/Makefile', '.github/workflows/guests.yml', 'rangefs/cache.go') }}
+          key: matrix-packed-${{ runner.os }}-${{ hashFiles('examples/*.c', 'examples/*.m', 'examples/*.swift', 'examples/Makefile', 'tests/commands/*.list', '.github/workflows/guests.yml', 'rangefs/cache.go') }}
           restore-keys: matrix-packed-${{ runner.os }}-
       - run: examples/matrix.sh --guest=crypto,threads,swiftasync,ipc,service,client,prefs,adi 15.0 27.2
         env:
@@ -75,5 +75,9 @@ jobs:
         env:
           IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix
       - run: examples/matrix.sh --device=iPhone15,2 --guest=crypto,threads,swiftasync,ipc,service,client,prefs 27.2
+        env:
+          IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix
+      # Everyday commands, run by the release's own shell and held against what a Mac printed.
+      - run: tests/commands/run.sh
         env:
           IPSWRUN_CACHE: ${{ runner.temp }}/ipswrun-matrix

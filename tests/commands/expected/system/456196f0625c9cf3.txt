@@ -1,0 +1,4 @@
+-rwxr-xr-x root wheel
+drwxr-xr-x root wheel
+-rw-r--r-- root wheel
+crw-rw-rw- root wheel

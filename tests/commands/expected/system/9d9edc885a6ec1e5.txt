@@ -1,0 +1,1 @@
+/bin/sh: /usr/lib/x: Operation not permitted

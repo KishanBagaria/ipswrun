@@ -1,0 +1,4 @@
+/usr/share/zoneinfo/UCT
+/usr/share/zoneinfo/US
+/usr/share/zoneinfo/UTC
+/usr/share/zoneinfo/Universal

@@ -1,0 +1,8 @@
+# list	how it ends (differs or stops)	why	command
+everyday	differs	defaults of a file by its path asks cfprefsd, which is not started; with --on-demand it prints the same	defaults write "$PWD/dw" k -string v && defaults read "$PWD/dw" k
+everyday	differs	ps lists the processes that have a terminal, and the run has none: the Mac's lists its own shells	ps | wc -l
+everyday	differs	host opens a socket to the network, and there is none	host localhost 2>&1 | wc -l
+everyday	differs	osascript asks coreservicesd, which is not started	osascript -e '1+1' 2>&1
+everyday	stops	say asks of a thread a kind of thread_info that is not answered	say -v '?' 2>&1 | head -1 | wc -l
+everyday	differs	mdfind asks mds, which is not started	mdfind -name nothing-like-this 2>&1 | wc -l
+system	differs	/etc/passwd is made up here of root and the user, where a Mac's has every account of the system	cat /etc/passwd | grep -c root

@@ -1,0 +1,2 @@
+ls is /bin/ls
+cd is a shell builtin

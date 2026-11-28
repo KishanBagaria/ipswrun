@@ -1,0 +1,5 @@
+/bin/[
+/bin/bash
+/bin/cat
+/bin/chmod
+/bin/cp

@@ -1,0 +1,135 @@
+# Everyday commands: each line is a shell command, run by /bin/sh in a new directory that has
+# a.txt ("hello"), a copy of it c.txt, and a directory d/e. See run.sh.
+find . -type f -exec wc -c {} \; | sort
+find . -name '*.txt' -print0 | xargs -0 cat
+cp -p a.txt p.txt && ls p.txt
+cp -a d da && ls da
+touch -t 200001010000 a.txt && stat -f %m a.txt
+chmod -R go-rwx d && stat -f %Lp d d/e
+mkfifo f && ls -l f | cut -c1
+ls -1 | wc -l
+ls -ld d | cut -c1-10
+ls -lT a.txt | wc -l
+ls -i a.txt | wc -l
+ls -R | head -4
+grep -r hello . | sort
+grep -n -i HELLO a.txt
+grep -o ell a.txt
+diff -r d d && echo equal
+cmp a.txt c.txt && echo equal
+comm -12 a.txt c.txt
+paste a.txt c.txt
+join a.txt c.txt
+split -b 3 a.txt part && ls part*
+printf 'b\na\nb\n' | sort -u
+printf '3\n10\n2\n' | sort -n
+printf 'a b\n' | awk '{print $2}'
+printf 'x\n' | sed -n '1p;$='
+sed -i '' s/hello/bye/ a.txt && cat a.txt
+expand a.txt | wc -c
+hexdump -C a.txt | head -1
+iconv -f utf-8 -t utf-16 a.txt | wc -c
+cat a.txt c.txt | uniq -d
+cat <<< "here $((1+2))"
+for i in 1 2 3; do echo $i; done | tail -1
+i=0; while [ $i -lt 3 ]; do i=$((i+1)); done; echo $i
+case abc in a*) echo matched;; esac
+f() { echo "in $1"; }; f fn
+x=$(echo sub); echo ${x%b}
+[ a.txt -nt d ] ; echo $?
+test -d d && test -f a.txt && test ! -e none && echo tests
+(cd d && pwd | sed 's|.*/||')
+echo $$ | wc -l
+sleep 0.2 & wait $!; echo "waited $?"
+(sleep 5 & echo started; kill $!; wait $! 2>/dev/null; echo "killed $?")
+trap 'echo trapped' EXIT; true
+trap 'echo usr1' USR1; kill -USR1 $$; echo after
+set -e; false; echo not reached
+echo one; echo two >&2
+read line < a.txt; echo "$line"
+echo "a b" | while read x y; do echo $y; done
+printf '%05d %s %x\n' 42 str 255
+echo $((0x10 + 010 + 2**4))
+env X=1 sh -c 'echo $X'
+VAR=v sh -c 'echo $VAR'
+nohup echo nohup 2>/dev/null; cat nohup.out 2>/dev/null
+{ time -p true; } 2>&1 | wc -l
+date +%Y | wc -c
+date -u -r 86400 +%F
+date -j -f %s 0 +%j
+umask 077; touch u; stat -f %Lp u
+ulimit -n | wc -l
+type ls cd
+command -v ls
+hash ls && echo hashed
+zsh -c 'print -l ${(U)${:-abc}}'
+zsh -c 'a=(1 2 3); echo $#a ${a[2]}'
+zsh -c 'echo **/*.txt(N) | wc -w'
+bash -c 'a=(1 2 3); echo ${#a[@]} ${a[1]}'
+bash -c 'echo {1..3} ~+ | wc -w'
+sqlite3 t.db 'create table t(x); insert into t values(1),(2); select sum(x) from t'
+sqlite3 t.db 'pragma journal_mode=wal' 2>&1
+plutil -create binary1 b.plist && plutil -convert xml1 -o - b.plist | head -1
+plutil -lint c.plist 2>&1 | head -1
+/usr/libexec/PlistBuddy -c 'Add :k string v' -c 'Print :k' pb.plist
+defaults write "$PWD/dw" k -string v && defaults read "$PWD/dw" k
+uname -r | wc -l
+arch
+getconf ARG_MAX
+locale charmap
+printenv TMPDIR | wc -l
+dirname "$TMPDIR" | wc -l
+mktemp | wc -l
+df -h / | wc -l
+du -sh d | wc -l
+ps | wc -l
+ps -o pid= -p $$ | wc -l
+id -G | wc -l
+groups | wc -l
+tty
+stty size 2>&1 | wc -l
+clear | wc -c
+tput lines 2>&1 | wc -l
+banner hi | wc -l
+cksum a.txt
+sum a.txt
+crc32 a.txt
+shasum -a 256 a.txt
+xattr -w k v a.txt && xattr -p k a.txt && xattr a.txt | grep -c -x k
+ditto a.txt dt.txt && cat dt.txt
+rsync -a d/ rs/ && ls rs
+install -m 600 a.txt in.txt && stat -f %Lp in.txt
+cpio --version 2>&1 | head -1 | wc -l
+bzip2 -k a.txt && bzcat a.txt.bz2
+xz -k a.txt && xzcat a.txt.xz
+compress -c a.txt | uncompress -c
+uuencode a.txt a | uudecode -o /dev/stdout
+curl --version | head -1 | wc -l
+ssh -V 2>&1 | wc -l
+nc -h 2>&1 | head -1 | wc -l
+ping -c 1 127.0.0.1 2>&1 | tail -1 | wc -l
+host localhost 2>&1 | wc -l
+scutil --get ComputerName 2>&1 | wc -l
+sw_vers -productVersion | wc -l
+system_profiler -listDataTypes 2>&1 | head -1 | wc -l
+launchctl print system 2>&1 | head -1 | wc -l
+osascript -e '1+1' 2>&1
+say -v '?' 2>&1 | head -1 | wc -l
+open -h 2>&1 | head -1 | wc -l
+mdfind -name nothing-like-this 2>&1 | wc -l
+diskutil list 2>&1 | head -1 | wc -l
+ed -s a.txt <<< p
+ex -s -c '%p' -c q a.txt
+tail -r a.txt
+tac a.txt 2>&1 | wc -l
+apropos nothing-like-this 2>&1 | wc -l
+cal 2000 | wc -l
+ncal -e 2000
+units 1ft in 2>&1 | head -1
+bc -l <<< 'scale=3; 1/3'
+dc -e '2 3 + p'
+factor 42
+primes 1 12 | tr '\n' ' '
+random 1 2>&1 | wc -l
+yes n | head -1
+true; echo $?

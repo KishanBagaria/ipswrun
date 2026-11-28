@@ -1,0 +1,5 @@
+/bin/ls
+/bin/cat
+/bin/sh
+/usr/bin/awk
+/usr/bin/sed

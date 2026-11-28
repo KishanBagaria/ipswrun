@@ -1,0 +1,1 @@
+-rwxr-xr-x12 Nov  6 05:22 /bin/ls

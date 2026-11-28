@@ -1,0 +1,38 @@
+# Commands that list, search and ask about the system's own files. See run.sh.
+ls /System/Library/CoreServices | grep -c SystemVersion.plist
+ls -d /usr/* | wc -l
+ls /usr/share/man | head -3
+ls -ld /usr/lib /bin /tmp /private/tmp /etc /var | cut -c1-10
+ls -l /bin/ls | cut -c1-10,32-
+ls -lL /etc/passwd | cut -c1-10
+find /usr/share/zoneinfo/ -maxdepth 1 -name 'U*' | sort | head -5
+find /bin -type f | sort | head -5
+find /usr/lib -maxdepth 1 -name 'dyld' -type f
+find /System/Library/CoreServices -maxdepth 1 -name '*.plist' | sort | head -3
+which ls cat sh awk sed
+type -a ls
+command -v zsh bash sh
+test -x /bin/ls && echo run; test -x /etc/passwd || echo not; test -w /bin/ls || echo nowrite; test -r /etc/master.passwd || echo noread
+test -d /usr/share && echo dir; test -L /tmp && echo link; test -L /etc && echo link2; test -e /nowhere || echo none
+echo /bin/* | wc -w
+echo /usr/share/zoneinfo/US/* | wc -w
+cd /usr/share && ls | wc -l
+cd /System/Library && pwd && ls -d Core* | head -3
+du -s /usr/share/zoneinfo/US | wc -l
+stat -f '%Sp %Su %Sg' /bin/ls /usr /private/etc/passwd /dev/null
+stat -f '%HT' /tmp /private/tmp /etc/localtime /dev/null /usr/lib/dyld
+readlink /tmp /etc /var
+wc -c /System/Library/CoreServices/SystemVersion.plist | wc -l
+head -1 /etc/shells
+cat /etc/passwd | grep -c root
+echo x > /usr/lib/x 2>&1 | sed 's/^.*: //'
+touch /System/x 2>&1 | sed 's/^.*: //'
+mkdir /usr/newdir 2>&1 | sed 's/^.*: //'
+rm /bin/ls 2>&1 | sed 's/^.*: //'
+cat /etc/master.passwd 2>&1 | sed 's/^.*: //'
+ls /private/var/root 2>&1 | sed 's/^.*: //'
+ls /nowhere 2>&1 | sed 's/^.*: //'
+file /bin/ls | cut -c1-30
+ls /dev/null /dev/zero /dev/fd | head -4
+ls /dev | grep -c -x -e null -e zero -e fd -e stdin -e stdout -e stderr -e tty -e random -e urandom
+basename "$(ls -d /usr/share/zoneinfo/A* | head -1)"

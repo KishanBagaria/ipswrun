@@ -1,0 +1,4 @@
+run
+not
+nowrite
+noread
