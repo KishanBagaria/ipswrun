@@ -50,6 +50,9 @@ type Machine struct {
 	sessionTerminals map[uint32]*terminal       // the terminal each session has for its own, by the session's number
 	terminals        []*terminal                // the terminals there have been, by the number in each one's name (see terminals.go)
 	owners           map[hostFile]Owner         // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
+	pass             map[passKey]bool           // which directories who may search, as found until something changes (see searchable)
+	passChanges      uint64                     // how many times a mode, an owner or a name has changed
+	passSeen         uint64                     // and how many of those pass was found after
 	said             map[hostFile]uint16        // the permissions the data volume's template has for a file, where the host's file has others (see data.go)
 	flags            map[hostFile]uint32        // the flags a file carries beside its mode, where it has any (see chflags)
 	acls             map[hostFile]*acl          // the access control lists of the files that have one (see acls.go)

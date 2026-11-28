@@ -334,7 +334,10 @@ type Process struct {
 	threads     []*thread
 	current     *thread
 	nextThread  int
-	yield       bool // the running thread offered its turn
+	yield       bool   // the running thread offered its turn
+	blocked     bool   // the call being answered came upon a directory it may not search (see blockedAt)
+	searching   int    // how deep in finding whether directories may be searched (see searchable)
+	start       string // the directory a name of the call being answered was given from, if it was given from one
 	waits       uint64
 	semaphores  map[uint32]int
 	handoffs    map[uint64]int // mutexes unlocked for a waiter that had not arrived

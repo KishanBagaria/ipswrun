@@ -1,0 +1,7 @@
+{
+  "build": "26A428",
+  "cache_uuid": "EA2C265E-297C-39C2-8646-7D8A2DFF648A",
+  "exit_code": 0,
+  "output": "in a directory whose parent may no longer be searched: a name in it: done; by its whole path: Permission denied; from a descriptor of it: done; the directory itself (.): done; its parent (..): done; a name in the parent (../g): Permission denied; where it is (getcwd): Permission denied\n  a file made in it: done; entered again by .: done; from the descriptor, the parent: done\nfrom outside: through a link to it: Permission denied; the link itself: done\nlinks that lead to each other: Too many levels of symbolic links; a link under itself: Too many levels of symbolic links, and a name beyond it: Too many levels of symbolic links\n",
+  "version": "27.0"
+}

@@ -140,7 +140,11 @@ func (p *Process) bsd(n int64) {
 		}
 	}
 	p.current.arg0, p.current.sleeping = first, name == "__semwait_signal" // what was in the first register, for a call that is made again
+	p.blocked, p.start = false, ""
 	r := p.call(h, args, -eFAULT)
+	if r < 0 && p.blocked { // a directory on the way to a name it was given may not be searched (see blockedAt)
+		r = -eACCES
+	}
 	p.setX(0, uint64(max(r, -r)))
 	p.carry(r < 0)
 	p.deliver()

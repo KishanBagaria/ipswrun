@@ -36,6 +36,17 @@ func (p *Process) clone(from, to string, flags uint64, a []uint64) int64 {
 	case !ok1:
 		return -eNOENT
 	case !ok2:
+		// As measured: another volume is said first, then the system volume's refusal.
+		switch s, d := p.placeOf(from), p.placeOf(to); {
+		case !d.dirThere:
+			return -eNOENT
+		case s.system != d.system: // the system volume and another
+			return -eXDEV
+		case d.there:
+			return -eEXIST
+		case d.refusal != 0:
+			return d.refusal
+		}
 		return -eACCES
 	case !sameVolume(t1, t2): // another volume, which the system's is of the home's too
 		return -eXDEV

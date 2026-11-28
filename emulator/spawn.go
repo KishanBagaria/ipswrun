@@ -61,6 +61,9 @@ func (p *Process) fileToRun(path string) ([]byte, int64) {
 	if abs == p.path {
 		return p.exe, 0
 	}
+	if p.blockedAt(abs) { // from the source and not measured: a program is found as any name is
+		return nil, -eACCES
+	}
 	var image []byte
 	switch t, ok := p.lookup(abs); {
 	case ok && t.kind == dirFD:

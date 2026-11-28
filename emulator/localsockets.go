@@ -103,10 +103,7 @@ func sysBind(p *Process, a []uint64) int64 {
 	}
 	t, ok := p.writableTarget(path)
 	if !ok {
-		if _, there := p.resolve(path); there {
-			return -eADDRINUSE
-		}
-		return -eACCES
+		return p.notMade(path, -eADDRINUSE, false)
 	}
 	h, err := openInRoot(t.root, t.rel, syscall.O_CREAT|syscall.O_EXCL|syscall.O_WRONLY, 0o600)
 	if err != nil {

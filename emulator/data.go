@@ -179,6 +179,7 @@ func (m *Machine) keep(id hostFile, k kept) {
 	m.own(id, k.Owner)
 	if k.said {
 		m.said[id] = k.mode
+		m.changed()
 	}
 }
 

@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"bytes"
+	"github.com/KishanBagaria/ipswrun/dyldcache"
 	"os"
 	"path/filepath"
 	"slices"
@@ -120,6 +121,7 @@ func testMountsProcess(t *testing.T, exe string, mounts []Mount) *Process {
 		path:    GuestExe,
 		fds:     map[uint64]*fd{0: {kind: stdioFD, host: 0}, 1: {kind: stdioFD, host: 1}, 2: {kind: stdioFD, host: 2}},
 		inodes:  map[string]uint64{},
+		cache:   &dyldcache.Cache{},
 	}
 }
 

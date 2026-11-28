@@ -313,7 +313,7 @@ func statInRoot(root *os.Root, rel string, follow bool, st *syscall.Stat_t) erro
 // readDirInRoot is a host directory's names, in the host's order. Of one that may be read and
 // not searched it is also the kind (DT_*) the host's listing has by each name, which is all
 // that can be known of what is inside: nothing in it can be looked at.
-func readDirInRoot(root *os.Root, rel string) ([]string, map[string]byte, error) {
+func readDirInRoot(root *os.Root, rel string, said map[hostFile]uint16) ([]string, map[string]byte, error) {
 	f, err := root.Open(rel)
 	if err != nil {
 		return nil, nil, err
@@ -321,8 +321,11 @@ func readDirInRoot(root *os.Root, rel string) ([]string, map[string]byte, error)
 	defer f.Close()
 	names, err := f.Readdirnames(-1)
 	var st syscall.Stat_t
-	if err != nil || syscall.Fstat(int(f.Fd()), &st) != nil || st.Mode&0o100 != 0 {
+	if err != nil || syscall.Fstat(int(f.Fd()), &st) != nil {
 		return names, nil, err
+	}
+	if mode, odd := said[hostFileOf(&st)]; st.Mode&0o100 != 0 && (!odd || mode&0o100 != 0) {
+		return names, nil, nil // one that is searched: what is in it is looked at
 	}
 	return names, hostDirKinds(f), nil
 }
@@ -402,11 +405,145 @@ func (p *Process) resolve(path string) (target, bool) {
 		return target{}, false
 	}
 	path = p.absolute(path)
+	if p.blockedAt(path) {
+		p.blocked = true
+		return target{path: path}, false
+	}
 	t, ok := p.lookup(path)
 	if t.path == "" {
 		t.path = path
 	}
 	return t, ok
+}
+
+// blockedAt says whether a directory on the way to a path may not be searched by who asks, so
+// that nothing can be said or done of the name: EACCES, whatever the call, whether or not the
+// name is there, as measured of names under root's home (tests/kernel/files/sysvolume.c). The
+// call that came upon it is answered so when it has ended (see bsd). From the source and not
+// measured: root passes any directory.
+//
+// A name given from a directory, the one the process is in or a descriptor's, is looked for
+// from there: what leads to that directory is not asked again, so a process goes on in a
+// directory whose parent has since been closed to it, as measured
+// (tests/kernel/files/relsearch.c). Not as a Mac has it: a name that goes up from there
+// through a closed directory and down again by another way is let through.
+func (p *Process) blockedAt(path string) bool {
+	if p.uid == 0 || path == "/" || path == p.start {
+		return false
+	}
+	for dir := pathpkg.Dir(path); ; dir = pathpkg.Dir(dir) {
+		if !p.searchable(dir) {
+			return true
+		}
+		if dir == "/" || dir == p.start {
+			return false
+		}
+	}
+}
+
+// passKey is a directory and who would pass it.
+type passKey struct {
+	uid, gid uint32
+	dir      string
+}
+
+// searchable says whether a directory's mode lets who asks search it. What was found is kept
+// until a directory's mode or owner changes or a name is made, moved or taken away that could
+// be one (Machine.changed). A name that is no directory, or is not there, is not what stands
+// in the way: the call finds that out for itself.
+func (p *Process) searchable(dir string) bool {
+	m := p.m
+	if m.passSeen != m.passChanges {
+		clear(m.pass)
+		m.passSeen = m.passChanges
+	}
+	key := passKey{p.uid, p.gid, dir}
+	if ok, known := m.pass[key]; known {
+		return ok
+	}
+	if m.pass == nil {
+		m.pass = map[passKey]bool{}
+	}
+	// Taken to be passable while it is looked at, which may come back here, and where looking
+	// has led through several links already: a link that leads under itself, or two that
+	// lead to each other, which the call finds out for itself.
+	if p.searching >= 4 {
+		return true
+	}
+	m.pass[key] = true
+	was := p.blocked
+	p.blocked = false
+	p.searching++
+	_, info, errno := p.describePath("search", dir, true)
+	// A link on the way is passed by the way to what it leads to: one under the home or a
+	// mount, which the host follows with nothing said, as measured, and one that leads out of
+	// there.
+	beyond := false
+	if t, ok := p.lookup(dir); ok && t.leads != "" {
+		beyond = p.blockedAt(canonical(t.leads))
+	} else if ok && t.root != nil {
+		if to, err := t.root.Readlink(t.rel); err == nil {
+			if !strings.HasPrefix(to, "/") {
+				to = pathpkg.Dir(dir) + "/" + to
+			}
+			beyond = p.blockedAt(canonical(to))
+		}
+	}
+	p.searching--
+	p.blocked = was
+	m.pass[key] = !beyond && (errno != 0 || info.mode&syscall.S_IFMT != syscall.S_IFDIR || p.permits(info, 1))
+	return m.pass[key]
+}
+
+// changed is a mode, an owner or a name having changed: what was found of which directories
+// may be passed is found anew.
+func (m *Machine) changed() { m.passChanges++ }
+
+// place is where a path leads, for the calls that make and move names: whether something is
+// there, whether its directory is, whether that is the system volume, and if so why it is not
+// written (see systemRefusal), by what is there or else by the directory.
+type place struct {
+	there, dirThere, system bool
+	refusal                 int64
+}
+
+func (p *Process) placeOf(path string) place {
+	var pl place
+	t, ok := p.resolve(path)
+	if ok && t.root != nil { // a name under the home or a mount, which may name nothing
+		var st syscall.Stat_t
+		ok = statInRoot(t.root, t.rel, false, &st) == nil
+	}
+	if pl.there, pl.dirThere = ok, ok; ok {
+		if pl.system = p.onSystem(t); pl.system {
+			pl.refusal = systemRefusal(t)
+		}
+		return pl
+	}
+	dir, there := p.followed(p.resolve(pathpkg.Dir(p.absolute(path))))
+	if pl.dirThere = there; there && p.onSystem(dir) {
+		pl.system, pl.refusal = true, systemRefusal(dir)
+	}
+	return pl
+}
+
+// notMade is why a name is not made where nothing of the guest's is kept, by a call that
+// makes a link, a pipe or the like: ENOENT where its directory is not; exists where something
+// is there already, unless that carries the flag that it is restricted and the call is one
+// that says so first (restrictedFirst: symlink and link, as measured); and where nothing is,
+// the system volume's refusal. Elsewhere EACCES, which was not measured.
+func (p *Process) notMade(path string, exists int64, restrictedFirst bool) int64 {
+	switch pl := p.placeOf(path); {
+	case !pl.dirThere:
+		return -eNOENT
+	case pl.there && restrictedFirst && pl.refusal == -ePERM:
+		return -ePERM
+	case pl.there:
+		return exists
+	case pl.refusal != 0:
+		return pl.refusal
+	}
+	return -eACCES
 }
 
 // rootLinks are the names in the root directory that every release has as symbolic links to
@@ -441,6 +578,7 @@ func asDirectory(path string) bool {
 // absolute is the canonical form of a guest path, relative to the working directory or not.
 func (p *Process) absolute(path string) string {
 	if !strings.HasPrefix(path, "/") {
+		p.start = canonical(p.workingDirectory()) // the name is looked for from here (see blockedAt)
 		path = p.workingDirectory() + "/" + path
 	}
 	return canonical(path)
@@ -1029,6 +1167,7 @@ func (p *Process) at(dirfd, path uint64) (string, int64) {
 			return "", errno
 		}
 	}
+	p.start = canonical(dir) // the name is looked for from here (see blockedAt)
 	if !strings.HasSuffix(dir, "/") {
 		dir += "/"
 	}
@@ -1453,6 +1592,9 @@ func sysFtruncate(p *Process, a []uint64) int64 {
 	if f != nil && f.shared != nil {
 		return f.shared.resize(a[1])
 	}
+	if f != nil && (f.kind == cacheFD || f.kind == dataFD) { // a file that is not open to be written, as one of the system's never is: as measured
+		return -eINVAL
+	}
 	if f == nil || f.kind != hostFD {
 		return -eBADF
 	}
@@ -1810,11 +1952,12 @@ func sysUnlinkat(p *Process, a []uint64) int64 {
 func (p *Process) doSymlink(text, path string) int64 {
 	t, ok := p.writableTarget(path)
 	if !ok {
-		return -eACCES
+		return p.notMade(path, -eEXIST, true)
 	}
 	if err := t.root.Symlink(text, t.rel); err != nil {
 		return hostErrno(err)
 	}
+	p.m.changed() // a name that may lead to a directory
 	p.created(t)
 	return 0
 }
@@ -1829,10 +1972,26 @@ func sysSymlinkat(p *Process, a []uint64) int64 {
 func (p *Process) doLink(from, to string, follow bool) int64 {
 	t1, ok1 := p.writableTarget(from)
 	t2, ok2 := p.writableTarget(to)
-	switch {
-	case !ok1 || !ok2:
+	if !ok1 || !ok2 {
+		// As measured: what carries the flag that it is restricted, the file or the place its
+		// new name would be, is said first; then another volume; then the read-only volume.
+		switch s, d := p.placeOf(from), p.placeOf(to); {
+		case !s.there:
+			return -eNOENT
+		case s.refusal == -ePERM || d.refusal == -ePERM:
+			return -ePERM
+		case !d.dirThere:
+			return -eNOENT
+		case s.system != d.system: // the system volume and another
+			return -eXDEV
+		case d.refusal != 0:
+			return d.refusal
+		case d.there:
+			return -eEXIST
+		}
 		return -eACCES
-	case !sameVolume(t1, t2):
+	}
+	if !sameVolume(t1, t2) {
 		return -eXDEV
 	}
 	for links := 0; follow; links++ {
@@ -1898,7 +2057,7 @@ func (p *Process) doMkdir(path string, mode uint64) int64 {
 func sysMkfifo(p *Process, a []uint64) int64 {
 	t, ok := p.writableTarget(p.cstr(a[0]))
 	if !ok {
-		return -eACCES
+		return p.notMade(p.cstr(a[0]), -eEXIST, false)
 	}
 	h, err := openInRoot(t.root, t.rel, syscall.O_CREAT|syscall.O_EXCL|syscall.O_WRONLY, 0o600)
 	if err != nil {
@@ -1928,6 +2087,18 @@ func (p *Process) doRename(from, to string) int64 {
 	t1, ok1 := p.writableTarget(from)
 	t2, ok2 := p.writableTarget(to)
 	if !ok1 || !ok2 {
+		// As measured: another volume is said before the system volume's refusal, which is
+		// that of what is to be renamed.
+		switch s, d := p.placeOf(from), p.placeOf(to); {
+		case !s.there || !d.dirThere:
+			return -eNOENT
+		case s.system != d.system: // the system volume and another
+			return -eXDEV
+		case s.refusal != 0:
+			return s.refusal
+		case d.refusal != 0:
+			return d.refusal
+		}
 		return -eACCES
 	}
 	if !sameVolume(t1, t2) {
@@ -2088,7 +2259,7 @@ func (p *Process) list(f *fd) int64 {
 func (p *Process) dirNames(t target) ([]string, map[string]byte, bool) {
 	switch {
 	case t.root != nil:
-		names, kinds, err := readDirInRoot(t.root, t.rel)
+		names, kinds, err := readDirInRoot(t.root, t.rel, p.m.said)
 		return names, kinds, err == nil
 	case t.kind == dirFD:
 		if t.readDir == nil {

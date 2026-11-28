@@ -206,7 +206,7 @@ func (p *Process) chmodAt(t target, mode os.FileMode, follow bool) int64 {
 		return 0
 	}
 	if p.hostMode(&st, bits) != bits {
-		mode |= 0o400
+		mode |= 0o500
 	}
 	return hostCall(t.root.Chmod(t.rel, mode))
 }
@@ -222,15 +222,17 @@ func (p *Process) chmodFD(host int, mode uint32) int64 {
 
 // hostMode is the mode the host's file is given for the one a guest gives it, which is from
 // then on what the guest is told. They are the same but for a directory its owner may not
-// read: the host's stays readable, since the host does not let a directory that is not read be
-// passed through by those who are kept inside one (os.Root), and the guest is refused here
-// what the mode it gave refuses (see sysOpen, sysGetattrlistbulk).
+// read or may not search: the host's stays one that may be read and searched, since the host
+// lets nobody who is kept inside a directory (os.Root) pass one that is not, by any way,
+// where a Mac lets a process go on in a directory whose parent was closed to it. What the
+// mode the guest gave refuses is refused here (see sysOpen, sysGetattrlistbulk, blockedAt).
 func (p *Process) hostMode(st *syscall.Stat_t, mode uint32) uint32 {
 	id := hostFileOf(st)
 	delete(p.m.said, id)
-	if st.Mode&syscall.S_IFMT == syscall.S_IFDIR && mode&0o400 == 0 {
+	p.m.changed()
+	if st.Mode&syscall.S_IFMT == syscall.S_IFDIR && mode&0o500 != 0o500 {
 		p.m.said[id] = uint16(mode & 0o7777)
-		return mode | 0o400
+		return mode | 0o500
 	}
 	return mode
 }
@@ -364,6 +366,9 @@ func (m *Machine) owned(id hostFile) Owner {
 
 // own records whom a host file belongs to.
 func (m *Machine) own(id hostFile, owner Owner) {
+	if m.owned(id) != owner {
+		m.changed()
+	}
 	if owner == (Owner{m.user.uid, m.user.gid}) {
 		delete(m.owners, id)
 	} else {
@@ -772,6 +777,9 @@ func sysFremovexattr(p *Process, a []uint64) int64 { return p.removexattr(0, int
 // path named before it was removed or replaced, if that was its last name.
 func (p *Process) forgetFile(t target) {
 	var st syscall.Stat_t
+	if statInRoot(t.root, t.rel, false, &st) == nil && st.Mode&syscall.S_IFMT != syscall.S_IFREG {
+		p.m.changed() // a directory, or a link that may lead to one
+	}
 	if statInRoot(t.root, t.rel, false, &st) == nil && (st.Nlink <= 1 || st.Mode&syscall.S_IFMT == syscall.S_IFDIR) { // a directory has the one name
 		delete(p.m.xattrs, hostFileOf(&st))
 		delete(p.m.owners, hostFileOf(&st))

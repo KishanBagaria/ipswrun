@@ -81,6 +81,8 @@ notify	tests/kernel/system	macos,ios	--on-demand com.apple.system.notification_c
 openfds	tests/kernel/io	macos,ios
 openmay	tests/kernel/files	macos,ios
 searchmay	tests/kernel/files	macos,ios
+sysvolume	tests/kernel/files	macos,ios
+relsearch	tests/kernel/files	macos,ios
 fsizelimit	tests/kernel/files	macos,ios
 openpty	tests/kernel/tty	macos,ios
 # oslog needs a data volume too, for the release's own logd to keep its files on, with the notifyd logd asks.

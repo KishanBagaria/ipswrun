@@ -51,6 +51,7 @@ func (t target) parent() (*os.File, string, error) {
 
 // renameHost moves a file to another name of its volume.
 func (p *Process) renameHost(t1, t2 target) int64 {
+	p.m.changed()
 	if t1.root == t2.root {
 		return hostCall(t1.root.Rename(t1.rel, t2.rel))
 	}
