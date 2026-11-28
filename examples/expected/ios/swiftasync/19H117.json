@@ -1,0 +1,7 @@
+{
+  "build": "19H117",
+  "cache_uuid": "375B6D72-3337-3608-BE0C-E434918EB3A3",
+  "exit_code": 0,
+  "output": "group    100 tasks: squares 338350 actor 5050\nlet      884\nsleep    at least 50 ms true, under 5 s true\nresume   7\ndetached 81\ncancel   true\n",
+  "version": "15.7.1"
+}
