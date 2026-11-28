@@ -1,0 +1,52 @@
+# Work of many processes: long pipelines, jobs at once, scripts that start scripts, and what they share. See run.sh.
+seq 1 200 | sed 's/$/ x/' | awk '{ print $1 * 2 }' | sort -rn | head -3 | tr '\n' ' ' | rev; echo
+seq 1 50 | while read n; do echo $((n * n)); done | tail -1
+for i in 1 2 3 4 5 6 7 8; do ( echo $i > f$i ) & done; wait; cat f? | sort | tr '\n' ' '; echo
+sh -c "exit 1" & a=$!; sh -c "exit 2" & b=$!; sh -c "sleep 0.2; exit 3" & c=$!; wait $c; printf "%s " $?; wait $a; printf "%s " $?; wait $b; echo $?
+i=0; while [ $i -lt 30 ]; do /usr/bin/true; i=$((i + 1)); done; echo $i
+i=0; while [ $i -lt 20 ]; do x=$(echo $i); i=$((x + 1)); done; echo $i
+find /usr/share/dict -type f -exec wc -l {} \; | awk '{ n += $1 } END { print n }'
+find /usr/share/dict -type f -exec basename {} \; | sort | tr '\n' ' '; echo
+find /usr/share/dict -type f -exec wc -c {} + | tail -1 | awk '{ print $1 }'
+find . -type f | sort | xargs -I{} sh -c 'wc -c < {}' | tr -d ' ' | tr '\n' ' '; echo
+seq 1 40 | xargs -P 8 -n 1 sh -c 'echo $0' | sort -n | tail -1
+seq 1 12 | xargs -P 4 -I{} sh -c 'echo {} > x{}'; ls x* | wc -l
+printf 'a\nb\nc\n' | xargs -n 1 -P 3 sh -c 'sleep 0.1; echo $0' | sort | tr '\n' ' '; echo
+yes | head -20000 | wc -l; yes abc | head -c 100000 | wc -c
+head -c 300000 /dev/zero | cat | cat | cat | wc -c
+cat /usr/share/dict/words | cat | tee copy | wc -l; cmp copy /usr/share/dict/words && echo same
+seq 1 3000 | tee a1 | tee a2 > a3; cmp a1 a3 && wc -l < a2
+mkfifo p1 p2; ( seq 1 100 > p1 & ); ( tr 0-9 a-j < p1 > p2 & ); tail -1 p2
+mkfifo q; ( for i in 1 2 3; do echo $i; done > q & ); while read l; do printf '%s,' $l; done < q; echo
+( echo one; sleep 0.2; echo two ) | ( read a; read b; echo $b $a )
+echo start | ( cat; echo middle ) | ( cat; echo end ) | wc -l
+{ echo out; echo err >&2; } 2>&1 >/dev/null | tr a-z A-Z
+( exec 3>shared; echo a >&3; ( echo b >&3 ); sh -c 'echo c >&3'; exec 3>&- ); cat shared | tr '\n' ' '; echo
+exec 3<a.txt; ( read x <&3; echo child $x ); read y <&3; echo "parent ${y:-nothing left}"
+sh -c 'echo $PPID' > ppid; sh -c 'test $(cat ppid) -eq $PPID' && echo siblings
+sh -c 'sh -c "sh -c \"echo deep\""'; sh -c 'exec sh -c "exec echo replaced"'
+printf '#!/bin/sh\necho "$0 $# $1"\n' > s1; chmod +x s1; printf '#!/bin/sh\n./s1 "$@" two\n' > s2; chmod +x s2; ./s2 one
+printf '#!/usr/bin/awk -f\nBEGIN { print "awk ran" }\n' > a.awk; chmod +x a.awk; ./a.awk
+printf '#!/usr/bin/env sh\necho env ran\n' > e.sh; chmod +x e.sh; ./e.sh
+printf 'echo sourced $1\n' > inc; . ./inc x; sh inc y; sh < inc
+sh -c 'kill -STOP $$; echo resumed' & sleep 0.3; kill -CONT $!; wait $!; echo $?
+exec 2>/dev/null; sleep 3 & sleep 3 & sleep 3 & kill $(jobs -p); wait; echo all ended
+sh -c 'sleep 4 & sleep 4 & wait' & sleep 0.3; kill -TERM -$! 2>/dev/null || kill $!; wait $! 2>/dev/null; echo $?
+( trap 'echo child got it; exit 0' TERM; sleep 5 & wait ) & sleep 0.3; kill $!; wait $!; echo $?
+trap 'echo chld' CHLD; /usr/bin/true; /usr/bin/true; trap - CHLD; echo done
+sh -c 'trap "" PIPE; yes 2>/dev/null | head -1'; sh -c 'yes | head -1; echo ${PIPESTATUS[0]}'
+set -o pipefail; false | true; echo $?; set +o pipefail; false | true; echo $?
+x=$(seq 1 5000 | wc -c); echo $x; y=$(head -c 70000 /dev/zero | tr '\0' a); echo ${#y}
+a=$(b=$(c=$(echo inner); echo $c); echo $b); echo $a
+bash -c 'cat <(echo first) <(echo second); diff <(seq 1 3) <(seq 1 4) | tail -1'
+while read w; do echo ${#w}; done < /usr/share/dict/connectives | sort -n | tail -1
+nohup sh -c 'sleep 0.1; echo late > late' > /dev/null 2>&1 & wait; cat late
+( cd /; pwd ) ; pwd | grep -c /w; ( umask 077; touch priv ); stat -f %Lp priv
+( ulimit -n 20; sh -c 'ulimit -n' ); ( ulimit -f 1; head -c 4096 /dev/zero > big 2>/dev/null; echo $? ) 2>/dev/null
+sh -c 'echo $$ > pid; exec sleep 3' & sleep 0.3; kill -0 $(cat pid) && test $(cat pid) -eq $! && echo same; kill $!
+env -i sh -c 'echo ${PATH:+has a path}; command -v ls'
+( PATH=/nowhere; ls ) 2>&1 | sed 's/^.*: ls: //'; PATH=/nowhere /bin/sh -c '/bin/echo by path'
+sh -c 'cd /usr/share/dict && ls | wc -l'; sh -c 'cd /nowhere' 2>&1 | sed 's/^.*: cd: //'
+(sleep 0.1; echo a) & (sleep 0.2; echo b) & (sleep 0.3; echo c) & wait; echo d
+exec 2>/dev/null; time_out() { ( "$@" & p=$!; ( sleep 1; kill $p 2>/dev/null ) & wait $p ); }; time_out sleep 5; echo $?
+f() { local n=$1; [ $n -le 1 ] && echo 1 || echo $((n * $(f $((n - 1))))); }; f 10

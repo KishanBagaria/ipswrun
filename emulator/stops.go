@@ -60,9 +60,20 @@ func (p *Process) goOn() {
 // to each of it), as the source's orphanpg has it and as measured of a stopped child whose
 // parent ended.
 func (m *Machine) orphanedStops(ended *Process) {
-	groups := map[uint32]bool{ended.group(): true}
+	// The groups the one that ended was what saw to: its own, if its parent is of another
+	// group of its session, and those of its children that are of another group of its
+	// session. A group that had nobody before loses nothing by it, as the source's fixjobc
+	// has it: a shell with no terminal's jobs is such a group, and one of them stopped while
+	// another ends is left stopped, as a Mac leaves it (tests/commands/work.list).
+	groups := map[uint32]bool{}
+	seesTo := func(parent, child *Process) bool {
+		return parent != nil && !parent.exited && parent.group() != child.group() && parent.sessionOf() == child.sessionOf()
+	}
+	if parent := ended.parent; parent != ended && seesTo(parent, ended) {
+		groups[ended.group()] = true
+	}
 	for _, q := range m.procs {
-		if q.parent == ended && !q.exited {
+		if q.parent == ended && !q.exited && q.group() != ended.group() && q.sessionOf() == ended.sessionOf() {
 			groups[q.group()] = true
 		}
 	}

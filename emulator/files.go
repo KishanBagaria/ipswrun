@@ -765,7 +765,11 @@ func (p *Process) doOpen(path string, flags, mode uint64) int64 {
 }
 
 func (p *Process) openPath(path string, flags, mode uint64) int64 {
-	if p.full() {
+	// The shared cache's own files are not held to the limit: dyld opens them here, one
+	// after another, where a Mac's kernel has the cache mapped before a program starts and no
+	// descriptor is spent on it; a process with a low limit starts there, as measured
+	// (ulimit -n 20; sh -c 'ulimit -n').
+	if _, cache := p.cachePaths[p.absolute(path)]; p.full() && !cache {
 		return -eMFILE
 	}
 	if n, ok := p.descriptorAt(path); ok {
@@ -901,6 +905,43 @@ func timespec(ns int64) (seconds, nanos uint64) {
 		s, n = s-1, n+1e9
 	}
 	return uint64(s), uint64(n)
+}
+
+const (
+	eFBIG       = 27
+	sigXFSZ     = 25
+	rlimitFsize = 1 // RLIMIT_FSIZE
+)
+
+// fileRoom is how many of the bytes a process would write at a place in a host file its
+// limit on a file's size lets it (RLIMIT_FSIZE): all of them, those up to the limit of a
+// write that would pass it, or none (EFBIG) of one that starts at or past it, for which the
+// process is sent SIGXFSZ. Of a file and nothing else: a device, a pipe and a socket are not
+// held to it. As measured (tests/kernel/files/fsizelimit.c) and as the source has it.
+func (p *Process) fileRoom(host int, at int64, size uint64) (uint64, int64) {
+	limit := p.rlimit(rlimitFsize)[0]
+	if limit >= rlimInfinity || at < 0 || size <= limit && uint64(at) <= limit-size {
+		return size, 0
+	}
+	var st syscall.Stat_t
+	if syscall.Fstat(host, &st) != nil || st.Mode&syscall.S_IFMT != syscall.S_IFREG {
+		return size, 0
+	}
+	if uint64(at) >= limit {
+		p.sendSignal(pendingSignal{sig: sigXFSZ, status: sigXFSZ, pid: p.pid, uid: p.uid}) // to the process, as the source has it
+		return 0, -eFBIG
+	}
+	return limit - uint64(at), 0
+}
+
+// tooLarge refuses a length a file is to be given that is past the limit (EFBIG, and
+// SIGXFSZ), as measured of truncate and ftruncate.
+func (p *Process) tooLarge(length uint64) int64 {
+	if limit := p.rlimit(rlimitFsize)[0]; limit < rlimInfinity && int64(length) >= 0 && length > limit {
+		p.sendSignal(pendingSignal{sig: sigXFSZ, status: sigXFSZ, pid: p.pid, uid: p.uid}) // to the process, as the source has it
+		return -eFBIG
+	}
+	return 0
 }
 
 const maxFD = 10240
@@ -1216,7 +1257,19 @@ func sysWrite(p *Process, a []uint64) int64 {
 	if f.kind != hostFD {
 		return -eBADF
 	}
-	data := p.read(a[1], a[2])
+	// Held to the limit from where the descriptor is, though one that adds to the file's end
+	// writes there: as measured.
+	at, _ := syscall.Seek(f.host, 0, 1)
+	room, errno := p.fileRoom(f.host, at, a[2])
+	if errno != 0 {
+		return errno
+	}
+	return p.hostWrite(f, a[1], room)
+}
+
+// hostWrite writes guest memory to a host file where its descriptor is.
+func (p *Process) hostWrite(f *fd, addr, size uint64) int64 {
+	data := p.read(addr, size)
 	p.m.beforeRead(f.host)
 	n, err := syscall.Write(f.host, data)
 	p.m.afterWrite(f.host)
@@ -1276,10 +1329,32 @@ func sysWritev(p *Process, a []uint64) int64 {
 		}
 		return p.pipeWrite(f, all)
 	}
+	// The pieces are one write to the limit on a file's size: it is asked once, of all of
+	// them, and they are cut short where it ends, as measured of two that pass it and of two
+	// of which the first ends at it.
+	room, host := ^uint64(0), p.fds[a[0]]
+	if host != nil && host.kind == hostFD {
+		var all uint64
+		for i := uint64(0); i < a[2]; i++ {
+			all += min(p.u64(a[1]+16*i+8), 1<<62)
+		}
+		at, _ := syscall.Seek(host.host, 0, 1)
+		var errno int64
+		if room, errno = p.fileRoom(host.host, at, all); errno != 0 {
+			return errno
+		}
+	}
 	var written int64
 	for i := uint64(0); i < a[2]; i++ {
 		base, length := p.u64(a[1]+16*i), p.u64(a[1]+16*i+8)
-		n := sysWrite(p, []uint64{a[0], base, length})
+		var n int64
+		if host != nil && host.kind == hostFD {
+			length = min(length, room)
+			n = p.hostWrite(host, base, length)
+			room -= uint64(max(n, 0))
+		} else {
+			n = sysWrite(p, []uint64{a[0], base, length})
+		}
 		switch {
 		case n < 0 && written == 0:
 			return n
@@ -1301,8 +1376,12 @@ func sysPwrite(p *Process, a []uint64) int64 {
 	if f == nil || f.kind != hostFD {
 		return -eBADF
 	}
+	room, errno := p.fileRoom(f.host, int64(a[3]), a[2])
+	if errno != 0 {
+		return errno
+	}
 	p.m.beforeRead(f.host)
-	n, err := syscall.Pwrite(f.host, p.read(a[1], a[2]), int64(a[3]))
+	n, err := syscall.Pwrite(f.host, p.read(a[1], room), int64(a[3]))
 	p.m.afterWrite(f.host)
 	if err != nil {
 		return hostErrno(err)
@@ -1363,6 +1442,10 @@ func sysLseek(p *Process, a []uint64) int64 {
 }
 
 func sysFtruncate(p *Process, a []uint64) int64 {
+	// The limit is asked before anything else, of a descriptor that is none too: as measured.
+	if errno := p.tooLarge(a[1]); errno != 0 {
+		return errno
+	}
 	f := p.fds[a[0]]
 	if f != nil && f.kind == semFD { // as measured
 		return -eINVAL
@@ -1882,8 +1965,14 @@ func sysRenameatx(p *Process, a []uint64) int64 {
 }
 
 func sysTruncate(p *Process, a []uint64) int64 {
+	if errno := p.tooLarge(a[1]); errno != 0 { // before the name is looked at, as measured
+		return errno
+	}
 	t, ok := p.writableTarget(p.cstr(a[0]))
 	if !ok {
+		if errno := p.unwritable(p.cstr(a[0]), false); errno != 0 { // as measured of the system's SystemVersion.plist
+			return errno
+		}
 		return -eACCES
 	}
 	f, err := t.root.OpenFile(t.rel, os.O_WRONLY, 0)
@@ -2239,7 +2328,6 @@ func (p *Process) fcntlCaching(f *fd, cmd, arg uint64, a []uint64) int64 {
 // EFBIG, one from before its start or of less than nothing EINVAL, as is a directory; a pipe is
 // EBADF. Of a file that holds nothing it was not measured, and stops.
 func (p *Process) readAdvise(f *fd, arg uint64, a []uint64) int64 {
-	const eFBIG = 27
 	if f.streams() {
 		return -eBADF
 	}
