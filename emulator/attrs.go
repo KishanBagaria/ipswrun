@@ -14,10 +14,11 @@ type fileInfo struct {
 	size  int64
 	ino   uint64
 	mtime int64
-	links uint16 // the names it has, if more than the one
-	owner *Owner // if it is not the guests' user's (see Machine.owners)
-	flags uint32 // those it carries beside its mode (see chflags)
-	acl   bool   // it has an access control list (see acls.go)
+	times [4]int64 // of a file of the system volume: when it was last read, written, changed and made, as the image has them
+	links uint16   // the names it has, if more than the one
+	owner *Owner   // if it is not the guests' user's (see Machine.owners)
+	flags uint32   // those it carries beside its mode (see chflags)
+	acl   bool     // it has an access control list (see acls.go)
 }
 
 // describe looks at a resolved path or an open descriptor. Paths with a pinned inode number
@@ -70,6 +71,19 @@ func (p *Process) describe(kind fdKind, path string, size int64, inode *Inode, h
 	if inode != nil && kind != hostFD && kind != stdioFD { // as the release's volume has it
 		info.mode = info.mode&syscall.S_IFMT | inode.Mode&0o7777
 		info.owner = &Owner{inode.UID, inode.GID}
+		info.flags = inode.Flags
+		// A Mac shows every file, directory and link of its system volume with one time for
+		// all four, which is when the image's files were last written, whatever the image has
+		// for a directory or a link: as measured of 1190 names on macOS 27.2.1 against that
+		// release's image. A file is given its own, and the rest the time of a file every
+		// release has.
+		when := inode.Times[1]
+		if info.mode&syscall.S_IFMT != syscall.S_IFREG && when != 0 {
+			when = p.systemTime()
+		}
+		if when != 0 {
+			info.times, info.mtime = [4]int64{when, when, when, when}, when/1e9
+		}
 	}
 	if info.ino == 0 {
 		info.ino = crcInode(path)
@@ -221,7 +235,16 @@ func always(b []byte) func(*attrContext) []byte {
 }
 
 var (
-	attrTime  = func(c *attrContext) []byte { return le64(uint64(c.mtime), 0) } // a timespec
+	attrTime = func(c *attrContext) []byte { return le64(uint64(c.mtime), 0) } // a timespec
+	// attrTimeOf is one of a file's four times, where the image has them.
+	attrTimeOf = func(which int) func(c *attrContext) []byte {
+		return func(c *attrContext) []byte {
+			if c.times[1] == 0 {
+				return attrTime(c)
+			}
+			return le64(uint64(c.times[which]/1e9), uint64(c.times[which]%1e9))
+		}
+	}
 	attrFSID  = func(c *attrContext) []byte { return le32(c.dev, fsTypeAPFS) }
 	attrDevID = func(c *attrContext) []byte { return le32(c.dev) }
 	attrSize  = func(c *attrContext) []byte { return le64(uint64(c.size)) }
@@ -274,8 +297,8 @@ var (
 		}},
 		{0x10, 4, always(le32(fsTypeAPFS))}, // object tag
 		{0x20, 8, attrObjID}, {0x40, 8, attrObjID}, {0x80, 8, attrPar32},
-		{0x100, 4, nil}, // script
-		{0x200, 16, attrTime}, {0x400, 16, attrTime}, {0x800, 16, attrTime}, {0x1000, 16, attrTime},
+		{0x100, 4, nil},                                                                                                 // script
+		{0x200, 16, attrTimeOf(3)}, {0x400, 16, attrTimeOf(1)}, {0x800, 16, attrTimeOf(2)}, {0x1000, 16, attrTimeOf(0)}, // made, written, changed, read
 		{0x2000, 16, nil}, {0x4000, -32, attrFinderInfo}, // backup time, and Finder info if it is set
 		{0x8000, 4, func(c *attrContext) []byte { return le32(c.p.m.ownerOf(c.fileInfo).UID) }},
 		{0x10000, 4, func(c *attrContext) []byte { return le32(c.p.m.ownerOf(c.fileInfo).GID) }},

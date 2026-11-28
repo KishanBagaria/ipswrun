@@ -1,5 +1,5 @@
-github.com/KishanBagaria/go-apfs v1.0.34-0.20261126173337-4a889ae9eb3e h1:4cDhzUTUMaKmvvyO21F6Ct3tZjJ/m7GDs808ipbEk1o=
-github.com/KishanBagaria/go-apfs v1.0.34-0.20261126173337-4a889ae9eb3e/go.mod h1:vzHI+uGiw5KGoVKb+gRM425juzZ1jB2OYe6hk9CKWNo=
+github.com/KishanBagaria/go-apfs v1.0.34-0.20261128035835-798751f65afd h1:gGUnUuiAhsg91vnOGaeyE2wrzM3DJK6IBXTiEdpRewc=
+github.com/KishanBagaria/go-apfs v1.0.34-0.20261128035835-798751f65afd/go.mod h1:vzHI+uGiw5KGoVKb+gRM425juzZ1jB2OYe6hk9CKWNo=
 github.com/VividCortex/ewma v1.2.0 h1:f58SaIzcDXrSy3kWaHNvuJgJ3Nmz59Zji6XoJR/q1ow=
 github.com/VividCortex/ewma v1.2.0/go.mod h1:nz4BbCtbLyFDeC9SUHbtcT5644juEuWfUAUnGx7j5l4=
 github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d h1:licZJFw2RwpHMqeKTCYkitsPqHNxTmd4SNR5r94FGM8=

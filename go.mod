@@ -31,4 +31,4 @@ require (
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
 )
 
-replace github.com/blacktop/go-apfs => github.com/KishanBagaria/go-apfs v1.0.34-0.20261126173337-4a889ae9eb3e
+replace github.com/blacktop/go-apfs => github.com/KishanBagaria/go-apfs v1.0.34-0.20261128035835-798751f65afd

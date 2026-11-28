@@ -412,6 +412,10 @@ type Entry struct {
 	// its inode has them.
 	Mode     uint32
 	UID, GID uint32
+	// Flags is the flags its inode carries beside its mode (st_flags), and Times when it was
+	// last read, last written, last changed and made, in nanoseconds since 1970.
+	Flags uint32
+	Times [4]int64
 }
 
 // File is a regular file inside a volume.
@@ -456,7 +460,6 @@ func (m *Image) Stat(vol, path string) (Entry, error) {
 				out.Mode |= bit.bit
 			}
 		}
-		return out, nil
 	default:
 		return out, nil
 	}
@@ -465,6 +468,7 @@ func (m *Image) Stat(vol, path string) (Entry, error) {
 		return fail(err)
 	}
 	out.Mode, out.UID, out.GID = uint32(info.RawMode)&0o7777, info.UID, info.GID
+	out.Flags, out.Times = info.Flags, [4]int64{info.Accessed, info.Modified, info.Changed, info.Created}
 	return out, nil
 }
 

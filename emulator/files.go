@@ -539,6 +539,18 @@ func (p *Process) madeUp(mode uint16) *Inode {
 	return &Inode{Mode: mode}
 }
 
+// systemTime is when the files of the system volume were last written, as the image has it of
+// one every release has; none if it has none.
+func (p *Process) systemTime() int64 {
+	if p.m.systemWritten == 0 {
+		p.m.systemWritten = -1
+		if inode := p.systemInode("/System/Library/CoreServices/SystemVersion.plist"); inode != nil && inode.Times[1] != 0 {
+			p.m.systemWritten = inode.Times[1]
+		}
+	}
+	return max(p.m.systemWritten, 0)
+}
+
 // systemInode is the owner and permissions the system volume has for a path that is answered
 // here without it (the root, the directories every release has, a guest's own program), if it
 // has the path.
@@ -556,8 +568,11 @@ func statBuf(i fileInfo, owner user) []byte {
 	}
 	le.PutUint32(b[16:], owner.uid)
 	le.PutUint32(b[20:], owner.gid)
-	for at := 32; at < 96; at += 16 { // access, modification, change and birth times
-		le.PutUint64(b[at:], uint64(i.mtime))
+	for n, at := 0, 32; at < 96; n, at = n+1, at+16 { // access, modification, change and birth times
+		if le.PutUint64(b[at:], uint64(i.mtime)); i.times[1] != 0 {
+			le.PutUint64(b[at:], uint64(i.times[n]/1e9))
+			le.PutUint64(b[at+8:], uint64(i.times[n]%1e9))
+		}
 	}
 	le.PutUint64(b[96:], uint64(i.size))
 	if i.mode&syscall.S_IFMT != syscall.S_IFDIR { // a directory's names take no blocks of its own
@@ -1390,10 +1405,7 @@ func (p *Process) accessFor(path string, mode uint64, follow bool) int64 {
 		return 0
 	}
 	if want&2 != 0 && !isDescriptor && p.onSystem(t) {
-		if t.path == "/" {
-			return -eROFS
-		}
-		return -ePERM
+		return systemRefusal(t)
 	}
 	if !p.permits(info, want) {
 		if info.acl {
@@ -1415,7 +1427,9 @@ func (p *Process) unwritable(path string, making bool) int64 {
 		switch {
 		case making:
 			return -eEXIST
-		case p.onSystem(t), under(t.path, "/dev"):
+		case p.onSystem(t):
+			return systemRefusal(t)
+		case under(t.path, "/dev"):
 			return -ePERM
 		}
 		return 0
@@ -1425,13 +1439,24 @@ func (p *Process) unwritable(path string, making bool) int64 {
 	}
 	if dir, there := p.followed(p.resolve(pathpkg.Dir(p.absolute(path)))); there {
 		switch {
-		case dir.path == "/":
-			return -eROFS
-		case p.onSystem(dir), under(dir.path, "/dev"):
+		case p.onSystem(dir):
+			return systemRefusal(dir)
+		case under(dir.path, "/dev"):
 			return -ePERM
 		}
 	}
 	return 0
+}
+
+// systemRefusal is why what is on the system volume is not written: what carries the flag that
+// it is restricted (SF_RESTRICTED, as the image has it) is EPERM, and the rest EROFS, the
+// volume being read-only. As measured of /usr, /usr/lib and /bin/ls, which carry it, and of /,
+// which does not.
+func systemRefusal(t target) int64 {
+	if t.inode != nil && t.inode.Flags&0x80000 != 0 {
+		return -ePERM
+	}
+	return -eROFS
 }
 
 // onSystem says whether what a path names is of the system volume, which nobody writes.
@@ -1480,7 +1505,7 @@ func (p *Process) mayOpen(t target, flags uint64) int64 {
 	case directory && how != 0:
 		return -eISDIR
 	case (how != 0 || flags&0x400 != 0) && p.onSystem(t):
-		return -ePERM
+		return systemRefusal(t)
 	case how != 0 || flags&0x400 != 0:
 		p.unimplemented("open to write of a file that is made up here", []uint64{flags})
 		return -eNOSYS

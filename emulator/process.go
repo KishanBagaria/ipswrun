@@ -221,6 +221,8 @@ type SystemFile struct {
 type Inode struct {
 	Mode     uint16
 	UID, GID uint32
+	Flags    uint32   // those it carries beside its mode (st_flags)
+	Times    [4]int64 // when it was last read, written, changed and made, in nanoseconds since 1970; none if not known
 }
 
 // Config describes the machine the guests run on.

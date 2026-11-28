@@ -95,7 +95,7 @@ func inCacheDir(dirs map[string]bool, path string) bool {
 
 // inodeOf is what the volume's record of an entry says of its owner and permissions.
 func inodeOf(e rangefs.Entry) *Inode {
-	return &Inode{Mode: uint16(e.Mode), UID: e.UID, GID: e.GID}
+	return &Inode{Mode: uint16(e.Mode), UID: e.UID, GID: e.GID, Flags: e.Flags, Times: e.Times}
 }
 
 // realDirectory is the path of a directory of the system volume with every symbolic link on the

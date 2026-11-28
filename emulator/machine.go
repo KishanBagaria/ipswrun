@@ -61,6 +61,7 @@ type Machine struct {
 	seen             map[fileID]string          // where each file a guest has looked at is, by its number (see saw)
 	ranges           map[hostFile][]rangeLock   // the locks open files hold on parts of files (see rangelocks.go)
 	lockNames        map[string]uint64          // the files of the system volume that were locked whole, by name
+	systemWritten    int64                      // when the system volume's files were last written; -1 if the image does not say (see systemTime)
 	lockSeq          uint64                     // the last place given in a line of those that wait for such a lock
 	uniques          uint64                     // how many processes were given a number of their own, after launchd's
 	versions         uint32                     // how many versions were given, after launchd's (see lineage)
