@@ -1,0 +1,63 @@
+# The shell's redirections, the names under /dev, permissions, and processes. See run.sh.
+echo out > /dev/stdout; echo err > /dev/stderr
+echo x > /dev/null && echo quiet
+cat < /dev/null | wc -c
+head -c 8 /dev/zero | wc -c
+head -c 8 /dev/zero | od -An -tx1 | tr -d ' \n'; echo
+head -c 16 /dev/urandom | wc -c
+exec 3> t3.txt; echo three >&3; exec 3>&-; cat t3.txt
+exec 3< a.txt; cat <&3; cat /dev/fd/3 | wc -c; exec 3<&-
+exec 3< a.txt; ls /dev/fd | tr '\n' ' '; echo
+echo data | cat /dev/stdin
+echo data | cat /dev/fd/0
+cat a.txt > b.txt; cat a.txt >> b.txt; wc -l < b.txt
+cat nosuch.txt 2> e.txt; wc -l < e.txt
+cat nosuch.txt 2>&1 | sed 's/^cat: //'
+{ echo one; echo two >&2; } 2>&1 | sort
+echo first | tee t1.txt t2.txt > /dev/null; cat t1.txt t2.txt
+: > empty.txt; test -s empty.txt || echo empty
+set -o noclobber; echo x > a.txt 2>&1 | sed 's/^.*: a.txt: //'; echo y >| a.txt; cat a.txt
+read first rest < /etc/shells; echo "${first:0:1}"
+while read line; do n=$((n+1)); done < a.txt; echo $n
+cat <<< "here ${HOME##*/} doc" | tr a-z A-Z | wc -w
+chmod 000 a.txt; cat a.txt 2>&1 | sed 's/^.*: //'; chmod 644 a.txt; cat a.txt
+chmod 400 a.txt; echo more >> a.txt 2>&1 | sed 's/^.*: //'; test -w a.txt || echo unwritable
+chmod u+x,g-r,o= a.txt; stat -f %Sp a.txt
+chmod 755 d; mkdir -m 700 p; stat -f '%Sp %Sp' d p
+chmod 500 d; touch d/new 2>&1 | sed 's/^.*: //'; chmod 700 d
+chmod 300 d; ls d 2>&1 | sed 's/^.*: //'; chmod 700 d
+chmod 600 d; cat d/e/x 2>&1 | sed 's/^.*: //'; ls d; chmod 700 d
+umask 027; touch u1; mkdir ud; stat -f '%Lp %Lp' u1 ud
+umask; umask -S
+touch own; chown "$(id -u)" own && echo owned; chgrp "$(id -g)" own && echo grouped
+chown 0 a.txt 2>&1 | sed 's/^.*: //'
+test -O a.txt && echo mine; test -G a.txt && echo my group
+ln -s a.txt l; chmod -h 600 l; stat -f %Sp l; stat -L -f %Sp l
+ln -s a.txt l; chmod 600 l; stat -f %Sp l a.txt
+ln -s a.txt l; chmod -h 000 l; readlink l; echo $?; cat l; stat -f %Sp l; ls -l l 2>&1 | cut -c1-10
+mkdir -m 300 box; echo in > box/f; cat box/f; ls box 2>&1 | sed 's/^.*: //'; chmod 700 box; ls box
+chmod 000 d; cd d 2>&1 | sed 's/^.*: //'; ls -ld d | cut -c1-10; ls d 2>&1 | sed 's/^.*: //'; chmod 700 d
+chmod 600 d; ls -l d 2>&1 | sed 's/^.*: //'; cd d 2>&1 | sed 's/^.*: //'; chmod 700 d
+touch -t 202001010000 a.txt; test a.txt -ot c.txt && echo older
+cp a.txt x.sh; chmod +x x.sh; ./x.sh 2>&1 | sed 's/^.*x.sh: //' | head -1
+printf '#!/bin/sh\necho ran $1\n' > s.sh; chmod +x s.sh; ./s.sh arg
+printf '#!/bin/sh\necho ran\n' > n.sh; ./n.sh 2>&1 | sed 's/^.*n.sh: //'; sh n.sh
+sh -c 'exit 3'; echo $?
+x=$(sh -c 'kill -TERM $$' 2>&1); echo $?
+x=$(sh -c 'kill -KILL $$' 2>&1); echo $?
+(exit 7); echo $?; false || echo recovered
+sleep 0.1 & sleep 0.1 & wait; echo both
+sleep 5 & kill -STOP $!; kill -CONT $!; kill $!; wait $! 2>/dev/null; echo $?
+sh -c 'trap "" TERM; kill -TERM $$; echo ignored'
+yes | head -3 | wc -l
+true | false; echo $?
+echo a | (cat; echo b) | wc -l
+echo $(( $(ulimit -n) > 0 ))
+ulimit -n 64; ulimit -n
+nice -n 5 sh -c 'echo nice'; nice
+env -i PATH=/usr/bin:/bin sh -c 'env | sort | cut -d= -f1 | tr "\n" " "'; echo
+printenv HOME | grep -c /
+cd /; pwd; cd - > /dev/null; cat a.txt
+cd d/e; pwd | sed 's|.*/d/|d/|'; cd ../..; cat a.txt
+mkdir -p deep/a/b/c; cd deep/a/b/c; cd ../../../..; rmdir -p deep/a/b/c; ls | grep -c deep
+ls -d . .. | wc -l

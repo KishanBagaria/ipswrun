@@ -78,6 +78,7 @@ mapfile	tests/kernel/memory	macos,ios
 notify	tests/kernel/system	macos,ios	--on-demand com.apple.system.notification_center
 openfds	tests/kernel/io	macos,ios
 openmay	tests/kernel/files	macos,ios
+searchmay	tests/kernel/files	macos,ios
 openpty	tests/kernel/tty	macos,ios
 # oslog needs a data volume too, for the release's own logd to keep its files on, with the notifyd logd asks.
 oslog	tests/kernel/system	macos	--data "$out/data-{build}" --on-demand 'com.apple.logd*' --on-demand com.apple.system.notification_center

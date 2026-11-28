@@ -172,32 +172,61 @@ func sysChmod(p *Process, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
-	return p.chmodAt(t, fileMode(a[1]))
+	return p.chmodAt(t, fileMode(a[1]), true)
 }
 
 // chmodAt changes the permissions of a file under the home or a mount, which are from then on
 // what the host's file has, whatever a template said of it before.
-func (p *Process) chmodAt(t target, mode os.FileMode) int64 {
-	if err := t.root.Chmod(t.rel, mode); err != nil {
+func (p *Process) chmodAt(t target, mode os.FileMode, follow bool) int64 {
+	var st syscall.Stat_t
+	if err := statInRoot(t.root, t.rel, follow, &st); err != nil {
 		return hostErrno(err)
 	}
-	var st syscall.Stat_t
-	if statInRoot(t.root, t.rel, true, &st) == nil {
-		delete(p.m.said, hostFileOf(&st))
+	bits := uint32(mode.Perm())
+	for _, b := range []struct {
+		is   os.FileMode
+		bits uint32
+	}{{os.ModeSetuid, 0o4000}, {os.ModeSetgid, 0o2000}, {os.ModeSticky, 0o1000}} {
+		if mode&b.is != 0 {
+			bits |= b.bits
+		}
 	}
-	return 0
+	if st.Mode&syscall.S_IFMT == syscall.S_IFLNK {
+		// The link itself, of a caller that does not follow one: its mode is kept here and
+		// the host's link left as it is, since the host follows a link by its name whatever
+		// is asked of it (os.Root). As measured, a link keeps the mode it
+		// is given, and one that may not be read is still followed.
+		p.m.said[hostFileOf(&st)] = uint16(bits)
+		return 0
+	}
+	if p.hostMode(&st, bits) != bits {
+		mode |= 0o400
+	}
+	return hostCall(t.root.Chmod(t.rel, mode))
 }
 
 // chmodFD is chmodAt of an open file.
 func (p *Process) chmodFD(host int, mode uint32) int64 {
-	if err := syscall.Fchmod(host, mode); err != nil {
+	var st syscall.Stat_t
+	if err := syscall.Fstat(host, &st); err != nil {
 		return hostErrno(err)
 	}
-	var st syscall.Stat_t
-	if syscall.Fstat(host, &st) == nil {
-		delete(p.m.said, hostFileOf(&st))
+	return hostCall(syscall.Fchmod(host, p.hostMode(&st, mode)))
+}
+
+// hostMode is the mode the host's file is given for the one a guest gives it, which is from
+// then on what the guest is told. They are the same but for a directory its owner may not
+// read: the host's stays readable, since the host does not let a directory that is not read be
+// passed through by those who are kept inside one (os.Root), and the guest is refused here
+// what the mode it gave refuses (see sysOpen, sysGetattrlistbulk).
+func (p *Process) hostMode(st *syscall.Stat_t, mode uint32) uint32 {
+	id := hostFileOf(st)
+	delete(p.m.said, id)
+	if st.Mode&syscall.S_IFMT == syscall.S_IFDIR && mode&0o400 == 0 {
+		p.m.said[id] = uint16(mode & 0o7777)
+		return mode | 0o400
 	}
-	return 0
+	return mode
 }
 
 // sysFchmodat is fchmodat(directory, path, mode, flags): chmod of a path from a directory, of
@@ -216,7 +245,7 @@ func sysFchmodat(p *Process, a []uint64) int64 {
 		if errno != 0 {
 			return errno
 		}
-		return p.chmodAt(t, fileMode(a[2]))
+		return p.chmodAt(t, fileMode(a[2]), a[3]&noFollow == 0)
 	})
 }
 
@@ -247,7 +276,7 @@ func sysChmodExtended(p *Process, a []uint64) int64 {
 	if errno != 0 {
 		return errno
 	}
-	return p.chmodExtended(id, a, change, func(mode uint32) int64 { return p.chmodAt(t, fileMode(uint64(mode))) })
+	return p.chmodExtended(id, a, change, func(mode uint32) int64 { return p.chmodAt(t, fileMode(uint64(mode)), true) })
 }
 
 // extended is the security chmod_extended and fchmod_extended were given.
@@ -502,7 +531,7 @@ func (p *Process) setattrlist(path string, list, buf, size, options uint64, a []
 		return errno
 	}
 	if common&attrCmnAccMask != 0 {
-		if errno := p.chmodAt(t, fileMode(uint64(le.Uint32(value(4))))); errno != 0 {
+		if errno := p.chmodAt(t, fileMode(uint64(le.Uint32(value(4)))), options&optNoFollow == 0); errno != 0 {
 			return errno
 		}
 	}
@@ -737,7 +766,7 @@ func sysFremovexattr(p *Process, a []uint64) int64 { return p.removexattr(0, int
 // path named before it was removed or replaced, if that was its last name.
 func (p *Process) forgetFile(t target) {
 	var st syscall.Stat_t
-	if statInRoot(t.root, t.rel, false, &st) == nil && st.Nlink <= 1 {
+	if statInRoot(t.root, t.rel, false, &st) == nil && (st.Nlink <= 1 || st.Mode&syscall.S_IFMT == syscall.S_IFDIR) { // a directory has the one name
 		delete(p.m.xattrs, hostFileOf(&st))
 		delete(p.m.owners, hostFileOf(&st))
 		delete(p.m.fifos, hostFileOf(&st))

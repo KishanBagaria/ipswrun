@@ -1,0 +1,2 @@
+/bin/sh: a.txt: cannot overwrite existing file
+y

@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/attr.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -23,8 +24,36 @@ static const char *mapped(int flags, int fd) {
 	return t;
 }
 
+// bulk lists /dev/fd as ls does, by getattrlistbulk.
+static void bulk(int a) {
+	int fd = open("/dev/fd", O_RDONLY | O_DIRECTORY), has_a = 0, has_through = 0, dots = 0, others = 0, n;
+	struct attrlist want = {.bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME};
+	static char buf[16384];
+	while ((n = getattrlistbulk(fd, &want, buf, sizeof buf, 0)) > 0) {
+		char *entry = buf;
+		for (int i = 0; i < n; i++) {
+			unsigned length;
+			memcpy(&length, entry, 4);
+			attrreference_t *ref = (attrreference_t *)(entry + 4 + sizeof(attribute_set_t));
+			const char *name = (char *)ref + ref->attr_dataoffset;
+			char *end;
+			long number = strtol(name, &end, 10);
+			if (!strcmp(name, ".") || !strcmp(name, ".."))
+				dots++;
+			else if (*end)
+				others++;
+			has_a += number == a && !*end;
+			has_through += number == fd && !*end;
+			entry += length;
+		}
+	}
+	printf("/dev/fd by getattrlistbulk%s lists a descriptor: %d, the one it is read through: %d; names that are no number: %d, for itself and the one above: %d\n", n < 0 ? " (which fails)" : "", has_a, has_through, others, dots);
+	close(fd);
+}
+
 int main(void) {
 	int a = open("/dev/null", O_RDONLY), b = dup(a);
+	bulk(a);
 	DIR *d = opendir("/dev/fd");
 	if (!d) {
 		printf("/dev/fd is not opened: %s\n", strerror(errno));

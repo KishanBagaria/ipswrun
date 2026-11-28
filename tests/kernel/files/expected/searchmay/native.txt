@@ -1,0 +1,51 @@
+a directory its owner may read, write and search (0700):
+  itself: stat yes, open to read yes, as a directory yes, to write Is a directory, to search only yes
+  listed through a descriptor opened now: 3 names; by getattrlistbulk for names 3 entries, names and kinds 3 entries, names and numbers 3 entries, kinds alone Invalid argument, names and errors 3 entries, names and times 3 entries
+  listed through one opened before: 3 names; by getattrlistbulk for names 3 entries, and times 3 entries
+  entered by its name: yes, by the descriptor opened before: yes, by one opened now: yes
+  a file inside: stat yes, lstat yes, access yes, open yes; a name that is not there: stat No such file or directory; a directory inside: stat yes, open yes
+  through the descriptor opened before: fstatat yes, openat yes, a new file yes
+  a new file: yes, a new directory: yes, a link: yes, a name taken away: yes, a file brought in: yes, a file taken out: yes, a directory inside removed: yes
+  removed while it has names: Directory not empty
+read and write, not search (0600):
+  itself: stat yes, open to read yes, as a directory yes, to write Is a directory, to search only Permission denied
+  listed through a descriptor opened now: 3 names; by getattrlistbulk for names 0 entries, names and kinds 3 entries, names and numbers 0 entries, kinds alone Invalid argument, names and errors 0 entries, names and times Permission denied
+  listed through one opened before: 3 names; by getattrlistbulk for names 0 entries, and times Permission denied
+  entered by its name: Permission denied, by the descriptor opened before: Permission denied, by one opened now: Permission denied
+  a file inside: stat Permission denied, lstat Permission denied, access Permission denied, open Permission denied; a name that is not there: stat Permission denied; a directory inside: stat Permission denied, open Permission denied
+  through the descriptor opened before: fstatat Permission denied, openat Permission denied, a new file Permission denied
+  a new file: Permission denied, a new directory: Permission denied, a link: Permission denied, a name taken away: Permission denied, a file brought in: Permission denied, a file taken out: Permission denied, a directory inside removed: Permission denied
+  removed while it has names: Directory not empty
+write and search, not read (0300):
+  itself: stat yes, open to read Permission denied, as a directory Permission denied, to write Is a directory, to search only yes
+  listed through one opened before: 3 names; by getattrlistbulk for names Permission denied, and times Permission denied
+  entered by its name: yes, by the descriptor opened before: yes, by one opened now: not opened
+  a file inside: stat yes, lstat yes, access yes, open yes; a name that is not there: stat No such file or directory; a directory inside: stat yes, open yes
+  through the descriptor opened before: fstatat yes, openat yes, a new file yes
+  a new file: yes, a new directory: yes, a link: yes, a name taken away: yes, a file brought in: yes, a file taken out: yes, a directory inside removed: yes
+  removed while it has names: Directory not empty
+read and search, not write (0500):
+  itself: stat yes, open to read yes, as a directory yes, to write Is a directory, to search only yes
+  listed through a descriptor opened now: 3 names; by getattrlistbulk for names 3 entries, names and kinds 3 entries, names and numbers 3 entries, kinds alone Invalid argument, names and errors 3 entries, names and times 3 entries
+  listed through one opened before: 3 names; by getattrlistbulk for names 3 entries, and times 3 entries
+  entered by its name: yes, by the descriptor opened before: yes, by one opened now: yes
+  a file inside: stat yes, lstat yes, access yes, open yes; a name that is not there: stat No such file or directory; a directory inside: stat yes, open yes
+  through the descriptor opened before: fstatat yes, openat yes, a new file Permission denied
+  a new file: Permission denied, a new directory: Permission denied, a link: Permission denied, a name taken away: Permission denied, a file brought in: Permission denied, a file taken out: Permission denied, a directory inside removed: Permission denied
+  removed while it has names: Directory not empty
+search only (0100):
+  itself: stat yes, open to read Permission denied, as a directory Permission denied, to write Is a directory, to search only yes
+  listed through one opened before: 3 names; by getattrlistbulk for names Permission denied, and times Permission denied
+  entered by its name: yes, by the descriptor opened before: yes, by one opened now: not opened
+  a file inside: stat yes, lstat yes, access yes, open yes; a name that is not there: stat No such file or directory; a directory inside: stat yes, open yes
+  through the descriptor opened before: fstatat yes, openat yes, a new file Permission denied
+  a new file: Permission denied, a new directory: Permission denied, a link: Permission denied, a name taken away: Permission denied, a file brought in: Permission denied, a file taken out: Permission denied, a directory inside removed: Permission denied
+  removed while it has names: Directory not empty
+nothing (0000):
+  itself: stat yes, open to read Permission denied, as a directory Permission denied, to write Is a directory, to search only Permission denied
+  listed through one opened before: 3 names; by getattrlistbulk for names Permission denied, and times Permission denied
+  entered by its name: Permission denied, by the descriptor opened before: Permission denied, by one opened now: not opened
+  a file inside: stat Permission denied, lstat Permission denied, access Permission denied, open Permission denied; a name that is not there: stat Permission denied; a directory inside: stat Permission denied, open Permission denied
+  through the descriptor opened before: fstatat Permission denied, openat Permission denied, a new file Permission denied
+  a new file: Permission denied, a new directory: Permission denied, a link: Permission denied, a name taken away: Permission denied, a file brought in: Permission denied, a file taken out: Permission denied, a directory inside removed: Permission denied
+  removed while it has names: Directory not empty

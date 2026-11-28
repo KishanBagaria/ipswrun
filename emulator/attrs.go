@@ -2,7 +2,6 @@ package emulator
 
 import (
 	pathpkg "path"
-	"strconv"
 	"strings"
 	"syscall"
 )
@@ -261,11 +260,16 @@ const (
 	fsTypeAPFS = 0x1a
 
 	attrReturned   = 0x80000000 // ATTR_CMN_RETURNED_ATTRS
-	attrVolInfo    = 0x80000000 // ATTR_VOL_INFO
-	optNoFollow    = 0x1        // FSOPT_NOFOLLOW
-	optFullSize    = 0x4        // FSOPT_REPORT_FULLSIZE
-	optPackInvalid = 0x8        // FSOPT_PACK_INVAL_ATTRS
-	optCmnExt      = 0x20       // FSOPT_ATTR_CMN_EXTENDED: the fork attributes are the extended common ones
+	attrCmnName    = 0x1
+	attrCmnObjType = 0x8
+	attrCmnFileID  = 0x02000000
+	bulkRequired   = attrReturned | attrCmnName                                 // ATTR_BULK_REQUIRED: what getattrlistbulk must be asked
+	bulkByName     = bulkRequired | attrCmnObjType | attrCmnFileID | 0x20000000 // and what an entry tells with no look at the file: those, its kind, number and error
+	attrVolInfo    = 0x80000000                                                 // ATTR_VOL_INFO
+	optNoFollow    = 0x1                                                        // FSOPT_NOFOLLOW
+	optFullSize    = 0x4                                                        // FSOPT_REPORT_FULLSIZE
+	optPackInvalid = 0x8                                                        // FSOPT_PACK_INVAL_ATTRS
+	optCmnExt      = 0x20                                                       // FSOPT_ATTR_CMN_EXTENDED: the fork attributes are the extended common ones
 
 	volumeBlockSize = 4096
 	volumeBlocks    = 1 << 28
@@ -349,7 +353,7 @@ var (
 		{0x1, 4, attrOne},
 		{0x2, 4, func(c *attrContext) []byte {
 			if t, ok := c.p.resolve(c.path); ok {
-				if names, ok := c.p.dirNames(t); ok {
+				if names, _, ok := c.p.dirNames(t); ok {
 					return le32(uint32(len(names)))
 				}
 			}
@@ -523,8 +527,29 @@ func sysGetattrlistbulk(p *Process, a []uint64) int64 {
 		return -eBADF
 	}
 	want, ok := p.attrList(a[1])
-	if !ok || want[0]&attrReturned == 0 || want[1] != 0 {
+	if !ok || want[0]&bulkRequired != bulkRequired || want[1] != 0 {
 		return -eINVAL
+	}
+	// Asked each time, whatever the directory was when it was opened: who may not read it now
+	// is refused; who may read and not search it is refused what an entry's name does not tell
+	// (EACCES), and is given the entries only when their kinds are asked for, and none
+	// otherwise. As measured on macOS 27.2.1 of names alone and with kinds, numbers, errors
+	// and times; the source has the first two rules and not the last.
+	searched := true
+	if info, errno := p.describeFD(f); errno == 0 && f.path != devFDs && info.mode&syscall.S_IFMT == syscall.S_IFDIR {
+		searched = p.permits(info, 1)
+		switch {
+		case !p.permits(info, 4), !searched && (want[0]&^bulkByName != 0 || want[2]|want[3] != 0):
+			return -eACCES
+		case !searched && want[0]&attrCmnObjType == 0:
+			return 0
+		case !searched && want[0]&attrCmnFileID != 0:
+			p.unimplemented("getattrlistbulk for the kinds and the numbers of what is in a directory that may not be searched", a)
+			return -eNOSYS
+		}
+		if !searched && f.kinds == nil && f.names != nil { // read while it could be searched: the kinds are read now
+			f.names = nil
+		}
 	}
 	if errno := p.list(f); errno != 0 {
 		return errno
@@ -536,13 +561,19 @@ func sysGetattrlistbulk(p *Process, a []uint64) int64 {
 	count := int64(0)
 	for ; f.pos < int64(len(f.names)); f.pos++ {
 		t, info, errno := p.describePath("getattrlistbulk", pathpkg.Join(f.path, f.names[f.pos]), false)
+		if kind, ok := f.kinds[f.names[f.pos]]; !searched && ok { // by what the listing says, nothing inside being looked at
+			t, info, errno = target{path: pathpkg.Join(f.path, f.names[f.pos])}, fileInfo{mode: uint16(kind) << 12}, 0
+		}
+		if errno == -eACCES {
+			// The host does not let it be looked at, and the guest's own mode would: root,
+			// whom no mode keeps out, or a directory the host knows otherwise.
+			p.unimplemented("getattrlistbulk of a directory the host does not let be searched", a)
+			return -eNOSYS
+		}
 		if errno != 0 {
 			continue // gone since the directory was read
 		}
 		if f.path == devFDs { // a descriptor's name there is its number, whatever it is of
-			if f.names[f.pos] == strconv.FormatUint(a[0], 10) {
-				continue // the one the list is read through is left out here, as measured of ls, though getdirentries has it
-			}
 			t.path = pathpkg.Join(f.path, f.names[f.pos])
 		}
 		entry, ok := packAttrs(&attrContext{info, p, t.path}, want, a[4])

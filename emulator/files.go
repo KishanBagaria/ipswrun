@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"github.com/KishanBagaria/ipswrun/dyldcache"
 )
@@ -70,7 +71,8 @@ type fd struct {
 	path    string                   // canonical; stdio descriptors have none
 	inode   *Inode                   // of a file or directory of the system volume: its owner and permissions there
 	pos     int64
-	names   []string // of a directory being listed, read on the first getdirentries
+	names   []string        // of a directory being listed, read on the first getdirentries
+	kinds   map[string]byte // of a host directory's names, the kind the host's listing has by each
 	// shared, of a descriptor from shm_open, is the memory it names; data is then what it holds.
 	shared *sharedMemory
 	// Of an end of a pipe: the pipe, the flags fcntl reads of it, the writing end's among them,
@@ -309,13 +311,42 @@ func statInRoot(root *os.Root, rel string, follow bool, st *syscall.Stat_t) erro
 	return nil
 }
 
-func readDirInRoot(root *os.Root, rel string) ([]os.DirEntry, error) {
+// readDirInRoot is a host directory's names, in the host's order. Of one that may be read and
+// not searched it is also the kind (DT_*) the host's listing has by each name, which is all
+// that can be known of what is inside: nothing in it can be looked at.
+func readDirInRoot(root *os.Root, rel string) ([]string, map[string]byte, error) {
 	f, err := root.Open(rel)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
-	return f.ReadDir(-1)
+	names, err := f.Readdirnames(-1)
+	var st syscall.Stat_t
+	if err != nil || syscall.Fstat(int(f.Fd()), &st) != nil || st.Mode&0o100 != 0 {
+		return names, nil, err
+	}
+	// The host's own getdirentries64, which Go has no call for: its libraries read a directory
+	// by opening it again by name, which one that is not searched does not let them.
+	if _, err := f.Seek(0, 0); err != nil {
+		return names, nil, nil
+	}
+	kinds := map[string]byte{}
+	buf := make([]byte, 1<<16)
+	for {
+		var position int64
+		n, _, errno := syscall.Syscall6(344, f.Fd(), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), uintptr(unsafe.Pointer(&position)), 0, 0)
+		if errno != 0 || int(n) <= 0 || int(n) > len(buf) {
+			return names, kinds, nil
+		}
+		for b := buf[:n]; len(b) >= 21; { // a dirent: number, position, its length, its name's, kind, name
+			length, named := int(le.Uint16(b[16:])), int(le.Uint16(b[18:]))
+			if length < 21 || length > len(b) || 21+named > length {
+				return names, kinds, nil
+			}
+			kinds[string(b[21:21+named])] = b[20]
+			b = b[length:]
+		}
+	}
 }
 
 func closeHost(fd int) { syscall.Close(fd) }
@@ -833,8 +864,15 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 				if errno == 0 && info.mode&syscall.S_IFMT != syscall.S_IFDIR && info.mode&syscall.S_IFMT != syscall.S_IFLNK && !p.permits(info, want) {
 					return -eACCES
 				}
-				if errno == 0 && info.mode&syscall.S_IFMT == syscall.S_IFDIR && flags&3 == 0 && !p.permits(info, 4) {
-					return -eACCES
+				// A directory is opened to be read by who may read it, and to be searched only
+				// (O_SEARCH) by who may search it, as measured.
+				if need := uint16(4); errno == 0 && info.mode&syscall.S_IFMT == syscall.S_IFDIR && flags&3 == 0 {
+					if flags&openExec != 0 {
+						need = 1
+					}
+					if !p.permits(info, need) {
+						return -eACCES
+					}
 				}
 			}
 			if len(p.m.fifos)+len(p.m.sockets) != 0 && !missing {
@@ -877,6 +915,8 @@ func (p *Process) openPath(path string, flags, mode uint64) int64 {
 }
 
 const maxFD = 10240
+
+const openExec = 0x40000000 // O_EXEC: with O_DIRECTORY, to search a directory and not read it (O_SEARCH)
 
 // umask is the process's file mode creation mask: 022, as launchd gives, until it changes it.
 func (p *Process) umask() uint32 {
@@ -1543,6 +1583,9 @@ func (p *Process) directory(path string) (string, int64) {
 	if info.mode&syscall.S_IFMT != syscall.S_IFDIR {
 		return "", -eNOTDIR
 	}
+	if !p.permits(info, 1) { // to be in a directory is to search it, as measured
+		return "", -eACCES
+	}
 	return t.path, 0
 }
 
@@ -1571,7 +1614,7 @@ func sysPthreadFchdir(p *Process, a []uint64) int64 {
 		p.current.cwd = ""
 		return 0
 	}
-	dir, errno := p.descriptorDirectory(a[0])
+	dir, errno := p.enterable(a[0])
 	if errno == 0 {
 		p.current.cwd = dir
 	}
@@ -1579,11 +1622,24 @@ func sysPthreadFchdir(p *Process, a []uint64) int64 {
 }
 
 func sysFchdir(p *Process, a []uint64) int64 {
-	dir, errno := p.descriptorDirectory(a[0])
+	dir, errno := p.enterable(a[0])
 	if errno == 0 {
 		p.cwd = dir
 	}
 	return errno
+}
+
+// enterable is the directory a descriptor is of, for a process or a thread to be in: one that
+// may be searched now, whatever it was when the descriptor was opened, as measured.
+func (p *Process) enterable(n uint64) (string, int64) {
+	dir, errno := p.descriptorDirectory(n)
+	if errno != 0 {
+		return "", errno
+	}
+	if info, errno := p.describeFD(p.fds[n]); errno == 0 && !p.permits(info, 1) {
+		return "", -eACCES
+	}
+	return dir, 0
 }
 
 // descriptorDirectory is the directory a descriptor is of.
@@ -1761,7 +1817,7 @@ func (p *Process) doMkdir(path string, mode uint64) int64 {
 		return hostErrno(err)
 	}
 	p.created(t)
-	return hostCall(t.root.Chmod(t.rel, os.FileMode(uint32(mode&0o777)&^p.umask())))
+	return p.chmodAt(t, os.FileMode(uint32(mode&0o777)&^p.umask()), false)
 }
 
 // sysMkfifo is mkfifo(path, mode). The pipe is a name under the home or a mount that the machine
@@ -1877,6 +1933,13 @@ func (p *Process) doReadlink(path string, buf, size uint64) int64 {
 		if link, err = t.root.Readlink(t.rel); err != nil {
 			return hostErrno(err)
 		}
+		// A link is read by who its own mode lets read it (chmod -h), as measured; it is
+		// followed whatever its mode.
+		if len(p.m.said) != 0 {
+			if _, info, errno := p.describePath("readlink", path, false); errno == 0 && !p.permits(info, 4) {
+				return -eACCES
+			}
+		}
 	case !ok && link == "": // nothing is there, as measured of the system volume and of the root
 		if _, _, errno := p.describePath("readlink", path, false); errno == 0 {
 			return -eINVAL // something that is answered another way (/dev/tty), and is no link
@@ -1917,10 +1980,11 @@ func (p *Process) list(f *fd) int64 {
 	if f.kind == hostFD {
 		t, _ = p.writableTarget(f.path)
 	}
-	names, ok := p.dirNames(t)
+	names, kinds, ok := p.dirNames(t)
 	if !ok {
 		return -eNOTDIR
 	}
+	f.kinds = kinds
 	for _, m := range p.mounts { // what is on the way to a mount is there, though the volume has no such name
 		if dir := pathpkg.Clean(f.path); f.kind == dirFD && m.guest != dir && under(m.guest, dir) {
 			name, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(m.guest, dir), "/"), "/")
@@ -1943,29 +2007,22 @@ func (p *Process) list(f *fd) int64 {
 }
 
 // dirNames reads the names in a directory target, and says whether it is one that can be listed.
-func (p *Process) dirNames(t target) ([]string, bool) {
+func (p *Process) dirNames(t target) ([]string, map[string]byte, bool) {
 	switch {
 	case t.root != nil:
-		entries, err := readDirInRoot(t.root, t.rel)
-		if err != nil {
-			return nil, false
-		}
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
-		}
-		return names, true
+		names, kinds, err := readDirInRoot(t.root, t.rel)
+		return names, kinds, err == nil
 	case t.kind == dirFD:
 		if t.readDir == nil {
-			return nil, true
+			return nil, nil, true
 		}
 		names, err := away(p.m.clock, t.readDir)
 		if err != nil {
 			stopf("readdir %s: %v", t.path, err)
 		}
-		return names, true
+		return names, nil, true
 	}
-	return nil, false
+	return nil, nil, false
 }
 
 // sysGetdirentries64 lists a directory under the home, a mount, or an allowed system directory.
@@ -2014,6 +2071,8 @@ func sysGetdirentries64(p *Process, a []uint64) int64 {
 						if p.m.sockets[hostFileOf(&st)] != nil {
 							kind = syscall.DT_SOCK
 						}
+					} else if k, ok := f.kinds[name]; ok { // not to be looked at: the directory may not be searched
+						kind = k
 					}
 				case t.kind == cacheFD || t.kind == dataFD:
 					kind = byte(syscall.DT_REG)
