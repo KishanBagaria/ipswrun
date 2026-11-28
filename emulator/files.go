@@ -584,6 +584,10 @@ func (p *Process) putStat(buf uint64, info fileInfo, errno int64) int64 {
 }
 
 func (p *Process) doStat(path string, buf uint64, follow bool) int64 {
+	if _, link := standardLink(p.absoluteLink(path)); link && !follow && !asDirectory(path) { // the link itself
+		_, info, errno := p.describePath("lstat", path, false)
+		return p.putStat(buf, info, errno)
+	}
 	if n, ok := p.descriptorAt(path); ok { // what the descriptor is, followed or not
 		return sysFstat64(p, []uint64{n, buf})
 	}
@@ -1832,6 +1836,11 @@ func (p *Process) doReadlink(path string, buf, size uint64) int64 {
 		}
 		return -eINVAL
 	}
+	if to, ok := standardLink(p.absoluteLink(path)); ok {
+		n := min(uint64(len(to)), size)
+		p.write(buf, []byte(to)[:n])
+		return int64(n)
+	}
 	t, ok := p.resolve(path)
 	link := t.link // one of the system volume's
 	if root := p.rootLink(path); root != "" {
@@ -1844,6 +1853,9 @@ func (p *Process) doReadlink(path string, buf, size uint64) int64 {
 			return hostErrno(err)
 		}
 	case !ok && link == "": // nothing is there, as measured of the system volume and of the root
+		if _, _, errno := p.describePath("readlink", path, false); errno == 0 {
+			return -eINVAL // something that is answered another way (/dev/tty), and is no link
+		}
 		return -eNOENT
 	case link == "": // something that is no link
 		return -eINVAL
@@ -1895,7 +1907,12 @@ func (p *Process) list(f *fd) int64 {
 	}
 	f.names = append([]string{".", ".."}, names...)
 	if pathpkg.Clean(f.path) == "/dev" {
-		f.names = append(f.names, p.terminalNames()...)
+		// The devices that are answered here, of the hundreds a Mac has, and the terminals.
+		for _, name := range append([]string{"fd", "null", "random", "stderr", "stdin", "stdout", "tty", "urandom", "zero"}, p.terminalNames()...) {
+			if !slices.Contains(f.names, name) {
+				f.names = append(f.names, name)
+			}
+		}
 	}
 	return 0
 }
@@ -1951,6 +1968,12 @@ func sysGetdirentries64(p *Process, a []uint64) int64 {
 		child := pathpkg.Join(f.path, name)
 		if f.path == devFDs {
 			kind = 0 // of no kind that is said (DT_UNKNOWN), as measured
+		} else if _, link := standardLink(child); link {
+			kind = syscall.DT_LNK
+		} else if f.pos >= 2 && pathpkg.Clean(f.path) == "/dev" && name == "fd" {
+			kind = 0 // as measured
+		} else if f.pos >= 2 && pathpkg.Clean(f.path) == "/dev" {
+			kind = syscall.DT_CHR
 		} else if f.pos >= 2 && p.terminalNamed(child) != nil {
 			kind = syscall.DT_CHR
 		} else if f.pos >= 2 {

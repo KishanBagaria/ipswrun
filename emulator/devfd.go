@@ -18,6 +18,19 @@ const devFDs = "/dev/fd"
 // descriptorAt is the descriptor a path names, from where the process is, if it names one.
 func (p *Process) descriptorAt(path string) (uint64, bool) { return descriptorNamed(p.absolute(path)) }
 
+// standardLink is the text of the link that /dev/stdin, /dev/stdout or /dev/stderr is.
+func standardLink(path string) (string, bool) {
+	switch path {
+	case "/dev/stdin":
+		return "fd/0", true
+	case "/dev/stdout":
+		return "fd/1", true
+	case "/dev/stderr":
+		return "fd/2", true
+	}
+	return "", false
+}
+
 // descriptorNamed is the descriptor a whole path under /dev names, if it names one.
 func descriptorNamed(path string) (uint64, bool) {
 	switch path = pathpkg.Clean(path); path {
@@ -110,6 +123,9 @@ func init() {
 		bsdHandlers[call] = handler{of.args, func(p *Process, a []uint64) int64 {
 			for _, rule := range rules {
 				n, ok := p.descriptorAt(p.cstr(a[rule.arg]))
+				if _, link := standardLink(p.absoluteLink(p.cstr(a[rule.arg]))); link && call == "readlink" {
+					ok = false // /dev/stdin and the like are links, and are read as links
+				}
 				switch {
 				case !ok:
 					continue

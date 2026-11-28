@@ -100,6 +100,20 @@ func (p *Process) describePath(op, path string, follow bool) (target, fileInfo, 
 
 // describeNamed is describePath of a path as it is written, with no thought of how it ends.
 func (p *Process) describeNamed(op, path string, follow bool) (target, fileInfo, int64) {
+	if p.absolute(path) == ownTerminal { // /dev/tty, as stat has it (see ownTerminalStat)
+		t := target{kind: dirFD, path: ownTerminal}
+		info, errno := p.describe(t.kind, t.path, 0, &Inode{Mode: 0o666}, nil)
+		info.mode = syscall.S_IFCHR | 0o666
+		return t, info, errno
+	}
+	if n, ok := standardLink(p.absoluteLink(path)); ok && !follow {
+		// /dev/stdin, stdout and stderr are links to fd/0, 1 and 2, as the source has them
+		// and as measured: the link itself is asked about.
+		t := target{kind: dirFD, path: p.absoluteLink(path), link: n, inode: p.madeUp(0o555)}
+		info, errno := p.describe(t.kind, t.path, 0, t.inode, nil)
+		info.mode, info.size = syscall.S_IFLNK|info.mode&0o7777, int64(len(n))
+		return t, info, errno
+	}
 	if n, ok := p.descriptorAt(path); ok { // what the descriptor is, followed or not
 		f := p.fds[n]
 		if f == nil {
@@ -241,10 +255,16 @@ var (
 	commonAttrs = []attr{
 		{0x1, 0, func(c *attrContext) []byte { return str(pathpkg.Base(c.path)) }}, // name
 		{0x2, 4, attrDevID}, {0x4, 8, attrFSID},
-		{0x8, 4, func(c *attrContext) []byte { // object type: VREG, VDIR, VLNK or VFIFO
+		{0x8, 4, func(c *attrContext) []byte { // object type, as the kernel numbers them: VREG, VDIR, VBLK, VCHR, VLNK, VSOCK or VFIFO
 			switch c.mode & syscall.S_IFMT {
 			case syscall.S_IFDIR:
 				return le32(2)
+			case syscall.S_IFBLK:
+				return le32(3)
+			case syscall.S_IFCHR:
+				return le32(4)
+			case syscall.S_IFSOCK:
+				return le32(6)
 			case syscall.S_IFLNK:
 				return le32(5)
 			case syscall.S_IFIFO:

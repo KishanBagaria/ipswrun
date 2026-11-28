@@ -1,0 +1,7 @@
+{
+  "build": "24G90",
+  "cache_uuid": "4C1223E5-CACE-3982-A003-6110A7A8A25C",
+  "exit_code": 0,
+  "output": "/dev/fd: listed 1, as kind 0; by lstat a directory; followed: -; read as a link: Invalid argument\n/dev/null: listed 1, as kind 2; by lstat a device of characters; followed: -; read as a link: Invalid argument\n/dev/random: listed 1, as kind 2; by lstat a device of characters; followed: -; read as a link: Invalid argument\n/dev/stderr: listed 1, as kind 10; by lstat a link; followed: there; read as a link: fd/2\n/dev/stdin: listed 1, as kind 10; by lstat a link; followed: there; read as a link: fd/0\n/dev/stdout: listed 1, as kind 10; by lstat a link; followed: there; read as a link: fd/1\n/dev/tty: listed 1, as kind 2; by lstat a device of characters; followed: -; read as a link: Invalid argument\n/dev/urandom: listed 1, as kind 2; by lstat a device of characters; followed: -; read as a link: Invalid argument\n/dev/zero: listed 1, as kind 2; by lstat a device of characters; followed: -; read as a link: Invalid argument\n",
+  "version": "15.6.1"
+}
