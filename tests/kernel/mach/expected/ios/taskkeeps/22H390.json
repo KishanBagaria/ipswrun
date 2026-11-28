@@ -1,0 +1,7 @@
+{
+  "build": "22H390",
+  "cache_uuid": "EF0E3993-EA01-3DB0-82D5-F671453A1235",
+  "exit_code": 0,
+  "output": "special ports asked for: 0: 0x4; 1: 0x35; 2: 0, a port; 3: 0, a port; 4: 0, a port; 7: 0x4; 8: 0x4; 11: 0x4; 12: 0x4;\nwhere launchd is found, set to a port of one's own: 0; asked for then, it is that port: 1; a copy of the process is given: 0, a right to send 1; set to none: 0, and asked for: 0, none; set back: 0, the first again 1\nset to one's own, each of the others: 0: 0x4; 1: 0x8; 2: 0x8; 3: 0x4; 5: 0x4; 6: 0x4; 7: 0x4; 8: 0x4; 9: 0x8; 10: 0; 11: 0x4; 12: 0x4; the tenth asked for is that port: 1\nset to a name that is no right: 0x1000000a; to a port one may only receive from: 0x1000000a\nranges registered by a program that is running (the system's libraries have theirs): 0x2e; none: 0x4; one longer than a page: 0x4; one put back further than a page: 0x4; one with a flag: 0x4; two that run into each other: 0x4\nthreads put back out of them: 0; by a name that is no task's: 0x5\nwhether plain memory may be emptied: 0x4, and nothing said 1; set that it may: 0x4; asked of memory that is not there: 0x1; a thing to do that there is not: 0x4\nmemory made to be emptied: 0; whether it may be: 0, 0; set that it may: 0, and it had been 0; set that it may not: 0, and it had been set that it may or was emptied 1; and then 0\n",
+  "version": "18.7.12"
+}

@@ -116,6 +116,7 @@ sqlitewal	tests/kernel/workloads	macos,ios
 stacktop	tests/kernel/proc	macos,ios
 stops	tests/kernel/signals	macos,ios
 sysdirs	tests/kernel/files	macos,ios
+taskkeeps	tests/kernel/mach	macos,ios
 taskinfo	tests/kernel/mach	macos,ios
 taskname	tests/kernel/mach	macos,ios
 # taskpolicy says what kind of program it is, which the kernel's source refuses on an iPhone and none was there to measure.

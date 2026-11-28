@@ -45,7 +45,7 @@ func init() {
 		"task_self": {0, machTaskSelf}, "thread_self": {0, machThreadSelf}, "host_self": {0, machHostSelf},
 		"reply_port": {0, machNewReceive}, "thread_get_special_reply_port": {0, machSpecialReplyPort},
 		"vm_allocate": {4, machVMAllocate}, "vm_map": {6, machVMMap}, "vm_deallocate": {3, machVMDeallocate},
-		"vm_protect": {5, machVMProtect}, "vm_purgable_control": {4, constant(0)},
+		"vm_protect": {5, machVMProtect}, "vm_purgable_control": {4, machPurgableControl},
 		"port_allocate": {3, machPortAllocate}, "port_construct": {4, machPortConstruct}, "port_deallocate": {2, machPortDeallocate},
 		"port_mod_refs": {4, machPortModRefs}, "port_insert_right": {4, machPortInsertRight}, "port_destruct": {4, machPortDestruct},
 		"port_guard": {4, machPortGuard}, "port_unguard": {3, machPortUnguard}, "port_get_attributes": {5, machPortGetAttributes}, "port_insert_member": {3, machPortInsertMember},
@@ -95,6 +95,9 @@ func (p *Process) vmAllocate(addrp, size, mask, flags uint64, prot uint32, name 
 	start, ok := p.vmMap(p.u64(addrp), size, mask, flags, allocation{name: name, deny: denied(prot)})
 	if !ok {
 		return kernNoSpace
+	}
+	if r := p.findRegion(start); r != nil && name == "vm_allocate" && flags&2 != 0 { // VM_FLAGS_PURGABLE: it may be let be emptied (see taskkeeps.go)
+		r.purgeable = true
 	}
 	p.write(addrp, le64(start))
 	return 0
@@ -462,7 +465,7 @@ func init() {
 		3228: migPortGetContext,
 		3240: func(*Process, []byte) migReply { return migData(le64(0)) }, // mach_port_is_connection_for_service: it is, under no sandbox filter
 		3409: migTaskGetSpecialPort,
-		3410: ok, // task_set_special_port
+		3410: migTaskSetSpecialPort,
 		3413: migTaskSetExceptionPorts,
 		3418: migSemaphoreCreate,
 		3419: migSemaphoreDestroy,
@@ -472,8 +475,7 @@ func init() {
 		4817: migMakeMemoryEntry,
 		4813: migVMRemap,
 		4822: migReclaimAllocate, 4823: migReclaimFlush, 4826: migReclaimResize, 4828: migReclaimQuery, // the ring for memory to be given back later (see reclaim.go)
-		8000: ok, // task_restartable_ranges_register
-		8001: ok,
+		8000: migRestartableRegister, 8001: migRestartableSynchronize,
 	}
 }
 
@@ -496,16 +498,6 @@ func migTaskSetExceptionPorts(p *Process, body []byte) migReply {
 		return migReply{none: true}
 	}
 	return migCode(0)
-}
-
-// migTaskGetSpecialPort hands out only the bootstrap port, which leads to launchd (see launchd.go).
-func migTaskGetSpecialPort(p *Process, body []byte) migReply {
-	which := int32(le.Uint32(body[32:]))
-	p.note("  task_get_special_port %d", which)
-	if which == 4 {
-		return migPort(bootstrapPort)
-	}
-	return migPort(0)
 }
 
 // migVMCopy is mach_vm_copy(task, from, size, to): so many bytes of the task's memory copied to

@@ -83,6 +83,8 @@ func (k kernelPort) request(p *Process, id uint32, body []byte) (migReply, bool)
 	case kind == 0, kind == kindHostPriv && p.uid == 0, k.of != nil && k.of != p:
 		// What root's host port answers is not known, nor what another process's task does.
 		return migReply{}, false
+	case kind != k.kind && (id == 8000 || id == 8001):
+		return migCode(kernFailure), true // restartable ranges are the asking task's own, as measured
 	case kind != k.kind:
 		return migCode(kernInvalidArg), true
 	}

@@ -156,6 +156,9 @@ type region struct {
 	into     uint64
 	touched  bool
 	behavior uint32
+	// Memory made to be emptied, and whether it may be now (see taskkeeps.go).
+	purgeable bool
+	volatile  uint32
 }
 
 func (r *region) prot() uint32 { return protAll &^ r.deny }
@@ -384,14 +387,16 @@ type Process struct {
 	task       *port         // the task's own port, while the process has a right to it (see kernelports.go)
 	// Where what it was started with begins, which is the top of its stack from the program's path
 	// up, and how many arguments, as the kernel keeps them for whoever asks (kern.procargs2).
-	started uint64
-	argc    uint32
-	ppid    uint32
-	reaped  bool
-	stdio   *Process
-	cloexec map[uint64]bool // the descriptors a program it starts is not to have
-	ring    *reclaimRing    // the ring for memory to be given back later, if it has asked for one (see reclaim.go)
-	clofork map[uint64]bool // the descriptors a copy of it, and a program it starts, are not to have (O_CLOFORK; see noFork)
+	started     uint64
+	argc        uint32
+	ppid        uint32
+	reaped      bool
+	stdio       *Process
+	cloexec     map[uint64]bool       // the descriptors a program it starts is not to have
+	special     map[int32]specialPort // the special ports it has set (see taskkeeps.go)
+	restartable []restartable         // the stretches of its code a thread is put back in, once registered
+	ring        *reclaimRing          // the ring for memory to be given back later, if it has asked for one (see reclaim.go)
+	clofork     map[uint64]bool       // the descriptors a copy of it, and a program it starts, are not to have (O_CLOFORK; see noFork)
 
 	cacheDir   string
 	cachePaths map[string]dyldcache.File

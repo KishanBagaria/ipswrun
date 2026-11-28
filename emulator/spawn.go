@@ -751,7 +751,8 @@ func (p *Process) fork() *Process {
 	child.parent, child.ppid, child.pgroup = p, p.pid, p.group()
 	child.lineage = m.descend(p.lineage, p.uuid)
 	child.cwd, child.brk = p.workingDirectory(), p.brk
-	if p.ring != nil { // its ring is the copy of the parent's, where the parent's is, as measured
+	child.special, child.restartable = maps.Clone(p.special), p.restartable // from the source: a copy has what the task had the kernel keep
+	if p.ring != nil {                                                      // its ring is the copy of the parent's, where the parent's is, as measured
 		ring := *p.ring
 		child.ring = &ring
 	}
