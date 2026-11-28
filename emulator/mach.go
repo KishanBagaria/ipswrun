@@ -463,6 +463,7 @@ func init() {
 		3419: migSemaphoreDestroy,
 		4807: migVMCopy,
 		4811: migVMMap,
+		4816: migVMRegion,
 		4817: migMakeMemoryEntry,
 		4813: migVMRemap,
 		4822: migReclaimAllocate, 4823: migReclaimFlush, 4826: migReclaimResize, 4828: migReclaimQuery, // the ring for memory to be given back later (see reclaim.go)

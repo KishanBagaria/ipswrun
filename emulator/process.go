@@ -150,6 +150,12 @@ type region struct {
 	off        uint64
 	name       string
 	deny       uint32 // what of protAll its pages may not be accessed for (mprotect)
+	// What mach_vm_region says besides (see vmregion.go): how far into what it maps the region
+	// starts, that memory of no file has been touched and so has something of its own to be
+	// that far into, and how it was said it would be read (madvise).
+	into     uint64
+	touched  bool
+	behavior uint32
 }
 
 func (r *region) prot() uint32 { return protAll &^ r.deny }
@@ -652,7 +658,7 @@ func (p *Process) unmap(start, end uint64) {
 		}
 		if r.end > end {
 			tail := *r
-			tail.start, tail.off = end, r.off+(end-r.start)
+			tail.start, tail.off, tail.into = end, r.off+(end-r.start), r.into+(end-r.start)
 			p.addRegion(&tail)
 		}
 		if r.shared != nil {
@@ -713,7 +719,7 @@ func (p *Process) alloc(size uint64, a allocation) (uint64, bool) {
 func (p *Process) split(at uint64) {
 	if r := p.findRegion(at); r != nil && r.start < at {
 		tail := *r
-		tail.start, tail.off = at, r.off+(at-r.start)
+		tail.start, tail.off, tail.into = at, r.off+(at-r.start), r.into+(at-r.start)
 		r.end = at
 		p.addRegion(&tail)
 	}
@@ -758,6 +764,11 @@ func (p *Process) materialize(addr uint64) bool {
 	}
 	b0 := r.start + (addr-r.start)/blockSize*blockSize
 	b1 := min(b0+blockSize, r.end)
+	if !r.touched && r.data == nil && r.file == nil && r.shared == nil {
+		// Memory of no file gets something of its own to be when it is first touched, which
+		// starts where the region then does: as measured (examples/vmregion.c).
+		r.touched, r.into = true, 0
+	}
 	if r.kind == sharedRegion {
 		// Of a mapped file, only the pages the file has: one past its last faults (see
 		// mappedfiles.go). And no further than the memory there is.

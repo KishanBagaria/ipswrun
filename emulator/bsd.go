@@ -167,6 +167,15 @@ func sysMmap(p *Process, a []uint64) int64 {
 				return -eNOSYS
 			}
 		}
+		if flags&mapShared != 0 && length > 0 {
+			// Memory of no file that is shared: a copy of the process has the same memory and
+			// not a copy of it, as measured (examples/vmregion.c).
+			shared := p.m.newShared(align(length, pageSize))
+			if shared == nil {
+				return -eNOMEM
+			}
+			return p.mapShared(shared, addr, align(length, pageSize), 0, fixed, deny)
+		}
 		start, ok := p.alloc(length, allocation{addr: addr, fixed: fixed, name: "mmap", deny: deny})
 		if !ok {
 			return -eNOMEM
@@ -241,6 +250,7 @@ func sysMmap(p *Process, a []uint64) int64 {
 	if !ok {
 		return -eNOMEM
 	}
+	p.findRegion(start).into = off
 	return int64(start)
 }
 
@@ -1648,6 +1658,13 @@ func (p *Process) sysctlOut(name string, oldp, oldlenp uint64) int64 {
 func sysMadvise(p *Process, a []uint64) int64 {
 	if a[2] > 11 || p.findRegion(a[0]&tbiMask) == nil {
 		return -eINVAL
+	}
+	if start, end := a[0]&tbiMask&^(pageSize-1), align(a[0]&tbiMask+a[1], pageSize); a[2] <= 2 && end > start { // to be read as usual, at random or in order: the region is said to be so
+		p.split(start)
+		p.split(end)
+		for _, r := range p.overlaps(start, end) {
+			r.behavior = uint32(a[2])
+		}
 	}
 	return 0
 }
