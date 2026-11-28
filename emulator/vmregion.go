@@ -36,12 +36,9 @@ func migVMRegion(p *Process, body []byte) migReply {
 	if at == nil {
 		return migCode(kernInvalidAddress)
 	}
-	most, inherit := uint32(protAll), uint32(1)
+	most, inherit := uint32(protAll), at.inheritance()
 	if at.readOnly {
 		most = 5
-	}
-	if at.shared != nil {
-		inherit = 0
 	}
 	into := at.into
 	if at.shared != nil {

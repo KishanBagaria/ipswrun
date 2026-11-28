@@ -55,7 +55,7 @@ func init() {
 		"geteuid": {0, sysGetuid}, "getgid": {0, sysGetgid}, "getegid": {0, sysGetgid}, "gettid": {2, constant(-eSRCH)},
 		"setuid": {1, sysSetuid}, "seteuid": {1, sysSetuid}, "setgid": {1, sysSetgid}, "setegid": {1, sysSetgid},
 		"getrusage": {2, sysGetrusage}, "getlogin": {2, sysGetlogin}, "getdtablesize": {0, sysGetdtablesize},
-		"issetugid": {0, constant(0)}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
+		"issetugid": {0, constant(0)}, "minherit": {3, sysMinherit}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
 		"__pthread_sigmask": {3, sysSigprocmask}, "__pthread_kill": {2, sysPthreadKill}, "kill": {3, sysKill},
 		"sigaltstack": {2, sysSigaltstack}, "setitimer": {3, sysSetitimer}, "getitimer": {2, sysGetitimer}, "__disable_threadsignal": {1, sysDisableThreadsignal}, "thread_selfid": {0, sysThreadSelfid},
 		"bsdthread_register": {6, sysBsdthreadRegister}, "bsdthread_create": {5, sysBsdthreadCreate},

@@ -775,8 +775,9 @@ func (p *Process) fork() *Process {
 	}
 	for _, r := range p.regions {
 		if !kernels(r) {
-			copied := *r
-			child.addRegion(&copied)
+			if copied := r.inherited(); copied != nil { // what the process said a copy is to have of it (see inherit.go)
+				child.addRegion(copied)
+			}
 		}
 	}
 	// A run of pages that follow one another in one region is copied at once: the engine takes
@@ -794,8 +795,8 @@ func (p *Process) fork() *Process {
 		}
 		run, size := pages[i:j], uint64(j-i)*pageSize
 		i = j
-		if kernels(r) || r.kind == sharedRegion {
-			continue // a shared one is the same memory in both, mapped when the copy first touches it
+		if kernels(r) || r.kind == sharedRegion || r.inheritance() == inheritNone {
+			continue // a shared one is the same memory in both, mapped when the copy first touches it; and one it has not
 		}
 		for _, page := range run {
 			child.mapped[page] = struct{}{}

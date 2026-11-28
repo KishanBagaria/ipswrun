@@ -72,6 +72,7 @@ localsock	tests/kernel/sockets	macos,ios
 # locks is rangelocks, proclocks and locklist, each a part of it (tests/suite.h).
 locks	tests/kernel/locks	macos,ios
 machports	tests/kernel/mach	macos,ios
+inheritmem	tests/kernel/memory	macos,ios
 mapfile	tests/kernel/memory	macos,ios
 # notify asks the release's own notifyd, started when it is first looked up.
 notify	tests/kernel/system	macos,ios	--on-demand com.apple.system.notification_center

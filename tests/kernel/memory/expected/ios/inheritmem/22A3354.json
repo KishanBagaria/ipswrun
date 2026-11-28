@@ -1,0 +1,7 @@
+{
+  "build": "22A3354",
+  "cache_uuid": "4D95BD3E-6831-3A99-A66C-B4DDB316E2E0",
+  "exit_code": 0,
+  "output": "a page to be shared with a copy of the process: done; one it is not to have: done; one it is to have a copy of: done; they are said to be inherited as 1 0 2 1 1, and what they hold is kept: p p p\nthe copy reads them: p, p, signal 11, p; they are inherited there as 1 0 1; after a copy of its own wrote to the shared page it reads g\nafter the copy wrote to all it had, the first process reads: p, cg, p, p\nthe shared page said to be copied after all: done, inherited as 1; a copy writes to it and the first process reads c\nten bytes inside a page: done, and the page is inherited as 0, the next as 1; a way there is not, 3: Invalid argument, 99: Invalid argument; of no length: done; of a page that may do nothing: done; of one that is not there: done\n",
+  "version": "18.0"
+}

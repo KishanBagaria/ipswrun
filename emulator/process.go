@@ -156,6 +156,9 @@ type region struct {
 	into     uint64
 	touched  bool
 	behavior uint32
+	// How a copy of the process has it, where the process has said (minherit): one more than
+	// VM_INHERIT_SHARE (0), COPY (1) or NONE (2), and 0 where it has not (see inherit.go).
+	inherits uint8
 	// Memory made to be emptied, and whether it may be now (see taskkeeps.go).
 	purgeable bool
 	volatile  uint32
