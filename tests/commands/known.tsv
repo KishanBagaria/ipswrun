@@ -6,4 +6,3 @@ everyday	differs	osascript asks coreservicesd, which is not started	osascript -e
 everyday	stops	say asks of a thread a kind of thread_info that is not answered	say -v '?' 2>&1 | head -1 | wc -l
 everyday	differs	mdfind asks mds, which is not started	mdfind -name nothing-like-this 2>&1 | wc -l
 system	differs	/etc/passwd is made up here of root and the user, where a Mac's has every account of the system	cat /etc/passwd | grep -c root
-ipc	differs	uname(3) asks kern.version, which names the build's kernel and when it was built and is not known: the call fails, where uname(1), which asks each name by itself, prints the rest	perl -MPOSIX -e 'print((POSIX::uname())[0], "\n")'

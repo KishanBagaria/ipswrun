@@ -1,0 +1,7 @@
+{
+  "build": "24G90",
+  "cache_uuid": "4C1223E5-CACE-3982-A003-6110A7A8A25C",
+  "exit_code": 0,
+  "output": "uname: answered; the system is Darwin; the node, the release, the version and the machine are each said: 1 1 1 1\nby name: the system is Darwin; the release is what uname says: 1, and is numbers with dots: 1; the version is what uname says: 1\nthe version begins with the system's name and the release: 1; says who built what: 1; ends in the kind of build it is: 1; is one line: 1\ninto four bytes: Cannot allocate memory; it then says 0, and has \"#######\"\na number of four bytes into two: Cannot allocate memory; it then says 0, and has 7\ninto eight: it fits; it then says 8, and the second four are written\nhow long it is, asked first: one more than its letters: 1\n",
+  "version": "15.6.1"
+}

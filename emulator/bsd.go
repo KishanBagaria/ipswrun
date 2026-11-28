@@ -1625,6 +1625,19 @@ func (p *Process) sysctlValue(name string) (any, bool) {
 			p.sysctls["hw.l1icachesize"], p.sysctls["hw.l1dcachesize"], p.sysctls["hw.l2cachesize"] = n(128<<10), n(64<<10), n(4<<20)
 		}
 	}
+	if (name == "kern.version" || name == "kern.osrelease") && p.m != nil {
+		// The kernel's own line of what it is, and the version in it, which is the release
+		// of Darwin (27.2.0 of macOS 27.2.1, as measured): not what a build's number begins
+		// with, which is what is said where the kernelcache cannot be read.
+		line, ok := p.m.kernelVersion()
+		if release, _, cut := strings.Cut(strings.TrimPrefix(line, versionStart), ":"); ok && cut && name == "kern.osrelease" {
+			return release, true
+		}
+		if ok && name == "kern.version" {
+			return line, true
+		}
+		p.note("  the kernel's version could not be read: %v", p.m.versionErr)
+	}
 	if v, ok := p.sysctls[name]; ok {
 		return v, true
 	}
@@ -1665,8 +1678,15 @@ func (p *Process) sysctlOut(name string, oldp, oldlenp uint64) int64 {
 			data = data[:4]
 		}
 	}
+	// Into less room than it takes nothing is written, the room is then said to be none, and
+	// the call fails (ENOMEM): as measured of text and of a number
+	// (tests/kernel/system/kernelnames.c).
+	if oldp != 0 && oldlenp != 0 && p.u64(oldlenp) < uint64(len(data)) {
+		p.write(oldlenp, le64(0))
+		return -eNOMEM
+	}
 	if oldp != 0 && oldlenp != 0 {
-		p.write(oldp, data[:min(p.u64(oldlenp), uint64(len(data)))])
+		p.write(oldp, data)
 	}
 	if oldlenp != 0 {
 		p.write(oldlenp, le64(uint64(len(data))))

@@ -50,6 +50,8 @@ type Machine struct {
 	sessionTerminals map[uint32]*terminal       // the terminal each session has for its own, by the session's number
 	terminals        []*terminal                // the terminals there have been, by the number in each one's name (see terminals.go)
 	owners           map[hostFile]Owner         // the owners of the home's and mounts' files that are not the guests' user's (see metadata.go)
+	version          string                     // the kernel's own line of what it is, once its kernelcache has been read for it (see kernelversion.go)
+	versionErr       error                      // or why it could not be read
 	pass             map[passKey]bool           // which directories who may search, as found until something changes (see searchable)
 	passChanges      uint64                     // how many times a mode, an owner or a name has changed
 	passSeen         uint64                     // and how many of those pass was found after

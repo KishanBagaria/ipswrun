@@ -38,6 +38,7 @@ swiftrt	examples	macos,ios
 accessfor	tests/kernel/files	macos,ios
 acls	tests/kernel/files	macos,ios
 boot	tests/kernel/system	macos,ios
+kernelnames	tests/kernel/system	macos,ios
 bsdflags	tests/kernel/files	macos,ios
 clofork	tests/kernel/io	macos,ios
 clone	tests/kernel/files	macos,ios
