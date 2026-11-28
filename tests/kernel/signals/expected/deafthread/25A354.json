@@ -1,0 +1,7 @@
+{
+  "build": "25A354",
+  "cache_uuid": "52E4EEC0-379E-31C7-AC62-BFED14D90F52",
+  "exit_code": 0,
+  "output": "a thread that takes no more signals said so: 1; a signal for it alone: No such process, taken 0 times; one for the process while the first thread blocks it: taken 0 times; unblocked: 1, by the first thread 1\nhow the system is protected, asked: yes, and it is said to be wholly 1; into 8 bytes: Invalid argument; into nowhere: Invalid argument\nwhether each thing the protection forbids is allowed: Operation not permitted, Operation not permitted, Operation not permitted, Operation not permitted, Operation not permitted, Operation not permitted, Operation not permitted, Operation not permitted, Operation not permitted, Operation not permitted, Operation not permitted, Operation not permitted, Operation not permitted; nothing at all: yes; asked with 8 bytes: Invalid argument; a question there is not: Function not implemented\na call made by its number: getpid the same 1\n",
+  "version": "26.0"
+}

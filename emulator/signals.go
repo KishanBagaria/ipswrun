@@ -306,6 +306,36 @@ func (m *Machine) inGroup(group uint32) []*Process {
 }
 
 // sysPthreadKill is __pthread_kill(thread, signal): to a thread of the process itself.
+// sysDisableThreadsignal is __disable_threadsignal, which a thread asks as it ends: no signal
+// is given to it after, one for it alone being refused (ESRCH) and one for the process going
+// to another thread, as measured (tests/kernel/signals/deafthread.c).
+func sysDisableThreadsignal(p *Process, a []uint64) int64 {
+	p.current.deaf = true
+	return 0
+}
+
+// sysCsrctl is csrctl(what, where, size): what the kernel says of the protection of the
+// system's own files, as a Mac with it wholly on says, as measured: asked how it is set (1), it
+// is 0, nothing let through; asked whether something it forbids is allowed (0), it is not
+// (EPERM), and nothing at all is. The answer and the question are 4 bytes (EINVAL), and there
+// are no other questions (ENOSYS).
+func sysCsrctl(p *Process, a []uint64) int64 {
+	switch uint32(a[0]) {
+	case 0, 1:
+	default:
+		return -eNOSYS
+	}
+	switch {
+	case a[1] == 0 || a[2] != 4:
+		return -eINVAL
+	case uint32(a[0]) == 1:
+		p.write(a[1], le32(0))
+	case p.u32(a[1]) != 0:
+		return -ePERM
+	}
+	return 0
+}
+
 func sysPthreadKill(p *Process, a []uint64) int64 {
 	sig := a[1]
 	var to *thread
@@ -317,7 +347,7 @@ func sysPthreadKill(p *Process, a []uint64) int64 {
 	switch {
 	case sig >= numSignals:
 		return -eINVAL
-	case to == nil:
+	case to == nil, to.deaf: // one that takes no more signals is as one that is not there, as measured
 		return -eSRCH
 	case sig != 0:
 		p.sendSignal(pendingSignal{sig: sig, status: int32(sig), pid: p.pid, uid: p.uid, to: to})
@@ -342,7 +372,7 @@ func (s pendingSignal) forThread(t *thread) bool { return s.to == nil || s.to ==
 
 // takes says whether a thread can take a signal now: it is for it, and it does not block it.
 func (s pendingSignal) takes(t *thread) bool {
-	return t.state != dead && s.forThread(t) && (s.sig == sigKill || t.sigmask>>(s.sig-1)&1 == 0)
+	return t.state != dead && !t.deaf && s.forThread(t) && (s.sig == sigKill || t.sigmask>>(s.sig-1)&1 == 0)
 }
 
 // sendSignal sends the process a signal. It ends the process or does nothing at once, if that is

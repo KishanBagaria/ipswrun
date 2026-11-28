@@ -57,7 +57,7 @@ func init() {
 		"getrusage": {2, sysGetrusage}, "getlogin": {2, sysGetlogin}, "getdtablesize": {0, sysGetdtablesize},
 		"issetugid": {0, constant(0)}, "sigaction": {3, sysSigaction}, "sigprocmask": {3, sysSigprocmask},
 		"__pthread_sigmask": {3, sysSigprocmask}, "__pthread_kill": {2, sysPthreadKill}, "kill": {3, sysKill},
-		"sigaltstack": {2, sysSigaltstack}, "setitimer": {3, sysSetitimer}, "getitimer": {2, sysGetitimer}, "__disable_threadsignal": {1, constant(0)}, "thread_selfid": {0, sysThreadSelfid},
+		"sigaltstack": {2, sysSigaltstack}, "setitimer": {3, sysSetitimer}, "getitimer": {2, sysGetitimer}, "__disable_threadsignal": {1, sysDisableThreadsignal}, "thread_selfid": {0, sysThreadSelfid},
 		"bsdthread_register": {6, sysBsdthreadRegister}, "bsdthread_create": {5, sysBsdthreadCreate},
 		"bsdthread_terminate": {4, sysBsdthreadTerminate}, "__semwait_signal": {6, sysSemwaitSignal},
 		"sigsuspend": {1, sysSigsuspend}, "__sigwait": {2, sysSigwait}, "kevent_qos": {8, sysKeventQos}, "kqueue_workloop_ctl": {4, sysKqueueWorkloopCtl}, "kevent": {6, sysKevent}, "kevent64": {7, sysKevent64}, "kevent_id": {8, sysKeventID}, "psynch_mutexwait": {5, sysPsynchMutexwait}, "psynch_mutexdrop": {5, sysPsynchMutexdrop}, "psynch_cvwait": {8, sysPsynchCvwait},
@@ -65,7 +65,7 @@ func init() {
 		"psynch_rw_rdlock": {5, sysPsynchRWRdlock}, "psynch_rw_wrlock": {5, sysPsynchRWWrlock}, "psynch_rw_unlock": {5, sysPsynchRWUnlock}, "bsdthread_ctl": {4, constant(0)}, "workq_open": {0, constant(0)},
 		"workq_kernreturn": {4, sysWorkqKernreturn}, "kdebug_trace64": {0, constant(0)}, "kdebug_trace": {0, constant(0)},
 		"kdebug_trace_string": {0, constant(0)}, "kdebug_typefilter": {2, constant(-ePERM)}, "getentropy": {2, sysGetentropy},
-		"ptrace": {1, sysPtrace}, "select": {5, sysSelect}, "pselect": {5, sysPselect}, "kqueue": {0, sysKqueue}, "guarded_kqueue_np": {2, sysKqueue}, "csops": {4, sysCsops}, "csops_audittoken": {4, sysCsops}, "csrctl": {3, constant(-ePERM)}, "getrlimit": {2, sysGetrlimit},
+		"ptrace": {1, sysPtrace}, "select": {5, sysSelect}, "pselect": {5, sysPselect}, "kqueue": {0, sysKqueue}, "guarded_kqueue_np": {2, sysKqueue}, "csops": {4, sysCsops}, "csops_audittoken": {4, sysCsops}, "csrctl": {3, sysCsrctl}, "getrlimit": {2, sysGetrlimit},
 		"setrlimit": {2, sysSetrlimit}, "gettimeofday": {3, sysGettimeofday}, "__mac_syscall": {3, sysMacSyscall},
 		"abort_with_payload": {6, sysAbortWithPayload}, "terminate_with_payload": {6, sysTerminateWithPayload},
 		"os_fault_with_payload": {6, sysOSFaultWithPayload}, "ulock_wait": {4, sysUlockWait}, "ulock_wait2": {5, sysUlockWait2},
@@ -115,11 +115,18 @@ var descriptorArgs = func() map[string]uint8 {
 }()
 
 func (p *Process) bsd(n int64) {
+	args := p.args()
+	first := args[0]
+	if n == 0 && int32(args[0]) != 0 {
+		// syscall(number, ...), the call by number: the number is the first argument and the
+		// call's own follow it, as the library's syscall() leaves them (measured of csrctl, in
+		// tests/kernel/signals/deafthread.c).
+		n, args = int64(int32(args[0])), append(args[1:len(args):len(args)], 0)
+	}
 	name, ok := bsdNames[n]
 	if !ok {
 		name = strconv.FormatInt(n, 10)
 	}
-	args := p.args()
 	base := strings.ReplaceAll(name, "_nocancel", "")
 	h, ok := bsdHandlers[base]
 	if !ok && p.unimplemented(fmt.Sprintf("syscall %d %s", n, name), args) {
@@ -132,7 +139,7 @@ func (p *Process) bsd(n int64) {
 			args[i] = uint64(int64(int32(args[i])))
 		}
 	}
-	p.current.arg0, p.current.sleeping = args[0], name == "__semwait_signal"
+	p.current.arg0, p.current.sleeping = first, name == "__semwait_signal" // what was in the first register, for a call that is made again
 	r := p.call(h, args, -eFAULT)
 	p.setX(0, uint64(max(r, -r)))
 	p.carry(r < 0)

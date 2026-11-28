@@ -51,6 +51,7 @@ detach	tests/kernel/proc	macos
 # dev is devnames, devzero, devfd, devfdlist and devfdpaths, each a part of it (tests/suite.h).
 dev	tests/kernel/dev	macos,ios
 everyday	tests/kernel/files	macos,ios
+deafthread	tests/kernel/signals	macos,ios
 faults	tests/kernel/signals	macos,ios
 fifo	tests/kernel/io	macos,ios
 fileflags	tests/kernel/files	macos,ios

@@ -84,6 +84,7 @@ type thread struct {
 	waiting4  *waiting4   // of a thread waiting for a child to end: which, and where to say how
 
 	sigmask   uint32    // the signals it blocks
+	deaf      bool      // it takes no more signals at all (__disable_threadsignal)
 	altstack  [2]uint64 // its alternate signal stack, if it has one: where, and its size
 	onstack   bool      // a handler of its is running on that stack
 	suspended *uint32   // of a thread in sigsuspend: the mask it had before, which it has again after
