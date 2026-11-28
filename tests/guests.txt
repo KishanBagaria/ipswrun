@@ -85,6 +85,7 @@ passfd	tests/kernel/sockets	macos,ios
 pipeevents	tests/kernel/io	macos,ios
 pipes	tests/kernel/io	macos,ios
 poll	tests/kernel/io	macos,ios
+maxparallel	tests/kernel/mach	macos,ios
 portsets	tests/kernel/mach	macos,ios
 portstatus	tests/kernel/mach	macos,ios
 posixipc	tests/kernel/memory	macos,ios

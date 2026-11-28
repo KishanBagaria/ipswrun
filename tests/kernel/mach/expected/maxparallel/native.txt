@@ -1,0 +1,6 @@
+the machine says of its processors: all 1, by levels 1, the first level's 1, the least level's 1
+classes from utility up may use every processor: 1 1 1 1 1 1 1 1; the two below, those of the least level: 1 1 1 1
+real time, the first level's: 1 1
+what does not go together: no class counted as the others are Invalid argument, Invalid argument; a class counted as real time is Invalid argument, Invalid argument, Invalid argument, Invalid argument, Invalid argument, Invalid argument; a class there is not: Invalid argument, Invalid argument, Invalid argument
+a thing to ask of threads that there is not: Invalid argument
+whom the thread acts as, apart from its process: No such process

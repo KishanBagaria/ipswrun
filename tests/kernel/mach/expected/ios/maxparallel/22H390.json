@@ -1,0 +1,7 @@
+{
+  "build": "22H390",
+  "cache_uuid": "EF0E3993-EA01-3DB0-82D5-F671453A1235",
+  "exit_code": 0,
+  "output": "the machine says of its processors: all 1, by levels 1, the first level's 1, the least level's 1\nclasses from utility up may use every processor: 1 1 1 1 1 1 1 1; the two below, those of the least level: 1 1 1 1\nreal time, the first level's: 1 1\nwhat does not go together: no class counted as the others are Invalid argument, Invalid argument; a class counted as real time is Invalid argument, Invalid argument, Invalid argument, Invalid argument, Invalid argument, Invalid argument; a class there is not: Invalid argument, Invalid argument, Invalid argument\na thing to ask of threads that there is not: Invalid argument\nwhom the thread acts as, apart from its process: No such process\n",
+  "version": "18.7.12"
+}

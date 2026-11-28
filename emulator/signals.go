@@ -336,6 +336,63 @@ func sysCsrctl(p *Process, a []uint64) int64 {
 	return 0
 }
 
+// sysBsdthreadCtl is bsdthread_ctl(what, ...), by which the thread library tells the kernel how
+// a thread is to be scheduled and asks how many may usefully run at once. Asked that
+// (BSDTHREAD_CTL_QOS_MAX_PARALLELISM, with a class of service and whether it is logical
+// processors that are counted, or those a real-time thread may have), the answer is the
+// machine's processors that the class may use: on a Mac every one for the classes from utility
+// up, those of its least level for the two below, and those of its first level for real time,
+// as measured on one of 16 (tests/kernel/mach/maxparallel.c); here the machine has the one.
+// The class and the kind of count have to go together (EINVAL), as measured. What sets a
+// thread's class or lends it another's is taken and changes nothing: threads take turns here
+// as they ask the kernel something, whatever their class. A thing to do that there is not is
+// EINVAL.
+func sysBsdthreadCtl(p *Process, a []uint64) int64 {
+	const setQoS, getQoS, overrideStart, overrideEnd, setSelf, overrideReset, overrideDispatch, overrideAdd, overrideResetAsync = 0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x401, 0x402
+	const maxParallelism, allowKill, applyAttr, allowSigmask = 0x800, 0x1000, 0x2000, 0x4000
+	switch uint32(a[0]) {
+	case maxParallelism:
+		class, how := uint32(a[1]), uint32(a[2])
+		realtime := how&2 != 0
+		switch {
+		case class > 6, how <= 4 && class == 0 && !realtime, how < 4 && class != 0 && realtime:
+			return -eINVAL
+		case how >= 4: // how many clusters of processors, and kinds of count that were not measured
+			p.unimplemented("bsdthread_ctl asked how many clusters of processors a class may use", a)
+			return -eNOSYS
+		}
+		return 1
+	case setQoS, overrideStart, overrideEnd, setSelf, overrideReset, overrideDispatch, overrideAdd, overrideResetAsync, allowKill, applyAttr, allowSigmask:
+		return 0
+	case getQoS:
+		p.unimplemented("bsdthread_ctl asked for a thread's class of service", a)
+		return -eNOSYS
+	}
+	return -eINVAL
+}
+
+// sysFsctl is fsctl(path, what, data, options): something asked of the file system a file is
+// on. Of nothing it is ENOENT, as measured; what is asked of a file that is there is not
+// answered here.
+func sysFsctl(p *Process, a []uint64) int64 {
+	if _, _, errno := p.describePath("fsctl", p.cstr(a[0]), a[3]&1 == 0); errno != 0 {
+		return errno
+	}
+	p.unimplemented("fsctl of a file that is there", a)
+	return -eNOSYS
+}
+
+// sysKdebugTypefilter is kdebug_typefilter(&address, &size), which maps the kernel's list of
+// what is being traced: with nowhere to say where it is EINVAL, as measured. The list itself
+// is not there: nothing is traced here, and the library does not ask for it then.
+func sysKdebugTypefilter(p *Process, a []uint64) int64 {
+	if a[0] == 0 || a[1] == 0 {
+		return -eINVAL
+	}
+	p.unimplemented("kdebug_typefilter, the kernel's list of what is traced", a)
+	return -eNOSYS
+}
+
 func sysPthreadKill(p *Process, a []uint64) int64 {
 	sig := a[1]
 	var to *thread
